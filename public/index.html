@@ -1,0 +1,3896 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AI Hub" />
+  <meta name="theme-color" content="#4f46e5" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <script src="/qrcode.min.js"></script>
+  <title>AI Studio Hub — Antigravity + OpenAI Codex + VS Code</title>
+  <style>
+    :root {
+      /* Clean Light Theme (Default - Crisp White & Uncluttered) */
+      --bg-base: #ffffff;
+      --bg-panel: #ffffff;
+      --bg-card: #ffffff;
+      --bg-sidebar: #fbfcfd;
+      --bg-hover: #f8fafc;
+      --bg-input: #ffffff;
+      --border: #e2e8f0;
+      --border-subtle: #f1f5f9;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --text-dim: #94a3b8;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
+      --agy-accent: #6366f1;
+      --codex-accent: #10b981;
+      --vsc-accent: #0284c7;
+      --auto-accent: #0284c7;
+      --warn: #d97706;
+      --danger: #ef4444;
+      --radius: 10px;
+      --radius-lg: 14px;
+    }
+
+    body.dark-theme {
+      --bg-base: #0b0e14;
+      --bg-panel: #111621;
+      --bg-card: #171e2e;
+      --bg-sidebar: #111621;
+      --bg-hover: #1e273b;
+      --bg-input: #141a28;
+      --border: #253047;
+      --border-subtle: #1b2336;
+      --text-main: #e6edf3;
+      --text-muted: #8b9bb4;
+      --text-dim: #5d6d87;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+      --agy-accent: #7c5cff;
+      --codex-accent: #10b981;
+      --vsc-accent: #0ea5e9;
+      --auto-accent: #38bdf8;
+      --warn: #f59e0b;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      background: var(--bg-base);
+      color: var(--text-main);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* --- TOP TELEMETRY & QUOTA BAR --- */
+    .topbar {
+      height: 62px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: -0.3px;
+      white-space: nowrap;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--agy-accent), var(--codex-accent));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+      box-shadow: 0 2px 12px rgba(124, 92, 255, 0.35);
+    }
+
+    /* --- CENTER ACTIVE ENGINE & LIVE QUOTA PILL (UNCLUTTERED) --- */
+    .topbar-center {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+    }
+
+    .top-engine-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+
+    .top-engine-badge:hover {
+      filter: brightness(1.05);
+      transform: translateY(-1px);
+    }
+
+    .top-engine-badge .badge-sub {
+      font-size: 11px;
+      font-weight: 500;
+      opacity: 0.85;
+      padding-left: 6px;
+      border-left: 1px solid currentColor;
+    }
+
+    .top-engine-badge.auto {
+      background: #e0f2fe;
+      border: 1px solid #7dd3fc;
+      color: #0369a1;
+    }
+
+    .top-engine-badge.antigravity {
+      background: #ede9fe;
+      border: 1px solid #c4b5fd;
+      color: #5b21b6;
+    }
+
+    .top-engine-badge.codex {
+      background: #d1fae5;
+      border: 1px solid #6ee7b7;
+      color: #065f46;
+    }
+
+    body.dark-theme .top-engine-badge.auto {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: rgba(56, 189, 248, 0.4);
+      color: #7dd3fc;
+    }
+
+    body.dark-theme .top-engine-badge.antigravity {
+      background: rgba(124, 92, 255, 0.18);
+      border-color: rgba(124, 92, 255, 0.4);
+      color: #c4b5fd;
+    }
+
+    body.dark-theme .top-engine-badge.codex {
+      background: rgba(16, 185, 129, 0.18);
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #6ee7b7;
+    }
+
+    .quota-summary-wrapper {
+      position: relative;
+    }
+
+    .quota-summary-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .quota-summary-pill:hover {
+      background: var(--bg-hover);
+      border-color: #94a3b8;
+    }
+
+    .quota-pill-dot {
+      color: #10b981;
+      font-size: 10px;
+    }
+
+    .quota-pill-chevron {
+      font-size: 10px;
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+    }
+
+    .quota-popover {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: 360px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12), 0 4px 10px rgba(0, 0, 0, 0.06);
+      padding: 14px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .popover-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 8px;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .popover-close {
+      background: none;
+      border: none;
+      font-size: 13px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .popover-close:hover {
+      background: var(--bg-hover);
+      color: var(--text-main);
+    }
+
+    .popover-section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .popover-pills-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .popover-quota-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 6px 9px;
+    }
+
+    .popover-codex-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .quota-item-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: var(--text-muted);
+      gap: 4px;
+    }
+
+    .quota-pct {
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .quota-bar {
+      height: 4px;
+      background: var(--border-subtle);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    body.dark-theme .quota-bar {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .quota-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.35s ease;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .btn {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: #364666;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-color: transparent;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.93;
+    }
+
+    /* --- MAIN 3-COLUMN WORKSPACE --- */
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 320px 1fr 295px;
+      overflow: hidden;
+    }
+
+    .workspace.right-closed {
+      grid-template-columns: 320px 1fr 0px;
+    }
+
+    /* --- LEFT SIDEBAR (PROJECTS & SESSIONS) --- */
+    .sidebar {
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-section {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .project-select-box {
+      width: 100%;
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12.5px;
+      font-weight: 600;
+      margin-bottom: 7px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .cwd-pill {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 8px;
+      border-radius: 6px;
+      word-break: break-all;
+      font-family: "Cascadia Code", Consolas, monospace;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .project-buttons {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .project-buttons .btn {
+      flex: 1;
+      justify-content: center;
+      padding: 5px 8px;
+      font-size: 11.5px;
+    }
+
+    .filter-bar {
+      padding: 10px 14px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .source-pills {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-base);
+      padding: 3px;
+      border-radius: 7px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .src-pill {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 4px;
+      border-radius: 5px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .src-pill.active {
+      background: var(--bg-card);
+      color: var(--text-main);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    .search-input {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 6px 10px;
+      border-radius: 7px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .threads-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .thread-item {
+      padding: 9px 11px;
+      border-radius: 9px;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+
+    .thread-item:hover {
+      background: var(--bg-card);
+    }
+
+    .thread-item.active {
+      background: var(--bg-hover);
+      border-color: var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+
+    body.dark-theme .thread-item.active {
+      background: var(--bg-card);
+      border-color: #36486b;
+    }
+
+    .thread-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding-right: 20px;
+    }
+
+    .thread-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px;
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
+    .badge {
+      font-size: 10px;
+      padding: 1.5px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .badge.agy {
+      background: #ede9fe;
+      color: #6d28d9;
+    }
+
+    .badge.codex {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .badge.vscode {
+      background: #e0f2fe;
+      color: #0369a1;
+    }
+
+    .badge.auto {
+      background: #e0f2fe;
+      color: #0284c7;
+    }
+
+    .badge.warn {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .badge.proj {
+      background: rgba(0, 0, 0, 0.05);
+      color: var(--text-muted);
+    }
+
+    body.dark-theme .badge.agy {
+      background: rgba(124, 92, 255, 0.18);
+      color: #c4b5fd;
+    }
+
+    body.dark-theme .badge.codex {
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+    }
+
+    body.dark-theme .badge.vscode {
+      background: rgba(14, 165, 233, 0.2);
+      color: #7dd3fc;
+    }
+
+    body.dark-theme .badge.auto {
+      background: rgba(56, 189, 248, 0.18);
+      color: #7dd3fc;
+    }
+
+    body.dark-theme .badge.warn {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fcd34d;
+    }
+
+    body.dark-theme .badge.proj {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+    }
+
+    .token-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.1);
+      color: #4f46e5;
+      border: 1px solid rgba(99, 102, 241, 0.22);
+      font-variant-numeric: tabular-nums;
+    }
+
+    body.dark-theme .token-pill {
+      background: rgba(99, 102, 241, 0.18);
+      color: #a5b4fc;
+      border-color: rgba(99, 102, 241, 0.32);
+    }
+
+    .token-pill.live {
+      background: rgba(16, 185, 129, 0.12);
+      color: #059669;
+      border-color: rgba(16, 185, 129, 0.3);
+      animation: tokenPulse 1.8s infinite ease-in-out;
+    }
+
+    body.dark-theme .token-pill.live {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.38);
+    }
+
+    @keyframes tokenPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.72; }
+    }
+
+    .thread-del {
+      position: absolute;
+      right: 8px;
+      top: 9px;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 13px;
+      opacity: 0;
+    }
+
+    .thread-item:hover .thread-del {
+      opacity: 1;
+    }
+
+    .thread-del:hover {
+      color: var(--danger);
+    }
+
+    /* --- CENTER CHAT & ENGINE BAR --- */
+    .main-area {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-base);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .engine-ribbon {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .engine-tabs {
+      display: flex;
+      background: var(--bg-base);
+      padding: 3px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      gap: 3px;
+    }
+
+    .engine-tab {
+      padding: 6px 13px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .engine-tab.active.auto {
+      background: #e0f2fe;
+      color: #0284c7;
+      box-shadow: inset 0 0 0 1px #7dd3fc;
+    }
+
+    .engine-tab.active.antigravity {
+      background: #ede9fe;
+      color: #6d28d9;
+      box-shadow: inset 0 0 0 1px #c4b5fd;
+    }
+
+    .engine-tab.active.codex {
+      background: #d1fae5;
+      color: #065f46;
+      box-shadow: inset 0 0 0 1px #6ee7b7;
+    }
+
+    body.dark-theme .engine-tab.active.auto {
+      background: rgba(56, 189, 248, 0.16);
+      color: #7dd3fc;
+      box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.4);
+    }
+
+    body.dark-theme .engine-tab.active.antigravity {
+      background: rgba(124, 92, 255, 0.2);
+      color: #c4b5fd;
+      box-shadow: inset 0 0 0 1px rgba(124, 92, 255, 0.45);
+    }
+
+    body.dark-theme .engine-tab.active.codex {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.45);
+    }
+
+    .model-selectors {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .selector-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      padding: 4px 9px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .selector-group.agy {
+      border-color: rgba(99, 102, 241, 0.35);
+    }
+
+    body.dark-theme .selector-group.agy {
+      border-color: rgba(124, 92, 255, 0.4);
+    }
+
+    .selector-group.codex {
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+
+    body.dark-theme .selector-group.codex {
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+
+    .selector-label {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .selector-label.agy {
+      color: #6366f1;
+    }
+
+    body.dark-theme .selector-label.agy {
+      color: #c4b5fd;
+    }
+
+    .selector-label.codex {
+      color: #059669;
+    }
+
+    body.dark-theme .selector-label.codex {
+      color: #6ee7b7;
+    }
+
+    .selector-group select {
+      background: transparent;
+      color: var(--text-main);
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .selector-group select option {
+      background: var(--bg-panel);
+      color: var(--text-main);
+    }
+
+    .auto-route-notice {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      color: #0369a1;
+      background: #e0f2fe;
+      border: 1px solid #7dd3fc;
+      padding: 5px 13px;
+      border-radius: 8px;
+      font-weight: 500;
+    }
+
+    body.dark-theme .auto-route-notice {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: rgba(56, 189, 248, 0.4);
+      color: #7dd3fc;
+    }
+
+    /* Chat Messages Area */
+    .chat-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      user-select: text;
+      background: var(--bg-base);
+    }
+
+    .session-origin-bar {
+      max-width: 880px;
+      width: 100%;
+      margin: 0 auto;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .load-older-btn {
+      max-width: 880px;
+      width: 100%;
+      margin: 0 auto;
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      color: var(--text-muted);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s ease;
+    }
+
+    .load-older-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-main);
+    }
+
+    /* --- LANDING HERO (CLEAN UN-CROWDED WHITE THEME) --- */
+    .landing-hero {
+      margin: auto;
+      max-width: 780px;
+      width: 100%;
+      text-align: center;
+      padding: 36px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #f1f5f9;
+      color: #0f172a;
+      border: 1px solid #e2e8f0;
+    }
+
+    body.dark-theme .hero-badge {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e2e8f0;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .hero-title {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.6px;
+      color: var(--text-main);
+      margin: 2px 0 0;
+    }
+
+    .hero-subtitle {
+      font-size: 14.5px;
+      color: var(--text-muted);
+      max-width: 560px;
+      line-height: 1.55;
+      margin-bottom: 4px;
+    }
+
+    /* 3 Primary Engine Cards on Landing */
+    .hero-engine-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      width: 100%;
+      margin: 4px 0;
+    }
+
+    .hero-engine-card {
+      background: #ffffff;
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      text-align: left;
+      transition: all 0.18s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+      position: relative;
+    }
+
+    body.dark-theme .hero-engine-card {
+      background: var(--bg-card);
+    }
+
+    .hero-engine-card:hover {
+      border-color: #94a3b8;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    }
+
+    .hero-engine-card.active {
+      border-color: #0284c7;
+      background: #f8fbff;
+      box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2), 0 4px 12px rgba(2, 132, 199, 0.08);
+    }
+
+    body.dark-theme .hero-engine-card.active {
+      background: rgba(56, 189, 248, 0.1);
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3);
+    }
+
+    .hec-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .hec-icon {
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .hec-title-group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .hec-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .hec-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      width: fit-content;
+      margin-top: 2px;
+    }
+
+    .hec-badge.auto { background: #e0f2fe; color: #0284c7; }
+    .hec-badge.agy { background: #ede9fe; color: #6366f1; }
+    .hec-badge.codex { background: #d1fae5; color: #059669; }
+
+    .hec-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.45;
+      flex: 1;
+    }
+
+    .hec-status {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-main);
+      padding-top: 6px;
+      border-top: 1px dashed var(--border-subtle);
+    }
+
+    .hero-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      width: 100%;
+      text-align: left;
+    }
+
+    .hero-card {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 15px;
+      cursor: pointer;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      transition: all 0.18s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+      text-align: left;
+      font-family: inherit;
+    }
+
+    body.dark-theme .hero-card {
+      background: var(--bg-card);
+    }
+
+    .hero-card:hover {
+      border-color: #94a3b8;
+      background: var(--bg-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+    }
+
+    .hero-card .card-icon {
+      font-size: 22px;
+      line-height: 1;
+      padding: 8px;
+      background: #f8fafc;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    body.dark-theme .hero-card .card-icon {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .hero-card .card-title {
+      font-weight: 600;
+      font-size: 13.5px;
+      color: var(--text-main);
+      margin-bottom: 3px;
+    }
+
+    .hero-card .card-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* --- MESSAGE CARDS --- */
+    .msg-card {
+      max-width: 880px;
+      width: 100%;
+      margin: 0 auto;
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+      border: 1px solid var(--border);
+      line-height: 1.6;
+      font-size: 14px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .msg-card.user {
+      background: #f1f5f9;
+      border-color: #e2e8f0;
+      color: var(--text-main);
+    }
+
+    body.dark-theme .msg-card.user {
+      background: #182234;
+      border-color: #273752;
+      color: #e6edf3;
+    }
+
+    .msg-card.assistant {
+      background: var(--bg-panel);
+      color: var(--text-main);
+    }
+
+    .msg-card.assistant.antigravity {
+      border-left: 4px solid var(--agy-accent);
+    }
+
+    .msg-card.assistant.codex {
+      border-left: 4px solid var(--codex-accent);
+    }
+
+    .msg-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+
+    .msg-author {
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .switch-banner {
+      max-width: 880px;
+      width: 100%;
+      margin: 0 auto;
+      background: #e0f2fe;
+      border: 1px dashed #7dd3fc;
+      color: #0369a1;
+      padding: 10px 14px;
+      border-radius: 9px;
+      font-size: 12.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    body.dark-theme .switch-banner {
+      background: rgba(56, 189, 248, 0.1);
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #bae6fd;
+    }
+
+    .msg-body {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg-body h1, .msg-body h2, .msg-body h3 {
+      margin: 12px 0 6px;
+      line-height: 1.35;
+      color: var(--text-main);
+    }
+
+    .msg-body h1 { font-size: 18px; font-weight: 700; }
+    .msg-body h2 { font-size: 16px; font-weight: 700; }
+    .msg-body h3 { font-size: 14.5px; font-weight: 600; }
+
+    .msg-body a {
+      color: var(--auto-accent);
+      text-decoration: underline;
+    }
+
+    .code-block-wrap {
+      position: relative;
+      margin: 10px 0;
+    }
+
+    .copy-code-btn {
+      position: absolute;
+      top: 7px;
+      right: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .copy-code-btn:hover {
+      color: var(--text-main);
+      background: var(--bg-hover);
+    }
+
+    .msg-body pre {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px 14px;
+      overflow-x: auto;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12.5px;
+    }
+
+    body.dark-theme .msg-body pre {
+      background: #090c12;
+      border-color: #1e273b;
+    }
+
+    .msg-body code {
+      font-family: "Cascadia Code", Consolas, monospace;
+      background: rgba(15, 23, 42, 0.08);
+      color: #0f172a;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 12.5px;
+    }
+
+    body.dark-theme .msg-body code {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e2e8f0;
+    }
+
+    .msg-body pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+
+    .thinking-box {
+      background: var(--bg-hover);
+      border-left: 2px solid var(--text-dim);
+      padding: 8px 12px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-radius: 0 6px 6px 0;
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .tool-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .tool-pill {
+      font-size: 11px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 5px;
+      color: var(--text-muted);
+      font-family: "Cascadia Code", Consolas, monospace;
+    }
+
+    .narrative-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      background: var(--bg-hover);
+      border-left: 2px solid var(--auto-accent);
+      border-radius: 0 8px 8px 0;
+    }
+
+    .narrative-step {
+      font-size: 12.5px;
+      color: var(--text-main);
+      line-height: 1.45;
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+    }
+
+    .narrative-step::before {
+      content: "▸";
+      color: var(--auto-accent);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .thinking-details {
+      margin-bottom: 10px;
+      background: var(--bg-hover);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .thinking-details summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text-muted);
+      user-select: none;
+    }
+
+    /* --- COMPOSER & DRAG-AND-DROP --- */
+    .composer-wrap {
+      padding: 12px 24px 16px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+    }
+
+    .composer-box {
+      max-width: 880px;
+      margin: 0 auto;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: all 0.15s ease;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .composer-box:focus-within {
+      border-color: var(--auto-accent);
+      box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.12);
+    }
+
+    .composer-active-engine-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      user-select: none;
+      gap: 8px;
+    }
+
+    .composer-engine-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .composer-engine-pill:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    .composer-engine-pill.antigravity {
+      background: #ede9fe;
+      border: 1px solid #c4b5fd;
+      color: #5b21b6;
+    }
+
+    .composer-engine-pill.codex {
+      background: #d1fae5;
+      border: 1px solid #6ee7b7;
+      color: #065f46;
+    }
+
+    .composer-engine-pill.auto {
+      background: #e0f2fe;
+      border: 1px solid #7dd3fc;
+      color: #0369a1;
+    }
+
+    body.dark-theme .composer-engine-pill.antigravity {
+      background: rgba(124, 92, 255, 0.2);
+      border: 1px solid rgba(124, 92, 255, 0.55);
+      color: #c4b5fd;
+    }
+
+    body.dark-theme .composer-engine-pill.codex {
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.55);
+      color: #6ee7b7;
+    }
+
+    body.dark-theme .composer-engine-pill.auto {
+      background: rgba(56, 189, 248, 0.2);
+      border: 1px solid rgba(56, 189, 248, 0.55);
+      color: #7dd3fc;
+    }
+
+    .engine-switcher-btns {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn-xs {
+      padding: 3px 8px;
+      font-size: 11px;
+      border-radius: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-xs:hover {
+      color: var(--text-main);
+      background: var(--bg-hover);
+      border-color: #94a3b8;
+    }
+
+    .btn-xs.active {
+      background: var(--text-main);
+      color: var(--bg-panel);
+      font-weight: 600;
+      border-color: transparent;
+    }
+
+    body.dark-theme .btn-xs.active {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    .attachments-preview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .att-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-main);
+    }
+
+    .att-chip button {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .composer-textarea {
+      width: 100%;
+      min-height: 54px;
+      max-height: 200px;
+      background: transparent;
+      border: none;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+      outline: none;
+    }
+
+    .composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .composer-left-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* --- RIGHT DRAWER --- */
+    .right-drawer {
+      background: var(--bg-panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .drawer-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .drawer-tab {
+      flex: 1;
+      padding: 11px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .drawer-tab.active {
+      color: var(--text-main);
+      border-bottom-color: var(--auto-accent);
+    }
+
+    .drawer-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      font-size: 12.5px;
+    }
+
+    .file-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-main);
+      font-size: 12px;
+    }
+
+    .file-row:hover {
+      background: var(--bg-card);
+    }
+
+    .file-name {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .drop-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(11, 14, 20, 0.82);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      border: 3px dashed var(--auto-accent);
+      margin: 16px;
+      border-radius: 18px;
+    }
+
+    .drop-overlay.visible {
+      display: flex;
+    }
+
+    .drop-box {
+      text-align: center;
+      padding: 32px;
+    }
+
+    .drop-box h2 {
+      font-size: 22px;
+      margin-bottom: 8px;
+      color: #7dd3fc;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      width: 480px;
+      max-width: 92vw;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .form-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12.5px;
+    }
+
+    .form-row input, .form-row select {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 8px 10px;
+      border-radius: 7px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    /* --- MOBILE RESPONSIVE & PWA STYLES --- */
+    .mobile-only-btn {
+      display: none;
+    }
+
+    .mobile-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(4px);
+      z-index: 1999;
+      display: none;
+    }
+    .mobile-backdrop.open {
+      display: block;
+    }
+
+    @media (max-width: 768px) {
+      .topbar {
+        padding: 0 10px;
+        gap: 8px;
+        height: 54px;
+      }
+      .brand div > div:nth-child(2) {
+        display: none;
+      }
+      .topbar-actions .selector-group,
+      .topbar-actions #themeToggleBtn {
+        display: none;
+      }
+      .mobile-only-btn {
+        display: inline-flex !important;
+      }
+      .workspace {
+        grid-template-columns: 1fr !important;
+        position: relative;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: -320px;
+        width: 290px;
+        z-index: 2000;
+        transition: left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+      }
+      .sidebar.open {
+        left: 0;
+      }
+      .right-drawer {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        right: -320px;
+        width: 300px;
+        z-index: 2000;
+        transition: right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .right-drawer.open {
+        right: 0;
+      }
+      .chat-scroll {
+        padding: 12px 10px 140px 10px;
+      }
+      .composer-box {
+        margin: 0 8px 8px 8px;
+        padding: 10px 12px;
+      }
+      .composer-textarea {
+        font-size: 16px !important; /* Prevents auto-zoom in iOS Safari */
+        min-height: 54px;
+      }
+      .msg-card {
+        padding: 12px 14px;
+      }
+      .popover-codex-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- DRAG & DROP OVERLAY -->
+  <div id="dropOverlay" class="drop-overlay">
+    <div class="drop-box">
+      <h2>📎 Drop Files to Attach to Session</h2>
+      <p style="color: var(--text-muted)">Images, code files, PDFs, Word/Excel docs, or datasets will be linked into both Antigravity and Codex (stored cleanly in AppData).</p>
+    </div>
+  </div>
+
+  <!-- ADD PROJECT MODAL -->
+  <div id="projectModal" class="modal-backdrop">
+    <div class="modal">
+      <h3>📁 Add Project Working Directory</h3>
+      <div class="form-row">
+        <label>Folder Path on Laptop</label>
+        <div style="display:flex; gap:8px;">
+          <input id="newProjPath" type="text" placeholder="e.g. C:\Users\msafdari\My Drive\MyProject" style="flex:1;" />
+          <button class="btn" onclick="browseNativeFolder()">📂 Browse...</button>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Project Display Name (Optional)</label>
+        <input id="newProjName" type="text" placeholder="e.g. Paper 4 Simulation" />
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:6px;">
+        <button class="btn" onclick="closeProjectModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveNewProject()">Add Project</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MOBILE APP & CLOUDFLARE TUNNEL MODAL -->
+  <div id="mobileModal" class="modal-backdrop">
+    <div class="modal" style="max-width: 480px; text-align: center;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h3 style="display:flex; align-items:center; gap:8px; font-size:17px;">
+          <span>📱</span> Phone App Access (Cloudflare Tunnel)
+        </h3>
+        <button class="popover-close" onclick="closeMobileModal()">✕</button>
+      </div>
+
+      <div id="tunnelStatusBadge" style="margin-bottom:14px; font-size:13px; font-weight:600; padding:6px 12px; border-radius:20px; display:inline-block; background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3);">
+        ● Checking tunnel…
+      </div>
+
+      <div id="tunnelActiveView" style="display:none;">
+        <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
+          Scan with your phone camera to open and control AI Studio Hub:
+        </p>
+        <div id="qrcodeBox" style="background:#ffffff; padding:12px; border-radius:12px; display:inline-flex; justify-content:center; align-items:center; box-shadow:0 4px 16px rgba(0,0,0,0.3); margin-bottom:12px;"></div>
+        
+        <div style="display:flex; gap:8px; margin-bottom:14px;">
+          <input id="mobileUrlInput" type="text" readonly style="flex:1; font-size:12px; font-family:monospace; padding:8px 10px; background:var(--bg-base); border:1px solid var(--border); border-radius:6px; color:var(--text-main);" />
+          <button class="btn btn-primary" onclick="copyMobileUrl()">📋 Copy</button>
+        </div>
+
+        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+          <div style="text-align:left;">
+            <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Mobile Access PIN</div>
+            <div style="font-size:12px; color:var(--text-dim);">For login without QR code</div>
+          </div>
+          <div id="mobilePinDisplay" style="font-size:22px; font-weight:800; letter-spacing:4px; color:#10b981; font-family:monospace;">------</div>
+        </div>
+
+        <div style="text-align:left; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.25); border-radius:8px; padding:10px 12px; font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:14px;">
+          <strong style="color:var(--text-main);">💡 Run as Standalone Phone App:</strong>
+          <ul style="margin:4px 0 0 16px; padding:0;">
+            <li><strong>iPhone (Safari):</strong> Tap <em>Share</em> ⎋ → <em>"Add to Home Screen"</em> ⊞</li>
+            <li><strong>Android (Chrome):</strong> Tap <em>Menu</em> ⋮ → <em>"Add to Home Screen"</em> / <em>"Install App"</em></li>
+          </ul>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <button class="btn" style="color:#ef4444;" onclick="stopTunnelFromUi()">🛑 Stop Cloudflare Tunnel</button>
+          <button class="btn" onclick="closeMobileModal()">Done</button>
+        </div>
+      </div>
+
+      <div id="tunnelInactiveView" style="display:none; padding:10px 0;">
+        <p style="font-size:13px; color:var(--text-muted); margin-bottom:16px;">
+          Cloudflare Tunnel is currently stopped. Starting it will create an encrypted HTTPS connection so you can control your laptop from anywhere on cellular data.
+        </p>
+        <button class="btn btn-primary" style="padding:10px 20px; font-size:14px;" onclick="startTunnelFromUi()">⚡ Start Cloudflare Tunnel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PIN LOCK MODAL (For Unpaired Mobile Visitors) -->
+  <div id="pinLockModal" class="modal-backdrop" style="display:none;">
+    <div class="modal" style="max-width:340px; text-align:center; padding:24px 20px;">
+      <div style="font-size:36px; margin-bottom:8px;">🔒</div>
+      <h3 style="font-size:18px; margin-bottom:6px;">AI Studio Hub Mobile</h3>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:16px;">
+        Enter the 6-digit PIN shown on your laptop screen to pair your phone.
+      </p>
+      <input id="mobilePinInput" type="number" pattern="[0-9]*" inputmode="numeric" placeholder="6-digit PIN" maxlength="6"
+             style="font-size:26px; text-align:center; letter-spacing:8px; font-weight:800; padding:10px; width:100%; margin-bottom:14px; border-radius:8px; border:1px solid var(--border); background:var(--bg-base); color:var(--text-main); font-family:monospace;"
+             onkeyup="if(event.key==='Enter') submitMobilePin()" />
+      <button class="btn btn-primary" onclick="submitMobilePin()" style="width:100%; padding:12px; font-weight:600; font-size:14px;">Unlock AI Hub</button>
+      <div id="pinErrorMsg" style="color:#ef4444; font-size:12px; margin-top:10px; display:none;">Invalid PIN. Please check your laptop screen.</div>
+    </div>
+  </div>
+
+  <!-- MOBILE SIDEBAR BACKDROP -->
+  <div id="mobileSidebarBackdrop" class="mobile-backdrop" onclick="toggleMobileSidebar()"></div>
+
+  <!-- TOP TELEMETRY & LIVE CREDITS BAR (UNCLUTTERED) -->
+  <header class="topbar">
+    <div class="brand">
+      <button id="mobileMenuBtn" class="btn mobile-only-btn" style="display:none; font-size:18px; padding:4px 8px; margin-right:4px;" onclick="toggleMobileSidebar()" title="Toggle Sidebar">☰</button>
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div style="font-weight:700; font-size:15px; color:var(--text-main);">AI Studio Hub</div>
+        <div style="font-size:10.5px; color:var(--text-muted); font-weight:500;">Antigravity + Codex Unified</div>
+      </div>
+    </div>
+
+    <!-- CENTER ACTIVE ENGINE INDICATOR & LIVE QUOTAS (UNCLUTTERED) -->
+    <div class="topbar-center">
+      <div id="topActiveEngineBadge" class="top-engine-badge auto" onclick="cycleEngineMode()" title="Active Engine. Click to toggle between Auto-Pilot, Antigravity, and Codex.">
+        <span>⚡ Auto-Pilot</span>
+        <span class="badge-sub">Routing to Flash</span>
+      </div>
+
+      <div class="quota-summary-wrapper">
+        <button id="quotaPillBtn" class="quota-summary-pill" onclick="toggleQuotaPopover(event)" title="Click to view live quota balances and reset countdowns">
+          <span class="quota-pill-dot" id="agyLiveDot">●</span>
+          <span id="quotaPillText">Quotas: Loading...</span>
+          <span class="quota-pill-chevron">▾</span>
+        </button>
+
+        <div id="quotaPopover" class="quota-popover" style="display:none;" onclick="event.stopPropagation()">
+          <div class="popover-header">
+            <span>⚡ Live Credits & Quotas</span>
+            <button class="popover-close" onclick="toggleQuotaPopover(event)">✕</button>
+          </div>
+          <div class="popover-section-title">
+            <span>🌌 Antigravity Models</span>
+            <span id="agyStatusBadge" style="font-size:10px; color:#10b981;">● Connected</span>
+          </div>
+          <div id="agyQuotaPills" class="popover-pills-list"></div>
+
+          <div class="popover-section-title" style="margin-top:6px;">
+            <span>🟢 OpenAI Codex</span>
+            <span id="codexPlanBadge" class="badge codex">PLUS</span>
+          </div>
+          <div class="popover-codex-grid">
+            <div class="popover-quota-item" id="codex5hWrap">
+              <div class="quota-item-header"><span>5-Hour Limit</span><span id="codex5hPct">--%</span></div>
+              <div class="quota-bar"><div id="codex5hBar" class="quota-fill" style="width:50%; background:var(--codex-accent);"></div></div>
+            </div>
+            <div class="popover-quota-item" id="codex7dWrap">
+              <div class="quota-item-header"><span>7-Day Weekly</span><span id="codex7dPct">--%</span></div>
+              <div class="quota-bar"><div id="codex7dBar" class="quota-fill" style="width:50%; background:var(--codex-accent);"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="selector-group" title="When in Auto-Pilot mode, automatically switch models/engines if remaining quota falls below this percentage">
+        <span class="selector-label">Auto-Switch &lt;</span>
+        <select id="thresholdSelect" onchange="updateSettings()">
+          <option value="5">5%</option>
+          <option value="12" selected>12%</option>
+          <option value="20">20%</option>
+          <option value="30">30%</option>
+        </select>
+      </div>
+      <button id="mobileModalBtn" class="btn btn-primary" onclick="openMobileModal()" title="Control AI Studio Hub from your phone via Cloudflare Tunnel">📱 Phone App</button>
+      <button id="themeToggleBtn" class="btn" onclick="toggleTheme()" title="Toggle Light / Dark Mode">☀️ Light</button>
+      <button class="btn" onclick="refreshStatus(true)" title="Force Sync All Chats, Projects & Live Credits">🔄 Sync</button>
+      <button class="btn" onclick="toggleRightDrawer()" title="Toggle Workspace Files & Session Bridge">🗂️ Files</button>
+    </div>
+  </header>
+
+  <!-- MAIN 3-COLUMN WORKSPACE -->
+  <div id="workspaceGrid" class="workspace">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="section-header">
+          <span>Project / Working Directory</span>
+          <span id="projCountBadge" style="color:var(--text-dim)">0</span>
+        </div>
+        <select id="projectSelect" class="project-select-box" onchange="onProjectChange()"></select>
+        <div class="cwd-pill" title="Current Working Directory">
+          <span id="activeCwdText">All Projects</span>
+        </div>
+        <div class="project-buttons">
+          <button class="btn" onclick="openProjectModal()">＋ Add Folder</button>
+          <button class="btn" onclick="browseAndAddQuick()">📂 Browse...</button>
+        </div>
+      </div>
+
+      <!-- Source Filter & Search Bar for All Existing Chats -->
+      <div class="filter-bar">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
+            Chats (<span id="chatCountLabel">0</span>)
+          </span>
+          <button class="btn btn-primary" style="padding:4px 10px; font-size:11.5px;" onclick="createNewThread()">＋ New Chat</button>
+        </div>
+
+        <div class="source-pills">
+          <button id="srcAll" class="src-pill active" onclick="setSourceFilter('all')">All</button>
+          <button id="srcAgy" class="src-pill" onclick="setSourceFilter('antigravity')">🌌 AGY</button>
+          <button id="srcCodex" class="src-pill" onclick="setSourceFilter('codex')">🟢 Codex</button>
+          <button id="srcVsc" class="src-pill" onclick="setSourceFilter('vscode')">💠 VS Code</button>
+        </div>
+
+        <input
+          id="threadSearchInput"
+          class="search-input"
+          type="text"
+          placeholder="🔍 Search existing chats (Paper 4, VCWG, French...)"
+          oninput="renderThreads()"
+        />
+      </div>
+
+      <div id="threadsList" class="threads-list"></div>
+    </aside>
+
+    <!-- CENTER CHAT AREA -->
+    <main class="main-area">
+      <!-- Engine, Model, Effort & Mode Ribbon -->
+      <div class="engine-ribbon">
+        <div class="engine-tabs">
+          <button id="tabAuto" class="engine-tab auto active" onclick="setEngineMode('auto')">
+            ⚡ Auto-Pilot <span style="font-size:10px; opacity:0.8;">(Smart Switch)</span>
+          </button>
+          <button id="tabAgy" class="engine-tab antigravity" onclick="setEngineMode('antigravity')">
+            🌌 Antigravity
+          </button>
+          <button id="tabCodex" class="engine-tab codex" onclick="setEngineMode('codex')">
+            🟢 OpenAI Codex
+          </button>
+        </div>
+
+        <div class="model-selectors">
+          <div id="autoRouteNotice" class="auto-route-notice">
+            <span>⚡ Auto-Pilot: routing next prompt to <b id="autoRouteTargetText">🌌 Antigravity (Flash)</b></span>
+          </div>
+
+          <div id="agySelectorGroup" class="selector-group agy" style="display:none;">
+            <span class="selector-label agy">🌌 Model:</span>
+            <select id="agyModelSelect" onchange="onAgyModelChange()"></select>
+            <span class="selector-label">Effort:</span>
+            <select id="agyEffortSelect" onchange="onAgyEffortChange()">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+
+          <div id="codexSelectorGroup" class="selector-group codex" style="display:none;">
+            <span class="selector-label codex">🟢 Model:</span>
+            <select id="codexModelSelect" onchange="updateSettings()"></select>
+            <span class="selector-label">Effort:</span>
+            <select id="codexEffortSelect" onchange="updateSettings()">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high" selected>High</option>
+              <option value="xhigh">Extra High</option>
+              <option value="max">Max</option>
+              <option value="ultra">Ultra</option>
+            </select>
+          </div>
+
+          <div class="selector-group">
+            <span class="selector-label">Mode:</span>
+            <select id="execModeSelect" onchange="updateSettings()">
+              <option value="agent" selected>🛠️ Agent (Edit & Run)</option>
+              <option value="plan">📐 Plan (Read-Only)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages Stream -->
+      <div id="chatScroll" class="chat-scroll"></div>
+
+      <!-- Composer -->
+      <div class="composer-wrap">
+        <div class="composer-box">
+          <div id="composerActiveEngineBar" class="composer-active-engine-bar"></div>
+          <div id="attachmentsPreview" class="attachments-preview"></div>
+          <textarea
+            id="promptInput"
+            class="composer-textarea"
+            placeholder="Type your message..."
+            onkeydown="handleComposerKeydown(event)"
+          ></textarea>
+          <div class="composer-footer">
+            <div class="composer-left-tools">
+              <input id="fileInput" type="file" multiple style="display:none" onchange="handleFileSelect(event)" />
+              <button class="btn" onclick="document.getElementById('fileInput').click()">📎 Attach Files / Drag & Drop</button>
+              <span id="liveStatusText" style="color:var(--text-muted); font-size:12px;">Ready • All existing AGY, Codex & VS Code chats synced</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button id="stopBtn" class="btn" style="display:none; border-color:var(--danger); color:#fca5a5;" onclick="stopActiveTurn()">⏹ Stop</button>
+              <button id="sendBtn" class="btn btn-primary" onclick="sendMessage()">Send Prompt ↵</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT DRAWER: WORKSPACE FILES & SHARED BRAIN -->
+    <aside id="rightDrawer" class="right-drawer">
+      <div class="drawer-tabs">
+        <button id="dtabFiles" class="drawer-tab active" onclick="switchDrawerTab('files')">📁 Workspace Files</button>
+        <button id="dtabBrain" class="drawer-tab" onclick="switchDrawerTab('brain')">🧠 Session Bridge</button>
+      </div>
+      <div id="drawerFilesPane" class="drawer-content">
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:8px;">Click any file in the active working directory to attach it:</div>
+        <div id="workspaceFilesList"></div>
+      </div>
+      <div id="drawerBrainPane" class="drawer-content" style="display:none;">
+        <div style="font-size:11.5px; color:var(--text-muted); line-height:1.5; margin-bottom:10px;">
+          Whether a chat started in <b>VS Code</b>, <b>Codex Desktop</b>, or <b>Antigravity</b>, AI Studio Hub links both session IDs, detects active file locks, and bridges full conversation + Git history whenever you switch engines.
+        </div>
+        <div class="form-row" style="margin-bottom:10px;">
+          <label style="font-size:11px; color:var(--text-muted); font-weight:600;">Codex CLI Runtime Binary:</label>
+          <select id="codexBinSelect" onchange="updateSettings()" style="font-size:11.5px; padding:6px;"></select>
+        </div>
+        <div id="brainSummaryBox" style="background:var(--bg-card); border:1px solid var(--border); padding:10px; border-radius:8px; font-size:11.5px; white-space:pre-wrap; font-family:monospace;"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    let HUB_TOKEN = ("__HUB_TOKEN__" !== "__" + "HUB_TOKEN__" && "__HUB_TOKEN__") ? "__HUB_TOKEN__" : (localStorage.getItem('ai_hub_token') || "");
+    if (HUB_TOKEN && HUB_TOKEN !== "__" + "HUB_TOKEN__") {
+      try { localStorage.setItem('ai_hub_token', HUB_TOKEN); } catch {}
+    }
+
+    async function apiFetch(url, options = {}) {
+      const headers = Object.assign({}, options.headers || {}, {
+        'X-Hub-Token': HUB_TOKEN
+      });
+      if (options.body && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+      return fetch(url, Object.assign({}, options, { headers }));
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (!HUB_TOKEN) {
+        const pinModal = document.getElementById('pinLockModal');
+        if (pinModal) pinModal.style.display = 'flex';
+      }
+    });
+
+    async function submitMobilePin() {
+      const input = document.getElementById('mobilePinInput');
+      const errEl = document.getElementById('pinErrorMsg');
+      const pin = (input.value || '').trim();
+      if (!pin || pin.length !== 6) {
+        errEl.textContent = 'Please enter a 6-digit PIN.';
+        errEl.style.display = 'block';
+        return;
+      }
+      try {
+        const res = await fetch('/api/verify-pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin })
+        });
+        const data = await res.json();
+        if (data.ok && data.token) {
+          HUB_TOKEN = data.token;
+          try { localStorage.setItem('ai_hub_token', HUB_TOKEN); } catch {}
+          document.getElementById('pinLockModal').style.display = 'none';
+          errEl.style.display = 'none';
+          refreshStatus(true);
+        } else {
+          errEl.textContent = data.error || 'Invalid PIN. Please check your laptop screen.';
+          errEl.style.display = 'block';
+        }
+      } catch (e) {
+        errEl.textContent = 'Connection error: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    let hubData = {
+      antigravity: { models: [], pools: [] },
+      codex: { models: [], fiveHourWindow: {}, weeklyWindow: {} },
+      codexBinaries: [],
+      codexBinaryInUse: null,
+      state: { projects: [], threads: [], settings: {} }
+    };
+
+    let activeProjectId = 'ALL';
+    let activeSourceFilter = 'all';
+    let activeThreadId = null;
+    let activeThreadOpenElsewhere = false;
+    let currentEngineMode = 'auto';
+    const threadEngineChoices = new Map();
+    let engineSaveQueue = Promise.resolve();
+    let pendingAttachments = [];
+    const runningThreadIds = new Set();
+    const threadStreams = new Map(); // threadId -> { userPrompt, accumulatedText, statusText, badgeHtml, engine }
+    let visibleMessageLimit = 60;
+
+    function isThreadRunning(id) {
+      return id ? runningThreadIds.has(id) : false;
+    }
+
+    function colorForPct(pct) {
+      if (pct == null) return '#7c5cff';
+      if (pct <= 15) return '#ef4444';
+      if (pct <= 35) return '#f59e0b';
+      return '#10b981';
+    }
+
+    function formatResetTime(iso) {
+      if (!iso) return '';
+      const diffMs = new Date(iso).getTime() - Date.now();
+      if (diffMs <= 0) return 'reset';
+      const hrs = Math.floor(diffMs / 3600000);
+      const mins = Math.floor((diffMs % 3600000) / 60000);
+      if (hrs > 24) return `${Math.floor(hrs / 24)}d ${hrs % 24}h`;
+      if (hrs > 0) return `${hrs}h ${mins}m`;
+      return `${mins}m`;
+    }
+
+    function initTheme() {
+      const savedTheme = localStorage.getItem('hub_theme') || 'light';
+      if (savedTheme === 'dark') {
+        document.body.classList.add('dark-theme');
+      } else {
+        document.body.classList.remove('dark-theme');
+      }
+      updateThemeButton();
+    }
+
+    function toggleTheme() {
+      const isDark = document.body.classList.toggle('dark-theme');
+      try {
+        localStorage.setItem('hub_theme', isDark ? 'dark' : 'light');
+      } catch {}
+      updateThemeButton();
+    }
+
+    function updateThemeButton() {
+      const btn = document.getElementById('themeToggleBtn');
+      if (!btn) return;
+      const isDark = document.body.classList.contains('dark-theme');
+      btn.innerHTML = isDark ? '🌙 Dark' : '☀️ Light';
+      btn.title = isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme';
+    }
+
+    function setPromptAndFocus(text) {
+      const input = document.getElementById('promptInput');
+      if (!input) return;
+      input.value = text;
+      input.focus();
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+    }
+
+    async function initHub() {
+      initTheme();
+      await refreshStatus(false);
+      setupDragAndDrop();
+      startLiveWatchers();
+
+      let savedThreadId = null;
+      try {
+        savedThreadId = localStorage.getItem('hub_active_thread_id');
+      } catch {}
+      const threads = hubData.state.threads || [];
+      if (savedThreadId && threads.some(t => t.id === savedThreadId)) {
+        await selectThread(savedThreadId);
+      } else if (threads.length > 0 && !activeThreadId) {
+        await selectThread(threads[0].id);
+      }
+    }
+
+    function startLiveWatchers() {
+      // 1. Live tailing of the active chat (every 2s) so updates in VS Code / Codex / Antigravity stream in automatically
+      setInterval(async () => {
+        if (isThreadRunning(activeThreadId) || !activeThreadId || document.hidden) return;
+        try {
+          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(activeThreadId)}&checkOnly=1`);
+          if (!res.ok) return;
+          const data = await res.json();
+          const lockChanged = Boolean(data.openElsewhere) !== activeThreadOpenElsewhere;
+          activeThreadOpenElsewhere = Boolean(data.openElsewhere);
+          if (data.changed && data.thread) {
+            const idx = hubData.state.threads.findIndex(t => t.id === activeThreadId);
+            if (idx !== -1) hubData.state.threads[idx] = data.thread;
+            const scrollEl = document.getElementById('chatScroll');
+            const nearBottom = (scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight) < 180;
+            renderActiveChat(nearBottom);
+            document.getElementById('liveStatusText').textContent = '🟢 Live update received from native session';
+          } else if (lockChanged) {
+            renderActiveChat(false);
+          }
+        } catch {}
+      }, 2000);
+
+      // 2. Background quota & new-thread sync every 12s
+      setInterval(() => {
+        if (runningThreadIds.size === 0 && !document.hidden) refreshStatus(false);
+      }, 12000);
+    }
+
+    async function refreshStatus(force = false) {
+      try {
+        const res = await apiFetch(force ? '/api/status?force=1' : '/api/status');
+        if (!res.ok) return;
+        const incoming = await res.json();
+
+        // Preserve any in-flight or client-side thread choices so polling never reverts them
+        if (incoming.state && Array.isArray(incoming.state.threads)) {
+          for (const newT of incoming.state.threads) {
+            const existing = (hubData.state.threads || []).find(t => t.id === newT.id);
+            if (existing && existing.engineMode && !newT.engineMode) {
+              newT.engineMode = existing.engineMode;
+            }
+          }
+        }
+        hubData = incoming;
+
+        const s = hubData.state.settings || {};
+        restoreEngineMode();
+        document.getElementById('thresholdSelect').value = String(s.autoSwitchThresholdPct || 12);
+        document.getElementById('agyEffortSelect').value = s.agyEffort || 'medium';
+        document.getElementById('codexEffortSelect').value = s.codexEffort || 'high';
+        document.getElementById('execModeSelect').value = s.executionMode || 'agent';
+
+        renderTopQuotas();
+        renderModelSelectors();
+        renderCodexBinarySelector();
+        setEngineModeUI(currentEngineMode);
+        renderProjects();
+
+        // Automatically re-attach to any active turns running on the server (e.g. after browser refresh or new tab)
+        const serverTurns = incoming.activeTurns || {};
+        for (const [tid, turn] of Object.entries(serverTurns)) {
+          if (!runningThreadIds.has(tid)) {
+            reattachTurnStream(turn);
+          }
+        }
+
+        renderThreads();
+      } catch (e) {
+        console.error('Status error:', e);
+      }
+    }
+
+    function toggleQuotaPopover(e) {
+      if (e) e.stopPropagation();
+      const popover = document.getElementById('quotaPopover');
+      if (!popover) return;
+      const isOpen = popover.style.display !== 'none';
+      popover.style.display = isOpen ? 'none' : 'flex';
+      const chevron = document.querySelector('.quota-pill-chevron');
+      if (chevron) chevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+    }
+
+    document.addEventListener('click', (e) => {
+      const popover = document.getElementById('quotaPopover');
+      const pillBtn = document.getElementById('quotaPillBtn');
+      if (popover && popover.style.display !== 'none') {
+        if (!popover.contains(e.target) && (!pillBtn || !pillBtn.contains(e.target))) {
+          popover.style.display = 'none';
+          const chevron = document.querySelector('.quota-pill-chevron');
+          if (chevron) chevron.style.transform = 'rotate(0deg)';
+        }
+      }
+    });
+
+    function cycleEngineMode() {
+      if (currentEngineMode === 'auto') setEngineMode('antigravity');
+      else if (currentEngineMode === 'antigravity') setEngineMode('codex');
+      else setEngineMode('auto');
+    }
+
+    function updateTopEngineBadge() {
+      const badgeEl = document.getElementById('topActiveEngineBadge');
+      if (!badgeEl) return;
+      const mode = currentEngineMode || 'auto';
+      badgeEl.className = `top-engine-badge ${mode}`;
+
+      const agyModelEl = document.getElementById('agyModelSelect');
+      const codexModelEl = document.getElementById('codexModelSelect');
+      const agyLabel = agyModelEl?.options[agyModelEl.selectedIndex]?.text?.replace(/\s*\[.*\]$/, '') || 'Gemini 3.8 Flash';
+      const codexLabel = codexModelEl?.options[codexModelEl.selectedIndex]?.text || 'GPT-6.1 Sol';
+
+      const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
+      const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
+      const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+
+      if (mode === 'antigravity') {
+        badgeEl.innerHTML = `<span>🌌 Antigravity</span><span class="badge-sub">${escapeHtml(agyLabel)}</span>`;
+        badgeEl.title = `Active Engine: Antigravity (${agyLabel} • ${flashPct}%). Click to switch to OpenAI Codex.`;
+      } else if (mode === 'codex') {
+        badgeEl.innerHTML = `<span>🟢 OpenAI Codex</span><span class="badge-sub">${escapeHtml(codexLabel)}</span>`;
+        badgeEl.title = `Active Engine: OpenAI Codex (${codexLabel} • ${codexPct}%). Click to switch to Auto-Pilot.`;
+      } else {
+        const autoTarget = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
+        badgeEl.innerHTML = `<span>⚡ Auto-Pilot</span><span class="badge-sub">Routes to ${autoTarget}</span>`;
+        badgeEl.title = `Active Engine: Auto-Pilot (smart routing). Click to switch to Antigravity.`;
+      }
+
+      const autoRouteTargetText = document.getElementById('autoRouteTargetText');
+      if (autoRouteTargetText) {
+        autoRouteTargetText.textContent = flashModel
+          ? `🌌 Antigravity (${flashModel.label} • ${flashPct}%)`
+          : `🟢 OpenAI Codex (${codexPct}%)`;
+      }
+    }
+
+    function renderTopQuotas() {
+      const agy = hubData.antigravity || {};
+      const agyContainer = document.getElementById('agyQuotaPills');
+      const liveDot = document.getElementById('agyLiveDot');
+      if (liveDot) {
+        liveDot.style.color = agy.connected ? '#10b981' : '#f59e0b';
+      }
+
+      const statusBadge = document.getElementById('agyStatusBadge');
+      if (statusBadge) {
+        statusBadge.textContent = agy.connected ? '● Connected' : '● CLI Fallback';
+        statusBadge.style.color = agy.connected ? '#10b981' : '#f59e0b';
+      }
+
+      const pools = agy.pools || [];
+      if (agyContainer) {
+        if (pools.length === 0) {
+          agyContainer.innerHTML = `<span style="color:var(--text-muted); font-size:12px;">CLI Fallback Ready</span>`;
+        } else {
+          agyContainer.innerHTML = pools.map(p => {
+            const pct = p.remainingPct != null ? p.remainingPct : 0;
+            const rst = formatResetTime(p.resetTime);
+            const isEmpty = pct === 0;
+            return `
+              <div class="popover-quota-item" title="${p.family} • ${pct}% remaining${rst ? ' • Resets in ' + rst : ''}" style="${isEmpty ? 'border-color:rgba(239, 68, 68, 0.35); background:rgba(239, 68, 68, 0.04);' : ''}">
+                <div class="quota-item-header">
+                  <span style="${isEmpty ? 'color:#ef4444; font-weight:700;' : 'color:var(--text-main); font-weight:600;'}">${escapeHtml(p.family)}</span>
+                  <span class="quota-pct" style="${isEmpty ? 'color:#ef4444; font-weight:700;' : ''}">${pct}%</span>
+                </div>
+                <div class="quota-bar">
+                  <div class="quota-fill" style="width:${pct}%; background:${colorForPct(pct)};"></div>
+                </div>
+                ${rst ? `<div style="font-size:10px; color:${isEmpty ? '#ef4444' : 'var(--text-muted)'}; margin-top:2px;">${isEmpty ? '⚠️ Exhausted — resets in ' + rst : 'Resets in ' + rst}</div>` : ''}
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      const cx = hubData.codex || {};
+      const w5 = cx.fiveHourWindow || { remainingPct: 100 };
+      const w7 = cx.weeklyWindow || { remainingPct: 100 };
+
+      const codexPlan = document.getElementById('codexPlanBadge');
+      if (codexPlan) codexPlan.textContent = (cx.planType || 'PLUS').toUpperCase();
+
+      const c5Pct = document.getElementById('codex5hPct');
+      if (c5Pct) c5Pct.textContent = `${w5.remainingPct}%${w5.estimated ? '*' : ''}`;
+      const c5Bar = document.getElementById('codex5hBar');
+      if (c5Bar) {
+        c5Bar.style.width = `${w5.remainingPct}%`;
+        c5Bar.style.background = colorForPct(w5.remainingPct);
+      }
+      const c5Wrap = document.getElementById('codex5hWrap');
+      if (c5Wrap) {
+        c5Wrap.title = w5.estimated
+          ? `5-Hour Window: Estimated at 100% until next Codex turn`
+          : `5-Hour Window: ${w5.remainingPct}% remaining (Resets in ${formatResetTime(w5.resetsAt)})`;
+      }
+
+      const c7Pct = document.getElementById('codex7dPct');
+      if (c7Pct) c7Pct.textContent = `${w7.remainingPct}%${w7.estimated ? '*' : ''}`;
+      const c7Bar = document.getElementById('codex7dBar');
+      if (c7Bar) {
+        c7Bar.style.width = `${w7.remainingPct}%`;
+        c7Bar.style.background = colorForPct(w7.remainingPct);
+      }
+      const c7Wrap = document.getElementById('codex7dWrap');
+      if (c7Wrap) {
+        c7Wrap.title = w7.estimated
+          ? `7-Day Weekly Window: Estimated at 100%`
+          : `7-Day Weekly Window: ${w7.remainingPct}% remaining (Resets in ${formatResetTime(w7.resetsAt)})`;
+      }
+
+      // Compact summary pill text
+      const pillTextEl = document.getElementById('quotaPillText');
+      if (pillTextEl) {
+        const flashPool = pools.find(p => p.family.includes('Flash'));
+        const flashPct = flashPool ? (flashPool.remainingPct != null ? Math.round(flashPool.remainingPct) : 0) : null;
+        const codexPct = w5 ? Math.round(w5.remainingPct) : null;
+
+        const parts = [];
+        if (flashPct != null) parts.push(`Flash: ${flashPct}%`);
+        if (codexPct != null) parts.push(`Codex: ${codexPct}%`);
+        pillTextEl.textContent = parts.length > 0 ? parts.join(' • ') : 'Live Quotas';
+      }
+
+      updateTopEngineBadge();
+    }
+
+    function renderModelSelectors() {
+      const s = hubData.state.settings || {};
+
+      const agySelect = document.getElementById('agyModelSelect');
+      const agyModels = hubData.antigravity?.models || [];
+      agySelect.innerHTML = agyModels.map(m => {
+        let pctText = '';
+        if (m.remainingPct === 0) {
+          const rst = formatResetTime(m.resetTime);
+          pctText = rst ? ` [0% • resets in ${rst}]` : ` [0% EMPTY]`;
+        } else if (m.remainingPct != null) {
+          pctText = ` [${m.remainingPct}%]`;
+        }
+        const sel = m.modelId === s.agyModel ? 'selected' : '';
+        return `<option value="${m.modelId}" data-effort="${m.effort || 'medium'}" ${sel}>${m.label}${pctText}</option>`;
+      }).join('');
+
+      const codexSelect = document.getElementById('codexModelSelect');
+      const codexModels = hubData.codex?.models || [];
+      codexSelect.innerHTML = codexModels.map(m => {
+        const sel = m.slug === s.codexModel ? 'selected' : '';
+        return `<option value="${m.slug}" ${sel}>${m.name}</option>`;
+      }).join('');
+    }
+
+    function renderCodexBinarySelector() {
+      const sel = document.getElementById('codexBinSelect');
+      if (!sel) return;
+      const bins = hubData.codexBinaries || [];
+      const current = hubData.state.settings?.codexBinary || '';
+      const activeBinObj = bins.find(b => b.path === hubData.codexBinaryInUse) || bins[0];
+      const autoOpt = `<option value="" ${!current ? 'selected' : ''}>⚡ Auto (Prefer Stable — v${escapeHtml(activeBinObj?.version || 'default')})</option>`;
+      const binOpts = bins.map(b => {
+        const tag = b.stable ? ' [Stable]' : ' [Alpha]';
+        const isSel = current === b.path ? 'selected' : '';
+        return `<option value="${escapeHtml(b.path)}" ${isSel}>v${escapeHtml(b.version)}${tag} — ${escapeHtml(b.source)}</option>`;
+      }).join('');
+      sel.innerHTML = autoOpt + binOpts;
+    }
+
+    function onAgyModelChange() {
+      const sel = document.getElementById('agyModelSelect');
+      const opt = sel.options[sel.selectedIndex];
+      if (opt && opt.dataset.effort) {
+        document.getElementById('agyEffortSelect').value = opt.dataset.effort;
+      }
+      updateSettings();
+    }
+
+    function onAgyEffortChange() {
+      const effort = document.getElementById('agyEffortSelect').value;
+      const sel = document.getElementById('agyModelSelect');
+      const currentVal = sel.value || '';
+      const targetVal = currentVal.replace(/-(low|medium|high)$/i, `-${effort}`);
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === targetVal) {
+          sel.selectedIndex = i;
+          break;
+        }
+      }
+      updateSettings();
+    }
+
+    function getThreadEngine(thread) {
+      if (!thread) return hubData.state.settings?.defaultEngine || 'auto';
+      if (threadEngineChoices.has(thread.id)) {
+        return threadEngineChoices.get(thread.id).mode;
+      }
+      try {
+        const local = localStorage.getItem(`thread_engine_${thread.id}`);
+        if (local && (local === 'auto' || local === 'antigravity' || local === 'codex')) {
+          return local;
+        }
+      } catch {}
+      if (thread.engineMode && (thread.engineMode === 'auto' || thread.engineMode === 'antigravity' || thread.engineMode === 'codex')) {
+        return thread.engineMode;
+      }
+      if (thread.origin === 'antigravity' || (thread.agyConversationId && !thread.codexSessionId)) {
+        return 'antigravity';
+      }
+      if (thread.origin === 'codex' || thread.origin === 'vscode' || (thread.codexSessionId && !thread.agyConversationId)) {
+        return 'codex';
+      }
+      return hubData.state.settings?.defaultEngine || 'auto';
+    }
+
+    function restoreEngineMode() {
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      currentEngineMode = getThreadEngine(thread);
+      setEngineModeUI(currentEngineMode);
+
+      if (thread) {
+        if (thread.agyModel && document.getElementById('agyModelSelect')) {
+          document.getElementById('agyModelSelect').value = thread.agyModel;
+        }
+        if (thread.agyEffort && document.getElementById('agyEffortSelect')) {
+          document.getElementById('agyEffortSelect').value = thread.agyEffort;
+        }
+        if (thread.codexModel && document.getElementById('codexModelSelect')) {
+          document.getElementById('codexModelSelect').value = thread.codexModel;
+        }
+        if (thread.codexEffort && document.getElementById('codexEffortSelect')) {
+          document.getElementById('codexEffortSelect').value = thread.codexEffort;
+        }
+      }
+    }
+
+    function setEngineMode(mode) {
+      currentEngineMode = mode;
+      setEngineModeUI(mode);
+      if (!activeThreadId) {
+        hubData.state.settings.defaultEngine = mode;
+        updateSettings();
+        return;
+      }
+      const threadId = activeThreadId;
+      const thread = (hubData.state.threads || []).find(t => t.id === threadId);
+      if (thread) thread.engineMode = mode;
+      threadEngineChoices.set(threadId, { mode });
+      try {
+        localStorage.setItem(`thread_engine_${threadId}`, mode);
+      } catch {}
+      renderThreads();
+
+      const previousChoice = threadEngineChoices.get(threadId);
+      const choice = { mode };
+      engineSaveQueue = engineSaveQueue.then(async () => {
+        try {
+          const res = await apiFetch('/api/thread/settings', {
+            method: 'POST',
+            body: JSON.stringify({ threadId, engineMode: mode })
+          });
+          if (!res.ok) throw new Error((await res.json()).error || 'Could not save engine choice');
+          const data = await res.json();
+          if (thread) thread.engineMode = data.engineMode;
+        } catch (err) {
+          console.error('[Hub] Failed to save thread engine mode:', err);
+          if (threadEngineChoices.get(threadId) === choice) {
+            if (previousChoice) threadEngineChoices.set(threadId, previousChoice);
+            else threadEngineChoices.delete(threadId);
+            if (activeThreadId === threadId) {
+              restoreEngineMode();
+              document.getElementById('liveStatusText').textContent = err.message;
+            }
+          }
+        }
+      });
+    }
+
+    function setEngineModeUI(mode) {
+      document.getElementById('tabAuto').classList.toggle('active', mode === 'auto');
+      document.getElementById('tabAgy').classList.toggle('active', mode === 'antigravity');
+      document.getElementById('tabCodex').classList.toggle('active', mode === 'codex');
+
+      const agyGroup = document.getElementById('agySelectorGroup');
+      const codexGroup = document.getElementById('codexSelectorGroup');
+      const autoNotice = document.getElementById('autoRouteNotice');
+
+      if (mode === 'antigravity') {
+        if (agyGroup) agyGroup.style.display = 'flex';
+        if (codexGroup) codexGroup.style.display = 'none';
+        if (autoNotice) autoNotice.style.display = 'none';
+      } else if (mode === 'codex') {
+        if (agyGroup) agyGroup.style.display = 'none';
+        if (codexGroup) codexGroup.style.display = 'flex';
+        if (autoNotice) autoNotice.style.display = 'none';
+      } else {
+        if (agyGroup) agyGroup.style.display = 'none';
+        if (codexGroup) codexGroup.style.display = 'none';
+        if (autoNotice) autoNotice.style.display = 'inline-flex';
+      }
+
+      updateTopEngineBadge();
+      updateComposerEngineUI(mode);
+
+      // If landing hero cards are present, update their active state
+      document.querySelectorAll('.hero-engine-card').forEach((card, idx) => {
+        const modes = ['auto', 'antigravity', 'codex'];
+        card.classList.toggle('active', modes[idx] === mode);
+      });
+    }
+
+    function updateComposerEngineUI(mode) {
+      const barEl = document.getElementById('composerActiveEngineBar');
+      const sendBtn = document.getElementById('sendBtn');
+      const promptInput = document.getElementById('promptInput');
+      if (!barEl) return;
+
+      const currentMode = mode || currentEngineMode || 'auto';
+      const agyModelEl = document.getElementById('agyModelSelect');
+      const codexModelEl = document.getElementById('codexModelSelect');
+      const agyOpt = agyModelEl?.options[agyModelEl.selectedIndex];
+      const codexOpt = codexModelEl?.options[codexModelEl.selectedIndex];
+
+      const agyLabel = agyOpt ? agyOpt.text.replace(/\s*\[.*\]$/, '') : 'Gemini 3.8 Flash';
+      const codexLabel = codexOpt ? codexOpt.text : 'GPT-6.1 Sol';
+
+      const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
+      const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
+      const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+
+      const switcherHtml = `
+        <div class="engine-switcher-btns">
+          <button class="btn-xs ${currentMode === 'auto' ? 'active' : ''}" onclick="setEngineMode('auto')" title="Smart quota-based switching">⚡ Auto</button>
+          <button class="btn-xs ${currentMode === 'antigravity' ? 'active' : ''}" onclick="setEngineMode('antigravity')" title="Direct Antigravity turn">🌌 AGY</button>
+          <button class="btn-xs ${currentMode === 'codex' ? 'active' : ''}" onclick="setEngineMode('codex')" title="Direct OpenAI Codex turn">🟢 Codex</button>
+        </div>
+      `;
+
+      if (currentMode === 'antigravity') {
+        const curAgy = (hubData.antigravity?.models || []).find(m => m.modelId === agyModelEl?.value);
+        const curPct = curAgy?.remainingPct != null ? Math.round(curAgy.remainingPct) : flashPct;
+        barEl.innerHTML = `
+          <div class="composer-engine-pill antigravity" onclick="setEngineMode('codex')" title="Currently targeting Antigravity. Click to switch to Codex.">
+            🌌 Active Engine: <b>Antigravity</b> (${escapeHtml(agyLabel)}) • <b>${curPct}%</b> quota
+          </div>
+          ${switcherHtml}
+        `;
+        if (sendBtn) {
+          sendBtn.textContent = 'Send to Antigravity ↵';
+          sendBtn.style.background = 'linear-gradient(135deg, #7c5cff, #6366f1)';
+        }
+        if (promptInput) promptInput.placeholder = `Message Antigravity (${agyLabel})...`;
+      } else if (currentMode === 'codex') {
+        barEl.innerHTML = `
+          <div class="composer-engine-pill codex" onclick="setEngineMode('auto')" title="Currently targeting OpenAI Codex. Click to switch to Auto-Pilot.">
+            🟢 Active Engine: <b>OpenAI Codex</b> (${escapeHtml(codexLabel)}) • <b>${codexPct}%</b> 5h window
+          </div>
+          ${switcherHtml}
+        `;
+        if (sendBtn) {
+          sendBtn.textContent = 'Send to Codex ↵';
+          sendBtn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+        }
+        if (promptInput) promptInput.placeholder = `Message OpenAI Codex (${codexLabel})...`;
+      } else {
+        // Auto-Pilot
+        const autoTarget = flashModel ? `🌌 Antigravity (${flashModel.label} • ${flashPct}%)` : `🟢 Codex (${codexPct}%)`;
+        barEl.innerHTML = `
+          <div class="composer-engine-pill auto" onclick="setEngineMode('antigravity')" title="Auto-Pilot dynamically routes to the engine with quota.">
+            ⚡ Active Engine: <b>Auto-Pilot</b> (Next turn → ${autoTarget})
+          </div>
+          ${switcherHtml}
+        `;
+        if (sendBtn) {
+          sendBtn.textContent = 'Send via Auto-Pilot ↵';
+          sendBtn.style.background = 'linear-gradient(135deg, #38bdf8, #0284c7)';
+        }
+        if (promptInput) promptInput.placeholder = 'Message via Auto-Pilot (smart auto-switching)...';
+      }
+    }
+
+    async function updateSettings() {
+      const payload = {
+        autoSwitchThresholdPct: Number(document.getElementById('thresholdSelect').value),
+        agyModel: document.getElementById('agyModelSelect').value,
+        agyEffort: document.getElementById('agyEffortSelect').value,
+        codexModel: document.getElementById('codexModelSelect').value,
+        codexEffort: document.getElementById('codexEffortSelect').value,
+        executionMode: document.getElementById('execModeSelect').value,
+        codexBinary: document.getElementById('codexBinSelect')?.value || null
+      };
+      if (!activeThreadId) payload.defaultEngine = currentEngineMode;
+      updateComposerEngineUI(currentEngineMode);
+      await apiFetch('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (activeThreadId) {
+        const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+        if (thread) {
+          thread.agyModel = payload.agyModel;
+          thread.agyEffort = payload.agyEffort;
+          thread.codexModel = payload.codexModel;
+          thread.codexEffort = payload.codexEffort;
+          apiFetch('/api/thread/settings', {
+            method: 'POST',
+            body: JSON.stringify({
+              threadId: activeThreadId,
+              engineMode: currentEngineMode,
+              agyModel: payload.agyModel,
+              agyEffort: payload.agyEffort,
+              codexModel: payload.codexModel,
+              codexEffort: payload.codexEffort
+            })
+          }).catch(() => {});
+        }
+      }
+    }
+
+    function renderProjects() {
+      const projs = hubData.state.projects || [];
+      document.getElementById('projCountBadge').textContent = `${projs.length} folders`;
+      const sel = document.getElementById('projectSelect');
+
+      const allOption = `<option value="ALL" ${activeProjectId === 'ALL' ? 'selected' : ''}>🌐 All Projects (${(hubData.state.threads || []).length} chats)</option>`;
+      const projOptions = projs.map(p => {
+        const srcTags = (p.sources && p.sources.length) ? ` [${p.sources.join('/')}]` : '';
+        return `<option value="${p.id}" ${p.id === activeProjectId ? 'selected' : ''}>📁 ${escapeHtml(p.name)}${escapeHtml(srcTags)}</option>`;
+      }).join('');
+
+      sel.innerHTML = allOption + projOptions;
+      updateActiveCwdDisplay();
+    }
+
+    function updateActiveCwdDisplay() {
+      const projs = hubData.state.projects || [];
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      if (activeProjectId !== 'ALL') {
+        const p = projs.find(x => x.id === activeProjectId);
+        if (p) {
+          document.getElementById('activeCwdText').textContent = p.path;
+          loadWorkspaceFiles(p.path);
+          return;
+        }
+      }
+      if (thread && thread.projectPath) {
+        document.getElementById('activeCwdText').textContent = thread.projectPath;
+        loadWorkspaceFiles(thread.projectPath);
+      } else if (projs[0]) {
+        document.getElementById('activeCwdText').textContent = projs[0].path;
+        loadWorkspaceFiles(projs[0].path);
+      }
+    }
+
+    function onProjectChange() {
+      activeProjectId = document.getElementById('projectSelect').value;
+      activeThreadId = null;
+      renderThreads();
+      updateActiveCwdDisplay();
+    }
+
+    function setSourceFilter(src) {
+      activeSourceFilter = src;
+      document.getElementById('srcAll').classList.toggle('active', src === 'all');
+      document.getElementById('srcAgy').classList.toggle('active', src === 'antigravity');
+      document.getElementById('srcCodex').classList.toggle('active', src === 'codex');
+      document.getElementById('srcVsc').classList.toggle('active', src === 'vscode');
+      renderThreads();
+    }
+
+    function getFilteredThreads() {
+      const allThreads = hubData.state.threads || [];
+      const q = (document.getElementById('threadSearchInput')?.value || '').trim().toLowerCase();
+
+      return allThreads.filter(t => {
+        if (activeProjectId !== 'ALL' && t.projectId !== activeProjectId) return false;
+        if (activeSourceFilter !== 'all') {
+          if (activeSourceFilter === 'antigravity' && t.origin !== 'antigravity' && !t.agyConversationId) return false;
+          if (activeSourceFilter === 'codex' && t.origin !== 'codex') return false;
+          if (activeSourceFilter === 'vscode' && t.origin !== 'vscode') return false;
+        }
+        if (q) {
+          const hay = `${t.title || ''} ${t.projectName || ''} ${t.projectPath || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
+    function renderThreads() {
+      const filtered = getFilteredThreads();
+      document.getElementById('chatCountLabel').textContent = filtered.length;
+
+      const listEl = document.getElementById('threadsList');
+      if (filtered.length === 0) {
+        listEl.innerHTML = `<div style="padding:14px; font-size:12px; color:var(--text-muted); text-align:center;">No matching chats found.<br/>Click <b>＋ New Chat</b> or clear filters.</div>`;
+        renderActiveChat();
+        return;
+      }
+
+      if (!activeThreadId || !filtered.some(t => t.id === activeThreadId)) {
+        activeThreadId = filtered[0].id;
+        selectThread(activeThreadId);
+        return;
+      }
+
+      listEl.innerHTML = filtered.map(t => {
+        const isAct = t.id === activeThreadId ? 'active' : '';
+        const dateStr = t.updatedAt ? new Date(t.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+
+        let metaBadges = [];
+        if (runningThreadIds.has(t.id)) {
+          metaBadges.push(`<span class="badge warn" style="animation: pulse 1.2s infinite; font-weight:700;">⚡ Working…</span>`);
+        }
+        if (t.origin === 'vscode') {
+          metaBadges.push(`<span class="badge vscode" title="Original Session: VS Code">💠 VS Code</span>`);
+        } else if (t.origin === 'hub') {
+          metaBadges.push(`<span class="badge proj" title="Unified AI Studio Hub Session">⚡ Hub</span>`);
+        }
+
+        const engMode = getThreadEngine(t);
+        if (engMode === 'antigravity') {
+          metaBadges.push(`<span class="badge agy" title="Default Engine: Antigravity">🌌 AGY</span>`);
+        } else if (engMode === 'codex') {
+          metaBadges.push(`<span class="badge codex" title="Default Engine: OpenAI Codex">🟢 Codex</span>`);
+        } else {
+          metaBadges.push(`<span class="badge auto" title="Default Engine: Auto-Pilot (Smart Switch)">⚡ Auto</span>`);
+        }
+
+        const projBadge = activeProjectId === 'ALL' && t.projectName
+          ? `<span class="badge proj">📁 ${escapeHtml(t.projectName)}</span>`
+          : '';
+
+        return `
+          <div class="thread-item ${isAct}" onclick="selectThread('${t.id}')">
+            <div class="thread-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title || 'Untitled Session')}</div>
+            <div class="thread-meta">
+              ${metaBadges.join(' ')}
+              ${projBadge}
+              <span>${dateStr}</span>
+            </div>
+            <button class="thread-del" onclick="deleteThread(event, '${t.id}')" title="Hide from Hub (keeps native history intact)">✕</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function selectThread(id) {
+      activeThreadId = id;
+      try {
+        localStorage.setItem('hub_active_thread_id', id);
+      } catch {}
+      if (window.innerWidth <= 768) {
+        const sb = document.querySelector('.sidebar');
+        const bd = document.getElementById('mobileSidebarBackdrop');
+        if (sb && sb.classList.contains('open')) {
+          sb.classList.remove('open');
+          if (bd) bd.classList.remove('open');
+        }
+      }
+      restoreEngineMode();
+      visibleMessageLimit = 60;
+      activeThreadOpenElsewhere = false;
+      renderThreads();
+      updateActiveCwdDisplay();
+
+      try {
+        document.getElementById('liveStatusText').textContent = 'Syncing native transcript...';
+        const res = await apiFetch(`/api/thread?id=${encodeURIComponent(id)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (activeThreadId !== id) return;
+          activeThreadOpenElsewhere = Boolean(data.openElsewhere);
+          if (data.thread) {
+            const idx = hubData.state.threads.findIndex(t => t.id === id);
+            if (idx !== -1) {
+              const currentT = hubData.state.threads[idx];
+              if (!data.thread.engineMode && currentT.engineMode) {
+                data.thread.engineMode = currentT.engineMode;
+              }
+              hubData.state.threads[idx] = data.thread;
+            }
+          }
+        }
+      } catch {}
+      if (activeThreadId !== id) return;
+      const isRunning = isThreadRunning(id);
+      document.getElementById('sendBtn').disabled = isRunning;
+      document.getElementById('stopBtn').style.display = isRunning ? 'inline-flex' : 'none';
+      restoreEngineMode();
+      renderThreads();
+      document.getElementById('liveStatusText').textContent = isRunning ? 'Running agent turn…' : 'Ready • Shared context synced';
+      renderActiveChat(true);
+    }
+
+    function showEarlierMessages() {
+      visibleMessageLimit += 80;
+      renderActiveChat(false);
+    }
+
+    async function createNewThread() {
+      const targetProjId = activeProjectId === 'ALL'
+        ? (hubData.state.projects[0]?.id || 'default')
+        : activeProjectId;
+
+      const res = await apiFetch('/api/threads', {
+        method: 'POST',
+        body: JSON.stringify({ projectId: targetProjId, engineMode: currentEngineMode })
+      });
+      const data = await res.json();
+      hubData.state.threads = data.threads;
+      activeThreadId = data.thread.id;
+      restoreEngineMode();
+      activeThreadOpenElsewhere = false;
+      renderThreads();
+      renderActiveChat(true);
+      document.getElementById('promptInput').focus();
+    }
+
+    async function deleteThread(e, id) {
+      e.stopPropagation();
+      const res = await apiFetch(`/api/threads?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      hubData.state.threads = data.threads;
+      if (activeThreadId === id) activeThreadId = null;
+      renderThreads();
+    }
+
+    function renderActiveChat(scrollToBottom = true) {
+      const scrollEl = document.getElementById('chatScroll');
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+
+      const brainBox = document.getElementById('brainSummaryBox');
+      if (thread) {
+        brainBox.textContent = JSON.stringify({
+          threadId: thread.id,
+          origin: thread.originatorLabel || thread.origin,
+          projectName: thread.projectName,
+          projectPath: thread.projectPath,
+          openInNativeApp: activeThreadOpenElsewhere,
+          antigravityConversationId: thread.agyConversationId || '(auto-bridged on switch)',
+          codexSessionId: thread.codexSessionId || '(auto-bridged on switch)',
+          totalMessages: (thread.messages || []).length
+        }, null, 2);
+      } else {
+        brainBox.textContent = 'No active session selected.';
+      }
+
+      if (!thread || ((!thread.messages || thread.messages.length === 0) && !threadStreams.has(thread.id))) {
+        const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
+        const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
+        const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+        const autoTargetText = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
+
+        scrollEl.innerHTML = `
+          <div class="landing-hero">
+            <div class="hero-badge">⚡ AI Studio Hub • Unified Workspace</div>
+            <h1 class="hero-title">How can I help you today?</h1>
+            <p class="hero-subtitle">Choose an engine below, or let Auto-Pilot balance your turns automatically to prevent quota exhaustion.</p>
+
+            <div class="hero-engine-grid">
+              <div class="hero-engine-card ${currentEngineMode === 'auto' ? 'active' : ''}" onclick="setEngineMode('auto')">
+                <div class="hec-header">
+                  <span class="hec-icon">⚡</span>
+                  <div class="hec-title-group">
+                    <div class="hec-title">Auto-Pilot</div>
+                    <div class="hec-badge auto">Smart Router</div>
+                  </div>
+                </div>
+                <div class="hec-desc">Continuously balances turns across engines. Currently routes next turn to <b>${autoTargetText}</b>.</div>
+                <div class="hec-status">⚡ Auto-Switch active (&lt; 12% threshold)</div>
+              </div>
+
+              <div class="hero-engine-card ${currentEngineMode === 'antigravity' ? 'active' : ''}" onclick="setEngineMode('antigravity')">
+                <div class="hec-header">
+                  <span class="hec-icon">🌌</span>
+                  <div class="hec-title-group">
+                    <div class="hec-title">Antigravity</div>
+                    <div class="hec-badge agy">Google DeepMind</div>
+                  </div>
+                </div>
+                <div class="hec-desc">Direct turns via local Antigravity Language Server with full tool & workspace execution.</div>
+                <div class="hec-status">🌌 Flash: ${flashPct}% remaining</div>
+              </div>
+
+              <div class="hero-engine-card ${currentEngineMode === 'codex' ? 'active' : ''}" onclick="setEngineMode('codex')">
+                <div class="hec-header">
+                  <span class="hec-icon">🟢</span>
+                  <div class="hec-title-group">
+                    <div class="hec-title">OpenAI Codex</div>
+                    <div class="hec-badge codex">Codex CLI / VS Code</div>
+                  </div>
+                </div>
+                <div class="hec-desc">Direct turns via OpenAI Codex CLI with shell execution and automatic git tracking.</div>
+                <div class="hec-status">🟢 Codex 5h Limit: ${codexPct}%</div>
+              </div>
+            </div>
+
+            <div class="hero-cards">
+              <button class="hero-card" onclick="setPromptAndFocus('Inspect the workspace directory and summarize current git status')">
+                <span class="card-icon">📂</span>
+                <div class="card-text">
+                  <div class="card-title">Inspect Workspace</div>
+                  <div class="card-desc">Scan files, git branch, and working changes</div>
+                </div>
+              </button>
+              <button class="hero-card" onclick="setPromptAndFocus('Review recent changes and suggest code improvements or refactorings')">
+                <span class="card-icon">🔍</span>
+                <div class="card-text">
+                  <div class="card-title">Code Review & Refactor</div>
+                  <div class="card-desc">Find edge cases, performance gains & cleaner patterns</div>
+                </div>
+              </button>
+              <button class="hero-card" onclick="setPromptAndFocus('Write a new feature or unit test for the current project')">
+                <span class="card-icon">✨</span>
+                <div class="card-text">
+                  <div class="card-title">Build New Feature</div>
+                  <div class="card-desc">Draft functions, tests, or bug fixes for the project</div>
+                </div>
+              </button>
+              <button class="hero-card" onclick="setPromptAndFocus('Explain the architecture of this codebase and key entrypoints')">
+                <span class="card-icon">💡</span>
+                <div class="card-text">
+                  <div class="card-title">Explain Architecture</div>
+                  <div class="card-desc">Walk through directory layout and module responsibilities</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const lockBadge = activeThreadOpenElsewhere
+        ? `<span class="badge warn" title="This session is currently open in the native window. Sending a message here will safely fork or bridge context.">🔒 Open in Native App</span>`
+        : '';
+
+      const originHeader = `
+        <div class="session-origin-bar">
+          <div>
+            <strong>${escapeHtml(thread.title)}</strong>
+            <div style="font-size:11px; margin-top:2px;">📁 Working Directory: <code>${escapeHtml(thread.projectPath)}</code></div>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            ${lockBadge}
+            ${thread.origin === 'vscode' ? '<span class="badge vscode">💠 Imported from VS Code</span>' : ''}
+            ${thread.origin === 'codex' ? '<span class="badge codex">🟢 Imported from Codex Desktop</span>' : ''}
+            ${thread.origin === 'antigravity' ? '<span class="badge agy">🌌 Imported from Antigravity</span>' : ''}
+          </div>
+        </div>
+      `;
+
+      const allMsgs = thread.messages || [];
+      const hiddenCount = Math.max(0, allMsgs.length - visibleMessageLimit);
+      const visibleMsgs = hiddenCount > 0 ? allMsgs.slice(-visibleMessageLimit) : allMsgs;
+
+      const loadOlderHtml = hiddenCount > 0
+        ? `<button class="load-older-btn" onclick="showEarlierMessages()">⬆️ Load ${hiddenCount} earlier messages (${allMsgs.length} total in thread)</button>`
+        : '';
+
+      const messagesHtml = visibleMsgs.map(m => {
+        if (m.role === 'user') {
+          const attHtml = (m.attachments && m.attachments.length)
+            ? `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">` +
+              m.attachments.map(a => `<span class="att-chip">📎 ${escapeHtml(a.name)}</span>`).join('') +
+              `</div>`
+            : '';
+          const pTok = m.usage?.total_tokens || m.usage?.input_tokens || Math.max(1, Math.round(String(m.content || '').length / 4));
+          const pTokPill = `<span class="token-pill" title="Prompt size: ~${pTok.toLocaleString()} tokens">🪙 ${pTok.toLocaleString()} prompt tokens</span>`;
+          return `
+            <div class="msg-card user">
+              <div class="msg-header">
+                <div class="msg-author">👤 You</div>
+                <span style="display:flex; align-items:center; gap:8px;">${pTokPill}<span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span></span>
+              </div>
+              ${attHtml}
+              <div class="msg-body">${formatMarkdown(m.content)}</div>
+            </div>
+          `;
+        } else {
+          const isAgy = m.engine === 'antigravity';
+          const badge = isAgy
+            ? `<span class="badge agy">🌌 Antigravity • ${escapeHtml(m.model || '')}</span>`
+            : `<span class="badge codex">🟢 OpenAI Codex • ${escapeHtml(m.model || '')}</span>`;
+          const handoffBanner = m.handoffReason
+            ? `<div class="switch-banner" style="margin-bottom:10px;">🔄 <span>${escapeHtml(m.handoffReason)}</span></div>`
+            : '';
+          const bodyText = m.content || '_(Response completed)_';
+          const nars = Array.isArray(m.narratives) ? m.narratives.filter(n => n && n.trim() && n.trim() !== bodyText.trim()) : [];
+          const thoughts = Array.isArray(m.thinkingSteps) ? m.thinkingSteps.filter(t => t && t.trim()) : [];
+          const rawTok = m.usage?.total_tokens || (m.usage ? (m.usage.input_tokens || 0) + (m.usage.output_tokens || 0) : 0);
+          const estFallback = Math.max(1, Math.round((bodyText.length + nars.join(' ').length + thoughts.join(' ').length) / 4));
+          const tok = rawTok > 0 ? rawTok : estFallback;
+          const tokTitle = m.usage && (m.usage.input_tokens || m.usage.output_tokens)
+            ? `Input/Context: ${(m.usage.input_tokens || 0).toLocaleString()} tokens • Output: ${(m.usage.output_tokens || 0).toLocaleString()} tokens`
+            : `Estimated response tokens: ${tok.toLocaleString()}`;
+          const tokPill = `<span class="token-pill" title="${escapeHtml(tokTitle)}">🪙 ${rawTok > 0 ? '' : '~'}${tok.toLocaleString()} tokens</span>`;
+          const thoughtHtml = thoughts.length > 0
+            ? `<details class="thinking-details"><summary>💭 Agent Reasoning & Thought Process (${thoughts.length} step${thoughts.length > 1 ? 's' : ''})</summary><div style="margin-top:8px; white-space:pre-wrap; line-height:1.5;">${escapeHtml(thoughts.join('\n\n'))}</div></details>`
+            : '';
+          const narHtml = nars.length > 0
+            ? `<div class="narrative-feed">${nars.map(n => `<div class="narrative-step"><div>${formatMarkdown(n)}</div></div>`).join('')}</div>`
+            : '';
+          return `
+            ${handoffBanner}
+            <div class="msg-card assistant ${isAgy ? 'antigravity' : 'codex'}">
+              <div class="msg-header">
+                <div class="msg-author">${badge}</div>
+                <span style="display:flex; align-items:center; gap:8px;">${tokPill}<span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span></span>
+              </div>
+              ${thoughtHtml}
+              ${narHtml}
+              <div class="msg-body">${formatMarkdown(bodyText)}</div>
+            </div>
+          `;
+        }
+      }).join('');
+
+      let streamCardHtml = '';
+      const streamInfo = threadStreams.get(thread.id);
+      if (streamInfo) {
+        const noticesHtml = (streamInfo.switchNotices || [])
+          .map(n => `<div class="switch-banner" style="margin-bottom:10px;">🔄 <span>${escapeHtml(n)}</span></div>`)
+          .join('');
+        const sThoughts = streamInfo.thinkingSteps || [];
+        const sNars = streamInfo.narratives || [];
+        const sThoughtHtml = sThoughts.length > 0
+          ? `<details class="thinking-details" open><summary>💭 Agent Reasoning & Thought Process</summary><div style="margin-top:8px; white-space:pre-wrap; line-height:1.5;">${escapeHtml(sThoughts.join('\n\n'))}</div></details>`
+          : '';
+        const sNarHtml = sNars.length > 0
+          ? `<div class="narrative-feed">${sNars.map(n => `<div class="narrative-step"><div>${formatMarkdown(n)}</div></div>`).join('')}</div>`
+          : '';
+        const waitingHint = (!streamInfo.accumulatedText && sNars.length === 0 && sThoughts.length === 0)
+          ? `<div style="font-size:12.5px; color:var(--text-muted); padding:4px 0;">⏳ ${escapeHtml((streamInfo.statusText || 'Generating response…').replace(/^●\s*/, ''))}</div>`
+          : '';
+        const userPromptTokens = Math.max(1, Math.round(String(streamInfo.userPrompt || '').length / 4));
+        const liveTok = computeLiveStreamTokens(streamInfo);
+        const elapsedStr = formatElapsedSince(streamInfo.startedAt);
+        streamCardHtml = `
+          ${noticesHtml}
+          <div class="msg-card user">
+            <div class="msg-header">
+              <div class="msg-author">👤 You</div>
+              <span style="display:flex; align-items:center; gap:8px;">
+                <span class="token-pill">🪙 ${userPromptTokens.toLocaleString()} prompt tokens</span>
+                <span>Just now</span>
+              </span>
+            </div>
+            <div class="msg-body">${formatMarkdown(streamInfo.userPrompt)}</div>
+          </div>
+          <div class="msg-card assistant ${streamInfo.engine === 'codex' ? 'codex' : 'antigravity'}">
+            <div class="msg-header">
+              <div id="streamBadge" class="msg-author">${streamInfo.badgeHtml || '⚡ Connecting…'}</div>
+              <span style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span id="streamTokenBadge" class="token-pill ${streamInfo.failed ? '' : 'live'}" title="Live token usage for this turn">🪙 ${liveTok.toLocaleString()} tokens ${streamInfo.failed ? '' : '↑'}</span>
+                <span id="streamElapsed" style="font-size:11.5px; color:var(--text-muted); font-variant-numeric:tabular-nums;">⏱️ ${elapsedStr}</span>
+                <span id="streamStatus">${streamInfo.statusText || '● Responding…'}</span>
+              </span>
+            </div>
+            <div id="streamThoughts">${sThoughtHtml}</div>
+            <div id="streamNarratives">${sNarHtml}</div>
+            <div id="streamBody" class="msg-body">${streamInfo.accumulatedText ? formatMarkdown(streamInfo.accumulatedText) : waitingHint}</div>
+          </div>
+        `;
+      }
+
+      scrollEl.innerHTML = originHeader + loadOlderHtml + messagesHtml + streamCardHtml;
+      if (scrollToBottom) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+      }
+    }
+
+    function formatElapsedSince(iso) {
+      if (!iso) return '0s';
+      const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+      if (sec < 60) return `${sec}s`;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m}m ${s}s`;
+    }
+
+    function computeLiveStreamTokens(streamInfo) {
+      if (!streamInfo) return 0;
+      const serverTot = streamInfo.usage?.total_tokens || ((streamInfo.usage?.input_tokens || 0) + (streamInfo.usage?.output_tokens || 0));
+      const charCount =
+        String(streamInfo.userPrompt || '').length +
+        String(streamInfo.accumulatedText || '').length +
+        (streamInfo.narratives || []).join(' ').length +
+        (streamInfo.thinkingSteps || []).join(' ').length;
+      const charTok = Math.max(1, Math.round(charCount / 4));
+      const elapsedSec = streamInfo.startedAt && !streamInfo.failed
+        ? Math.max(0, Math.floor((Date.now() - new Date(streamInfo.startedAt).getTime()) / 1000))
+        : 0;
+      // While the agent is actively thinking/running tools between server token reports, smoothly tick the live counter upward
+      const activeTick = elapsedSec * 14 + ((streamInfo.narratives || []).length * 65);
+      const computed = Math.max(serverTot + Math.min(activeTick, 1800), charTok + activeTick);
+      streamInfo.maxDisplayedTokens = Math.max(streamInfo.maxDisplayedTokens || 0, serverTot || 0, computed);
+      return streamInfo.maxDisplayedTokens;
+    }
+
+    function updateLiveStreamTokenDOM() {
+      if (!activeThreadId || !threadStreams.has(activeThreadId)) return;
+      const streamInfo = threadStreams.get(activeThreadId);
+      if (!streamInfo) return;
+      const tokEl = document.getElementById('streamTokenBadge');
+      const elEl = document.getElementById('streamElapsed');
+      const liveTok = computeLiveStreamTokens(streamInfo);
+      if (tokEl) {
+        tokEl.textContent = `🪙 ${liveTok.toLocaleString()} tokens ${streamInfo.failed ? '' : '↑'}`;
+        if (streamInfo.usage && (streamInfo.usage.input_tokens || streamInfo.usage.output_tokens)) {
+          tokEl.title = `Context/Input: ${(streamInfo.usage.input_tokens || 0).toLocaleString()} tokens • Output: ${(streamInfo.usage.output_tokens || 0).toLocaleString()} tokens`;
+        }
+      }
+      if (elEl && !streamInfo.failed) {
+        elEl.textContent = `⏱️ ${formatElapsedSince(streamInfo.startedAt)}`;
+      }
+    }
+
+    setInterval(() => {
+      if (runningThreadIds.size > 0) {
+        updateLiveStreamTokenDOM();
+      }
+    }, 1000);
+
+    function handleComposerKeydown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    async function consumeSseResponse(res, targetThreadId, streamInfo) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+        const parts = sseBuffer.split('\n\n');
+        sseBuffer = parts.pop();
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          try {
+            const evt = JSON.parse(jsonStr);
+            if (evt.type === 'status') {
+              streamInfo.statusText = '● ' + evt.message.replace(/^Starting\s+/i, 'Connecting to ');
+              if (activeThreadId === targetThreadId) {
+                const sEl = document.getElementById('streamStatus');
+                if (sEl) sEl.textContent = streamInfo.statusText;
+                const bEl = document.getElementById('streamBody');
+                if (bEl && !streamInfo.accumulatedText && !(streamInfo.narratives || []).length) {
+                  bEl.innerHTML = `<div style="font-size:12.5px; color:var(--text-muted); padding:4px 0;">⏳ ${escapeHtml(evt.message)}</div>`;
+                }
+                document.getElementById('liveStatusText').textContent = evt.message;
+              }
+            } else if (evt.type === 'narrative' && evt.text) {
+              streamInfo.narratives = streamInfo.narratives || [];
+              if (!streamInfo.narratives.includes(evt.text)) {
+                streamInfo.narratives.push(evt.text);
+                if (activeThreadId === targetThreadId) {
+                  const nEl = document.getElementById('streamNarratives');
+                  if (nEl) {
+                    nEl.innerHTML = `<div class="narrative-feed">${streamInfo.narratives.map(n => `<div class="narrative-step"><div>${formatMarkdown(n)}</div></div>`).join('')}</div>`;
+                  }
+                  const bEl = document.getElementById('streamBody');
+                  if (bEl && !streamInfo.accumulatedText) bEl.innerHTML = '';
+                  const scrollEl = document.getElementById('chatScroll');
+                  scrollEl.scrollTop = scrollEl.scrollHeight;
+                }
+              }
+            } else if (evt.type === 'thinking' && evt.delta) {
+              const cleanT = evt.delta.trim();
+              if (cleanT) {
+                streamInfo.thinkingSteps = streamInfo.thinkingSteps || [];
+                if (!streamInfo.thinkingSteps.includes(cleanT)) {
+                  streamInfo.thinkingSteps.push(cleanT);
+                  if (activeThreadId === targetThreadId) {
+                    const tEl = document.getElementById('streamThoughts');
+                    if (tEl) {
+                      tEl.innerHTML = `<details class="thinking-details" open><summary>💭 Agent Reasoning & Thought Process</summary><div style="margin-top:8px; white-space:pre-wrap; line-height:1.5;">${escapeHtml(streamInfo.thinkingSteps.join('\n\n'))}</div></details>`;
+                    }
+                  }
+                }
+              }
+            } else if (evt.type === 'usage' && evt.usage) {
+              streamInfo.usage = evt.usage;
+              if (activeThreadId === targetThreadId) {
+                updateLiveStreamTokenDOM();
+              }
+            } else if (evt.type === 'switch_notice' && evt.message) {
+              streamInfo.switchNotices = streamInfo.switchNotices || [];
+              if (!streamInfo.switchNotices.includes(evt.message)) {
+                streamInfo.switchNotices.push(evt.message);
+              }
+              // Clear any leaked quota error text from the failed model
+              streamInfo.accumulatedText = '';
+              if (activeThreadId === targetThreadId) {
+                const bEl = document.getElementById('streamBody');
+                if (bEl) bEl.innerHTML = '';
+                renderActiveChat(true);
+              }
+            } else if (evt.type === 'init') {
+              const isAgy = evt.engine === 'antigravity';
+              streamInfo.engine = isAgy ? 'antigravity' : 'codex';
+              streamInfo.badgeHtml = isAgy
+                ? `<span class="badge agy">🌌 Antigravity</span>`
+                : `<span class="badge codex">🟢 OpenAI Codex</span>`;
+              streamInfo.statusText = '● Generating response…';
+              if (activeThreadId === targetThreadId) {
+                const bEl = document.getElementById('streamBadge');
+                const sEl = document.getElementById('streamStatus');
+                if (bEl) bEl.innerHTML = streamInfo.badgeHtml;
+                if (sEl) sEl.textContent = streamInfo.statusText;
+              }
+            } else if (evt.type === 'replace_delta') {
+              streamInfo.accumulatedText = evt.text || '';
+              streamInfo.statusText = '● Responding…';
+              if (activeThreadId === targetThreadId) {
+                const bEl = document.getElementById('streamBody');
+                const sEl = document.getElementById('streamStatus');
+                if (bEl) bEl.innerHTML = formatMarkdown(streamInfo.accumulatedText);
+                if (sEl) sEl.textContent = streamInfo.statusText;
+                updateLiveStreamTokenDOM();
+                const scrollEl = document.getElementById('chatScroll');
+                scrollEl.scrollTop = scrollEl.scrollHeight;
+              }
+            } else if (evt.type === 'delta') {
+              streamInfo.accumulatedText += evt.delta;
+              streamInfo.statusText = '● Responding…';
+              if (activeThreadId === targetThreadId) {
+                const bEl = document.getElementById('streamBody');
+                const sEl = document.getElementById('streamStatus');
+                if (bEl) bEl.innerHTML = formatMarkdown(streamInfo.accumulatedText);
+                if (sEl) sEl.textContent = streamInfo.statusText;
+                updateLiveStreamTokenDOM();
+                const scrollEl = document.getElementById('chatScroll');
+                scrollEl.scrollTop = scrollEl.scrollHeight;
+              }
+            } else if (evt.type === 'cancelled') {
+              streamInfo.statusText = 'Stopped';
+              if (evt.restorePrompt && activeThreadId === targetThreadId) {
+                const inputEl = document.getElementById('promptInput');
+                if (inputEl && !inputEl.value.trim()) inputEl.value = evt.restorePrompt;
+              }
+              if (activeThreadId === targetThreadId) {
+                const sEl = document.getElementById('streamStatus');
+                if (sEl) sEl.textContent = 'Stopped';
+              }
+            } else if (evt.type === 'done') {
+              const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
+              if (idx !== -1) hubData.state.threads[idx] = evt.thread;
+              runningThreadIds.delete(targetThreadId);
+              threadStreams.delete(targetThreadId);
+              renderThreads();
+              if (activeThreadId === targetThreadId) {
+                renderActiveChat(true);
+                document.getElementById('sendBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+                document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+              }
+              refreshStatus(false);
+            } else if (evt.type === 'error') {
+              streamInfo.statusText = 'Error';
+              streamInfo.failed = true;
+              streamInfo.accumulatedText = (streamInfo.accumulatedText ? streamInfo.accumulatedText + '\n\n' : '') + '⚠️ ' + evt.message;
+              if (evt.restorePrompt && activeThreadId === targetThreadId) {
+                const inputEl = document.getElementById('promptInput');
+                if (inputEl && !inputEl.value.trim()) inputEl.value = evt.restorePrompt;
+              }
+              if (activeThreadId === targetThreadId) {
+                const sEl = document.getElementById('streamStatus');
+                const bEl = document.getElementById('streamBody');
+                if (sEl) sEl.textContent = 'Failed — prompt restored in input box';
+                if (bEl) bEl.innerHTML = formatMarkdown(streamInfo.accumulatedText);
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    async function reattachTurnStream(turn) {
+      const targetThreadId = turn.threadId;
+      if (!targetThreadId || runningThreadIds.has(targetThreadId)) return;
+      runningThreadIds.add(targetThreadId);
+      const isCodex = turn.engine === 'codex';
+      const streamInfo = {
+        userPrompt: turn.userPrompt || '',
+        accumulatedText: turn.accumulatedText || '',
+        statusText: '● ' + (turn.statusText || 'Responding…'),
+        badgeHtml: isCodex ? `<span class="badge codex">🟢 OpenAI Codex</span>` : `<span class="badge agy">🌌 Antigravity</span>`,
+        engine: isCodex ? 'codex' : 'antigravity',
+        narratives: Array.isArray(turn.narratives) ? [...turn.narratives] : [],
+        thinkingSteps: Array.isArray(turn.thinkingSteps) ? [...turn.thinkingSteps] : [],
+        switchNotices: Array.isArray(turn.switchNotices) ? [...turn.switchNotices] : [],
+        usage: turn.usage || null,
+        startedAt: turn.startedAt || new Date().toISOString()
+      };
+      threadStreams.set(targetThreadId, streamInfo);
+      renderThreads();
+      if (activeThreadId === targetThreadId) {
+        document.getElementById('sendBtn').disabled = true;
+        document.getElementById('stopBtn').style.display = 'inline-flex';
+        document.getElementById('liveStatusText').textContent = turn.statusText || 'Running agent turn…';
+        renderActiveChat(true);
+      }
+
+      try {
+        const res = await apiFetch(`/api/turn-stream?threadId=${encodeURIComponent(targetThreadId)}`);
+        if (!res.ok) return;
+        await consumeSseResponse(res, targetThreadId, streamInfo);
+      } catch {} finally {
+        runningThreadIds.delete(targetThreadId);
+        if (!streamInfo.failed) threadStreams.delete(targetThreadId);
+        renderThreads();
+        if (activeThreadId === targetThreadId) {
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('stopBtn').style.display = 'none';
+          document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+          renderActiveChat(true);
+        }
+      }
+    }
+
+    async function sendMessage() {
+      if (!activeThreadId) {
+        await createNewThread();
+      }
+      if (isThreadRunning(activeThreadId)) return;
+      const inputEl = document.getElementById('promptInput');
+      const prompt = inputEl.value.trim();
+      if (!prompt && pendingAttachments.length === 0) return;
+
+      const targetThreadId = activeThreadId;
+      runningThreadIds.add(targetThreadId);
+      renderThreads();
+
+      inputEl.value = '';
+      const attachmentsToSend = [...pendingAttachments];
+      pendingAttachments = [];
+      renderPendingAttachments();
+
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('stopBtn').style.display = 'inline-flex';
+      document.getElementById('liveStatusText').textContent = 'Running agent turn…';
+
+      const initialEngine = currentEngineMode === 'codex' ? 'codex' : 'antigravity';
+      const streamInfo = {
+        userPrompt: prompt,
+        accumulatedText: '',
+        statusText: '● Starting…',
+        badgeHtml: initialEngine === 'codex' ? `<span class="badge codex">🟢 OpenAI Codex</span>` : `<span class="badge agy">🌌 Antigravity</span>`,
+        engine: initialEngine,
+        narratives: [],
+        thinkingSteps: [],
+        switchNotices: [],
+        usage: { input_tokens: Math.max(1, Math.round(prompt.length / 4)), output_tokens: 0, total_tokens: Math.max(1, Math.round(prompt.length / 4)) },
+        startedAt: new Date().toISOString()
+      };
+      threadStreams.set(targetThreadId, streamInfo);
+
+      if (activeThreadId === targetThreadId) {
+        renderActiveChat(true);
+      }
+
+      try {
+        const res = await apiFetch('/api/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            threadId: targetThreadId,
+            prompt,
+            engineMode: currentEngineMode,
+            agyModel: document.getElementById('agyModelSelect').value,
+            agyEffort: document.getElementById('agyEffortSelect').value,
+            codexModel: document.getElementById('codexModelSelect').value,
+            codexEffort: document.getElementById('codexEffortSelect').value,
+            executionMode: document.getElementById('execModeSelect').value,
+            attachments: attachmentsToSend
+          })
+        });
+
+        if (!res.ok) {
+          let errMsg = `HTTP ${res.status}`;
+          try {
+            const errJson = await res.json();
+            if (errJson.error) errMsg = errJson.error;
+          } catch {}
+          if (res.status === 403 && errMsg.includes('token')) {
+            location.reload();
+            return;
+          }
+          throw new Error(errMsg);
+        }
+
+        await consumeSseResponse(res, targetThreadId, streamInfo);
+      } catch (err) {
+        // If the browser's SSE connection dropped while the turn is still running on the server, automatically re-attach!
+        try {
+          await new Promise(r => setTimeout(r, 1200));
+          const stRes = await apiFetch('/api/status');
+          if (stRes.ok) {
+            const stData = await stRes.json();
+            const live = stData.activeTurns && stData.activeTurns[targetThreadId];
+            if (live) {
+              runningThreadIds.delete(targetThreadId);
+              await reattachTurnStream(live);
+              return;
+            }
+          }
+        } catch {}
+        streamInfo.failed = true;
+        streamInfo.statusText = 'Error';
+        streamInfo.accumulatedText = '⚠️ ' + err.message;
+        if (activeThreadId === targetThreadId) {
+          if (!inputEl.value.trim()) inputEl.value = prompt;
+          const sEl = document.getElementById('streamStatus');
+          const bEl = document.getElementById('streamBody');
+          if (sEl) sEl.textContent = 'Error';
+          if (bEl) bEl.innerHTML = `<span style="color:var(--danger)">⚠️ ${escapeHtml(err.message)}</span>`;
+        }
+      } finally {
+        runningThreadIds.delete(targetThreadId);
+        // Keep failed turns on screen (prompt + error) so the chat doesn't look like it reset
+        if (!streamInfo.failed) threadStreams.delete(targetThreadId);
+        else streamInfo.statusText = 'Failed — prompt restored in input box';
+        renderThreads();
+        if (activeThreadId === targetThreadId) {
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('stopBtn').style.display = 'none';
+          document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+        }
+      }
+    }
+
+    async function stopActiveTurn() {
+      if (!activeThreadId) return;
+      await apiFetch('/api/stop', {
+        method: 'POST',
+        body: JSON.stringify({ threadId: activeThreadId })
+      });
+    }
+
+    function setupDragAndDrop() {
+      const overlay = document.getElementById('dropOverlay');
+      let dragCounter = 0;
+
+      window.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        overlay.classList.add('visible');
+      });
+
+      window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+      });
+
+      window.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+          dragCounter = 0;
+          overlay.classList.remove('visible');
+        }
+      });
+
+      window.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        overlay.classList.remove('visible');
+        if (e.dataTransfer?.files?.length) {
+          await uploadFiles(e.dataTransfer.files);
+        }
+      });
+    }
+
+    async function handleFileSelect(e) {
+      if (e.target.files?.length) {
+        await uploadFiles(e.target.files);
+        e.target.value = '';
+      }
+    }
+
+    async function uploadFiles(fileList) {
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      const projectId = thread?.projectId || (activeProjectId !== 'ALL' ? activeProjectId : 'default');
+
+      for (const file of fileList) {
+        const base64 = await fileToBase64(file);
+        const res = await apiFetch('/api/upload', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: file.name,
+            dataBase64: base64,
+            projectId
+          })
+        });
+        const data = await res.json();
+        if (data.attachment) {
+          pendingAttachments.push(data.attachment);
+        }
+      }
+      renderPendingAttachments();
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result;
+          const idx = res.indexOf(',');
+          resolve(idx !== -1 ? res.slice(idx + 1) : res);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function attachWorkspaceFile(filePath, fileName) {
+      if (!pendingAttachments.some(a => a.path === filePath)) {
+        pendingAttachments.push({ name: fileName, path: filePath });
+        renderPendingAttachments();
+      }
+    }
+
+    function removeAttachment(idx) {
+      pendingAttachments.splice(idx, 1);
+      renderPendingAttachments();
+    }
+
+    function renderPendingAttachments() {
+      const el = document.getElementById('attachmentsPreview');
+      el.innerHTML = pendingAttachments.map((a, i) => `
+        <span class="att-chip" title="${escapeHtml(a.path)}">
+          📎 ${escapeHtml(a.name)}
+          <button onclick="removeAttachment(${i})">✕</button>
+        </span>
+      `).join('');
+    }
+
+    async function loadWorkspaceFiles(cwdPath) {
+      if (!cwdPath) return;
+      const res = await apiFetch(`/api/files?cwd=${encodeURIComponent(cwdPath)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const listEl = document.getElementById('workspaceFilesList');
+
+      const gitBlock = data.gitStatus
+        ? `<div style="background:var(--bg-card); border:1px solid var(--border); padding:8px; border-radius:6px; margin-bottom:10px; font-family:monospace; font-size:11px; white-space:pre-wrap; color:#93c5fd;"><b>Git Status:</b>\n${escapeHtml(data.gitStatus)}</div>`
+        : '';
+
+      const filesHtml = (data.files || []).map(f => {
+        const icon = f.isDirectory ? '📁' : '📄';
+        const safePath = f.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const safeName = f.name.replace(/'/g, "\\'");
+        return `
+          <div class="file-row" onclick="attachWorkspaceFile('${safePath}', '${safeName}')" title="Click to attach ${escapeHtml(f.name)}">
+            <div class="file-name">${icon} <span>${escapeHtml(f.name)}</span></div>
+            <span style="font-size:10.5px; color:var(--text-dim);">＋Attach</span>
+          </div>
+        `;
+      }).join('');
+
+      listEl.innerHTML = gitBlock + (filesHtml || '<div style="color:var(--text-muted)">Empty or inaccessible directory</div>');
+    }
+
+    function openProjectModal() {
+      document.getElementById('projectModal').classList.add('open');
+    }
+
+    function closeProjectModal() {
+      document.getElementById('projectModal').classList.remove('open');
+    }
+
+    async function browseNativeFolder() {
+      const res = await apiFetch('/api/browse-folder', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (data.path) {
+        document.getElementById('newProjPath').value = data.path;
+      }
+    }
+
+    async function browseAndAddQuick() {
+      document.getElementById('liveStatusText').textContent = 'Opening folder picker...';
+      const res = await apiFetch('/api/browse-folder', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      document.getElementById('liveStatusText').textContent = 'Ready';
+      if (data.path) {
+        const addRes = await apiFetch('/api/projects', {
+          method: 'POST',
+          body: JSON.stringify({ path: data.path })
+        });
+        const addData = await addRes.json();
+        if (addData.project) {
+          hubData.state.projects = addData.projects;
+          activeProjectId = addData.project.id;
+          renderProjects();
+          await createNewThread();
+        }
+      }
+    }
+
+    async function saveNewProject() {
+      const p = document.getElementById('newProjPath').value.trim();
+      const n = document.getElementById('newProjName').value.trim();
+      if (!p) return;
+      const res = await apiFetch('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ path: p, name: n })
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
+      hubData.state.projects = data.projects;
+      activeProjectId = data.project.id;
+      closeProjectModal();
+      renderProjects();
+      await createNewThread();
+    }
+
+    function toggleRightDrawer() {
+      const ws = document.getElementById('workspaceGrid');
+      const dr = document.getElementById('rightDrawer');
+      const closed = ws.classList.toggle('right-closed');
+      dr.style.display = closed ? 'none' : 'flex';
+    }
+
+    function switchDrawerTab(tab) {
+      document.getElementById('dtabFiles').classList.toggle('active', tab === 'files');
+      document.getElementById('dtabBrain').classList.toggle('active', tab === 'brain');
+      document.getElementById('drawerFilesPane').style.display = tab === 'files' ? 'block' : 'none';
+      document.getElementById('drawerBrainPane').style.display = tab === 'brain' ? 'block' : 'none';
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function copyCodeBlock(btn) {
+      const codeEl = btn.parentElement.querySelector('code');
+      if (!codeEl) return;
+      navigator.clipboard.writeText(codeEl.innerText);
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied';
+      setTimeout(() => { btn.textContent = orig; }, 1400);
+    }
+
+    function formatMarkdown(text) {
+      let html = escapeHtml(text || '');
+      html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        return `<div class="code-block-wrap"><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button><pre><code>${code}</code></pre></div>`;
+      });
+      html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+      html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+      html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+      html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      return html;
+    }
+
+    function toggleMobileSidebar() {
+      const sb = document.querySelector('.sidebar');
+      const bd = document.getElementById('mobileSidebarBackdrop');
+      if (!sb) return;
+      const isOpen = sb.classList.contains('open');
+      if (isOpen) {
+        sb.classList.remove('open');
+        if (bd) bd.classList.remove('open');
+      } else {
+        sb.classList.add('open');
+        if (bd) bd.classList.add('open');
+      }
+    }
+
+    let qrcodeInstance = null;
+    let currentTunnelUrl = null;
+
+    async function openMobileModal() {
+      const m = document.getElementById('mobileModal');
+      if (!m) return;
+      m.classList.add('open');
+      await updateMobileModalStatus();
+    }
+
+    function closeMobileModal() {
+      const m = document.getElementById('mobileModal');
+      if (m) m.classList.remove('open');
+    }
+
+    async function updateMobileModalStatus() {
+      const badge = document.getElementById('tunnelStatusBadge');
+      const activeView = document.getElementById('tunnelActiveView');
+      const inactiveView = document.getElementById('tunnelInactiveView');
+      const pinDisp = document.getElementById('mobilePinDisplay');
+      const urlInput = document.getElementById('mobileUrlInput');
+
+      try {
+        const res = await apiFetch('/api/tunnel/status');
+        const data = await res.json();
+        if (data.pin) pinDisp.textContent = data.pin;
+        if (data.running && data.url) {
+          currentTunnelUrl = data.url;
+          badge.innerHTML = `● Cloudflare Tunnel Active & Encrypted`;
+          badge.style.background = 'rgba(16, 185, 129, 0.15)';
+          badge.style.color = '#10b981';
+          badge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          activeView.style.display = 'block';
+          inactiveView.style.display = 'none';
+
+          const fullPhoneUrl = `${data.url}/?token=${HUB_TOKEN}`;
+          urlInput.value = fullPhoneUrl;
+
+          // Render QR code
+          const qrBox = document.getElementById('qrcodeBox');
+          if (qrBox && window.QRCode) {
+            qrBox.innerHTML = '';
+            qrcodeInstance = new QRCode(qrBox, {
+              text: fullPhoneUrl,
+              width: 190,
+              height: 190,
+              colorDark: '#0b0f19',
+              colorLight: '#ffffff',
+              correctLevel: QRCode.CorrectLevel.M
+            });
+          }
+        } else {
+          currentTunnelUrl = null;
+          badge.innerHTML = `○ Cloudflare Tunnel Inactive`;
+          badge.style.background = 'rgba(148, 163, 184, 0.15)';
+          badge.style.color = 'var(--text-muted)';
+          badge.style.borderColor = 'var(--border)';
+          activeView.style.display = 'none';
+          inactiveView.style.display = 'block';
+        }
+      } catch (e) {
+        badge.innerHTML = `⚠️ Error checking tunnel status: ${e.message}`;
+      }
+    }
+
+    async function startTunnelFromUi() {
+      const badge = document.getElementById('tunnelStatusBadge');
+      badge.innerHTML = `⏳ Requesting quick tunnel on trycloudflare.com…`;
+      try {
+        await apiFetch('/api/tunnel/start', { method: 'POST' });
+        await updateMobileModalStatus();
+      } catch (e) {
+        badge.innerHTML = `⚠️ Failed to start tunnel: ${e.message}`;
+      }
+    }
+
+    async function stopTunnelFromUi() {
+      const badge = document.getElementById('tunnelStatusBadge');
+      badge.innerHTML = `⏳ Stopping tunnel…`;
+      try {
+        await apiFetch('/api/tunnel/stop', { method: 'POST' });
+        await updateMobileModalStatus();
+      } catch (e) {
+        badge.innerHTML = `⚠️ Failed to stop tunnel: ${e.message}`;
+      }
+    }
+
+    function copyMobileUrl() {
+      const input = document.getElementById('mobileUrlInput');
+      if (!input) return;
+      input.select();
+      navigator.clipboard.writeText(input.value).then(() => {
+        const btn = event.target;
+        const orig = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 2000);
+      });
+    }
+
+    initHub();
+  </script>
+</body>
+</html>

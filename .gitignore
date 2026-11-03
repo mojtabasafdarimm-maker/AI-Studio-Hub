@@ -1,0 +1,16 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and environment
+*.log
+.env
+data/
+scratch/
+
+# Node modules
+node_modules/
+
+# Local state
+hub_token.txt

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1035"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#052e16"/>
+    </linearGradient>
+    <linearGradient id="boltGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded squircle -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect width="504" height="504" x="4" y="4" rx="108" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="4"/>
+
+  <!-- Orbital rings for Antigravity & Codex -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="url(#ringGrad)" stroke-width="3" stroke-dasharray="14 10" opacity="0.4"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="rgba(16, 185, 129, 0.3)" stroke-width="2"/>
+
+  <!-- Orbital nodes -->
+  <circle cx="256" cy="76" r="12" fill="#a855f7" filter="url(#glow)"/>
+  <circle cx="436" cy="256" r="12" fill="#10b981" filter="url(#glow)"/>
+  <circle cx="256" cy="436" r="10" fill="#38bdf8" filter="url(#glow)"/>
+  <circle cx="76" cy="256" r="10" fill="#f59e0b" filter="url(#glow)"/>
+
+  <!-- Central Unified Energy Lightning Bolt / Catalyst -->
+  <path d="M 280 110 L 170 270 L 250 270 L 232 402 L 342 242 L 262 242 Z"
+        fill="url(#boltGrad)"
+        filter="url(#glow)"/>
+
+  <!-- Core Spark -->
+  <circle cx="256" cy="256" r="28" fill="#ffffff" opacity="0.25"/>
+</svg>

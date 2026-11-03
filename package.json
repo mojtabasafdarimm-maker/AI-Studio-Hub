@@ -1,0 +1,9 @@
+{
+  "name": "ai-studio-hub",
+  "version": "1.0.0",
+  "description": "Unified Desktop/Web GUI Hub for Google Antigravity and OpenAI Codex with Live Credit Tracking, Drag-and-Drop Attachments, Project Manager, and Automatic Cross-Engine Context Handoff",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
