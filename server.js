@@ -2621,7 +2621,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/api/') && pathname !== '/api/verify-pin') {
       const origin = req.headers.origin;
       if (origin && !ALLOWED_ORIGINS.has(origin)) return sendJson(res, 403, { error: 'Forbidden origin' });
-      const reqToken = req.headers['x-hub-token'] || parsedUrl.searchParams.get('token');
+      const cookieToken = (req.headers.cookie || '').match(/ai_hub_token=([a-f0-9]+)/i)?.[1] || null;
+      const reqToken = req.headers['x-hub-token'] || parsedUrl.searchParams.get('token') || cookieToken;
       if (reqToken !== HUB_TOKEN) return sendJson(res, 403, { error: 'Missing or invalid hub token' });
       if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.headers['content-length'] && req.headers['content-length'] !== '0' && !String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
         return sendJson(res, 415, { error: 'Content-Type must be application/json' });
@@ -2876,13 +2877,12 @@ const server = http.createServer(async (req, res) => {
       let effectiveToken = '';
       if (isLocal || qToken === HUB_TOKEN || hasCookieToken) {
         effectiveToken = HUB_TOKEN;
-        if (qToken === HUB_TOKEN) {
-          headers['Set-Cookie'] = `ai_hub_token=${HUB_TOKEN}; Path=/; SameSite=Lax; Max-Age=31536000`;
-        }
+        headers['Set-Cookie'] = `ai_hub_token=${HUB_TOKEN}; Path=/; SameSite=Lax; Max-Age=31536000`;
       }
 
       res.writeHead(200, headers);
-      return res.end(fs.readFileSync(filePath, 'utf8').replace('__HUB_TOKEN__', effectiveToken));
+      const rawHtml = fs.readFileSync(filePath, 'utf8');
+      return res.end(rawHtml.replaceAll('__HUB_TOKEN__', effectiveToken));
     }
     res.writeHead(200, headers);
     return fs.createReadStream(filePath).pipe(res);

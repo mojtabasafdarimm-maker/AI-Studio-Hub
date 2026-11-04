@@ -1724,6 +1724,47 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* --- Visual Project Cards in Sidebar --- */
+    .project-chips-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin: 8px 0;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .project-chip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      font-size: 12px;
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+    .project-chip:hover {
+      background: var(--bg-hover);
+      border-color: var(--agy-accent);
+    }
+    .project-chip.active {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: var(--agy-accent);
+      font-weight: 600;
+      color: var(--agy-accent);
+    }
+    .project-chip-count {
+      font-size: 10.5px;
+      color: var(--text-muted);
+      background: var(--bg-base);
+      padding: 1px 6px;
+      border-radius: 10px;
+    }
   </style>
 </head>
 <body>
@@ -1914,6 +1955,7 @@
           <span id="projCountBadge" style="color:var(--text-dim)">0</span>
         </div>
         <select id="projectSelect" class="project-select-box" onchange="onProjectChange()"></select>
+        <div id="projectChipsList" class="project-chips-list"></div>
         <div class="cwd-pill" title="Current Working Directory">
           <span id="activeCwdText">All Projects</span>
         </div>
@@ -2060,8 +2102,10 @@
   </div>
 
   <script>
-    let HUB_TOKEN = ("__HUB_TOKEN__" !== "__" + "HUB_TOKEN__" && "__HUB_TOKEN__") ? "__HUB_TOKEN__" : (localStorage.getItem('ai_hub_token') || "");
-    if (HUB_TOKEN && HUB_TOKEN !== "__" + "HUB_TOKEN__") {
+    let HUB_TOKEN = "__HUB_TOKEN__";
+    if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
+      HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
+    } else {
       try { localStorage.setItem('ai_hub_token', HUB_TOKEN); } catch {}
     }
 
@@ -2727,16 +2771,48 @@
 
     function renderProjects() {
       const projs = hubData.state.projects || [];
+      const threads = hubData.state.threads || [];
       document.getElementById('projCountBadge').textContent = `${projs.length} folders`;
       const sel = document.getElementById('projectSelect');
 
-      const allOption = `<option value="ALL" ${activeProjectId === 'ALL' ? 'selected' : ''}>🌐 All Projects (${(hubData.state.threads || []).length} chats)</option>`;
+      const allOption = `<option value="ALL" ${activeProjectId === 'ALL' ? 'selected' : ''}>🌐 All Projects (${threads.length} chats)</option>`;
       const projOptions = projs.map(p => {
+        const count = threads.filter(t => t.projectId === p.id || (t.projectPath && t.projectPath.toLowerCase() === (p.path || '').toLowerCase())).length;
         const srcTags = (p.sources && p.sources.length) ? ` [${p.sources.join('/')}]` : '';
-        return `<option value="${p.id}" ${p.id === activeProjectId ? 'selected' : ''}>📁 ${escapeHtml(p.name)}${escapeHtml(srcTags)}</option>`;
+        return `<option value="${p.id}" ${p.id === activeProjectId ? 'selected' : ''}>📁 ${escapeHtml(p.name)} (${count})${escapeHtml(srcTags)}</option>`;
       }).join('');
 
       sel.innerHTML = allOption + projOptions;
+
+      // Render visual clickable project chips in sidebar
+      const chipsEl = document.getElementById('projectChipsList');
+      if (chipsEl) {
+        const allChip = `
+          <div class="project-chip ${activeProjectId === 'ALL' ? 'active' : ''}" onclick="selectProjectById('ALL')">
+            <span>🌐 All Projects</span>
+            <span class="project-chip-count">${threads.length}</span>
+          </div>`;
+        const projChips = projs.map(p => {
+          const count = threads.filter(t => t.projectId === p.id || (t.projectPath && t.projectPath.toLowerCase() === (p.path || '').toLowerCase())).length;
+          return `
+            <div class="project-chip ${p.id === activeProjectId ? 'active' : ''}" onclick="selectProjectById('${p.id}')">
+              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;">📁 ${escapeHtml(p.name)}</span>
+              <span class="project-chip-count">${count}</span>
+            </div>`;
+        }).join('');
+        chipsEl.innerHTML = allChip + projChips;
+      }
+
+      updateActiveCwdDisplay();
+    }
+
+    function selectProjectById(id) {
+      activeProjectId = id;
+      const sel = document.getElementById('projectSelect');
+      if (sel) sel.value = id;
+      activeThreadId = null;
+      renderProjects();
+      renderThreads();
       updateActiveCwdDisplay();
     }
 
