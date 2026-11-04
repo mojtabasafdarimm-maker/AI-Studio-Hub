@@ -1449,23 +1449,8 @@ function syncCrossAppMemory() {
       .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
     if (sorted.length === 0) return;
 
-    // Pick top 5 global recent threads + the most recent thread per active project workspace (up to 12 total)
-    const pickedIds = new Set();
-    const pickedThreads = [];
-    for (const t of sorted.slice(0, 5)) {
-      pickedIds.add(t.id);
-      pickedThreads.push(t);
-    }
-    const seenWorkspaces = new Set(pickedThreads.map((t) => (t.projectPath || DEFAULT_PROJECT_PATH).toLowerCase()));
-    for (const t of sorted) {
-      if (pickedThreads.length >= 12) break;
-      const wsKey = (t.projectPath || DEFAULT_PROJECT_PATH).toLowerCase();
-      if (!pickedIds.has(t.id) && !seenWorkspaces.has(wsKey)) {
-        seenWorkspaces.add(wsKey);
-        pickedIds.add(t.id);
-        pickedThreads.push(t);
-      }
-    }
+    // Token-efficient: pick only the top 3 most recent active threads to eliminate context bloat
+    const pickedThreads = sorted.slice(0, 3);
 
     const sections = [];
     for (const t of pickedThreads) {
@@ -1473,26 +1458,23 @@ function syncCrossAppMemory() {
       const msgs = (t.messages || []).filter((m) => m.content && m.content.trim());
       if (msgs.length === 0) continue;
       const ctxFile = writeContextFile(t, msgs);
-      const recent = msgs.slice(-4).map((m) => {
-        const who = m.role === 'user' ? 'User' : `Assistant (${m.engine || t.origin || 'agent'})`;
-        return `- **${who}:** ${truncate(m.content.replace(/\s+/g, ' ').trim(), 320)}`;
-      }).join('\n');
+      const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+      const lastAsst = [...msgs].reverse().find((m) => m.role === 'assistant');
+      const userSummary = lastUser ? truncate(lastUser.content.replace(/\s+/g, ' ').trim(), 120) : '';
+      const asstSummary = lastAsst ? truncate(lastAsst.content.replace(/\s+/g, ' ').trim(), 140) : '';
       sections.push(
         `### [${t.originatorLabel || t.origin || 'Hub'}] ${t.title || 'Untitled'}\n` +
-        `- **Workspace:** \`${t.projectPath || DEFAULT_PROJECT_PATH}\` | **Updated:** ${t.updatedAt || 'recent'}\n` +
-        `- **Full Transcript File:** \`${ctxFile}\`\n` +
-        `${recent}`
+        `- **Workspace:** \`${t.projectPath || DEFAULT_PROJECT_PATH}\`\n` +
+        `- **Transcript:** \`${ctxFile}\`\n` +
+        (userSummary ? `- **Latest Request:** ${userSummary}\n` : '') +
+        (asstSummary ? `- **Latest Outcome:** ${asstSummary}` : '')
       );
     }
     if (sections.length === 0) return;
 
     const digestBody = [
       '# Live Cross-App Shared Context (Antigravity + VS Code Codex + AI Studio Hub)',
-      '',
-      '> **IMPORTANT INSTRUCTION FOR ALL AGENTS (Antigravity & OpenAI Codex / VS Code):**',
-      '> The user works interchangeably across Google Antigravity, VS Code (OpenAI Codex), Codex Desktop, and AI Studio Hub.',
-      '> Below is the live-synced summary of the user\'s most recent conversations across ALL applications.',
-      '> When the user refers to a recent conversation, plan, or change made in the other assistant/window, use the context below immediately and read the linked `Full Transcript File` if you need complete details.',
+      '> **Note for Agents:** Most recent cross-app state across Antigravity, VS Code, and Codex. For complete history, read the linked transcript file.',
       '',
       ...sections
     ].join('\n\n');
@@ -1503,23 +1485,24 @@ function syncCrossAppMemory() {
 
     // 1. Central live context file
     fs.writeFileSync(path.join(DATA_DIR, 'LIVE_SHARED_CONTEXT.md'), digestBody, 'utf8');
-    // 2. Global OpenAI Codex instructions (auto-loaded by VS Code Codex, Codex Desktop & Codex CLI)
+    // 2. Global OpenAI Codex instructions (auto-loaded once across VS Code & Codex Desktop)
     upsertSharedContextBlock(path.join(HOME, '.codex', 'AGENTS.md'), digestBody);
-    // 3. Global Antigravity rules (auto-loaded by Antigravity IDE & CLI)
-    upsertSharedContextBlock(path.join(HOME, '.gemini', 'config', 'AGENTS.md'), digestBody);
+    // 3. Global Antigravity rules (auto-loaded once across Antigravity IDE & CLI)
     upsertSharedContextBlock(path.join(HOME, '.gemini', 'config', 'rules', 'AGENTS.md'), digestBody);
-    // 4. Primary workspace AGENTS.md (auto-loaded by both Antigravity and VS Code Codex in My Drive)
-    if (existsDir(DEFAULT_PROJECT_PATH)) {
-      upsertSharedContextBlock(path.join(DEFAULT_PROJECT_PATH, 'AGENTS.md'), digestBody);
-    }
-    // 5. Update any existing project-level AGENTS.md files in active projects so workspace-level rules stay fresh
-    for (const p of appState.projects || []) {
-      if (p.path && existsDir(p.path)) {
-        const projAgents = path.join(p.path, 'AGENTS.md');
-        if (fs.existsSync(projAgents)) {
-          upsertSharedContextBlock(projAgents, digestBody);
+
+    // Remove duplicate from My Drive/AGENTS.md to prevent Antigravity double-injection
+    const myDriveAgents = path.join(DEFAULT_PROJECT_PATH, 'AGENTS.md');
+    if (fs.existsSync(myDriveAgents)) {
+      try {
+        const content = fs.readFileSync(myDriveAgents, 'utf8');
+        const sIdx = content.indexOf(SHARED_CTX_START);
+        const eIdx = content.indexOf(SHARED_CTX_END);
+        if (sIdx !== -1 && eIdx !== -1) {
+          const stripped = (content.slice(0, sIdx) + content.slice(eIdx + SHARED_CTX_END.length)).trim();
+          if (stripped.length === 0) fs.unlinkSync(myDriveAgents);
+          else fs.writeFileSync(myDriveAgents, stripped, 'utf8');
         }
-      }
+      } catch {}
     }
   } catch (err) {
     console.error('[AI Hub] syncCrossAppMemory warning:', err.message);
