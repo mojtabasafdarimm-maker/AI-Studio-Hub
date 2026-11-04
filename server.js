@@ -137,14 +137,18 @@ function findAgyBinary() {
   ];
   const found = candidates.find((c) => fs.existsSync(c));
   if (found) return found;
-  // Antigravity self-updates by renaming agy.exe -> agy.exe.<stamp>.old; fall back to the newest copy.
+  // Antigravity self-updates by renaming agy.exe -> agy.exe.<stamp>.old; copy newest to agy.exe
   for (const dir of [path.join(HOME, '.gemini', 'bin'), path.join(LOCAL_APPDATA, 'agy', 'bin')]) {
     try {
       const olds = fs.readdirSync(dir)
         .filter((n) => /^agy\.exe(\..+)?$/i.test(n))
         .map((n) => path.join(dir, n))
         .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-      if (olds.length) return olds[0];
+      if (olds.length) {
+        const target = path.join(dir, 'agy.exe');
+        try { fs.copyFileSync(olds[0], target); return target; } catch {}
+        return olds[0];
+      }
     } catch {}
   }
   return 'agy.exe';

@@ -1329,6 +1329,58 @@
       user-select: none;
     }
 
+    /* Generating / Thinking Pill (matching native Antigravity UI) */
+    .generating-pill-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 16px;
+      background: var(--bg-hover);
+      border: 1.5px solid var(--agy-accent);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-main);
+      box-shadow: 0 2px 10px rgba(124, 92, 255, 0.15);
+      position: relative;
+      overflow: hidden;
+      animation: pulseGlow 2.4s infinite ease-in-out;
+    }
+
+    .generating-pill-box.codex {
+      border-color: var(--codex-accent);
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.15);
+    }
+
+    .generating-pill-box::after {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%; width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+      animation: shimmer 2s infinite;
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.95; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.008); }
+    }
+
+    @keyframes shimmer {
+      0% { left: -100%; }
+      100% { left: 200%; }
+    }
+
+    .generating-pill-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--agy-accent);
+      animation: blink 1.2s infinite alternate;
+    }
+    .generating-pill-box.codex .generating-pill-dot {
+      background: var(--codex-accent);
+    }
+
     /* --- COMPOSER & DRAG-AND-DROP --- */
     .composer-wrap {
       padding: 12px 24px 16px;
@@ -1662,31 +1714,83 @@
     }
 
     @media (max-width: 768px) {
+      body {
+        overflow-x: hidden;
+        width: 100vw;
+        max-width: 100vw;
+      }
       .topbar {
         padding: 0 10px;
-        gap: 8px;
-        height: 54px;
+        gap: 6px;
+        height: 50px;
+        justify-content: space-between;
+      }
+      .brand {
+        gap: 6px;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+      .brand-icon {
+        width: 26px;
+        height: 26px;
+        font-size: 14px;
       }
       .brand div > div:nth-child(2) {
-        display: none;
+        display: none !important;
       }
+      .topbar-center {
+        margin: 0;
+        gap: 0;
+        flex: 1;
+        justify-content: center;
+      }
+      .top-engine-badge {
+        padding: 4px 10px;
+        font-size: 11.5px;
+        gap: 4px;
+        white-space: nowrap;
+      }
+      .top-engine-badge .badge-sub {
+        display: none !important;
+      }
+      /* Hide bulky desktop-only elements on mobile */
+      .quota-summary-wrapper,
+      .engine-ribbon,
+      .composer-active-engine-bar,
       .topbar-actions .selector-group,
-      .topbar-actions #themeToggleBtn {
-        display: none;
+      .topbar-actions #themeToggleBtn,
+      .topbar-actions #mobileModalBtn,
+      .topbar-actions button:not(#mobileNewChatBtn) {
+        display: none !important;
       }
       .mobile-only-btn {
         display: inline-flex !important;
       }
+      .mobile-only-flex {
+        display: flex !important;
+      }
+
       .workspace {
         grid-template-columns: 1fr !important;
         position: relative;
+        width: 100vw;
+        max-width: 100vw;
+        overflow-x: hidden;
+      }
+      .main-area {
+        width: 100%;
+        max-width: 100vw;
+        overflow-x: hidden;
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 50px);
       }
       .sidebar {
         position: fixed;
         top: 0;
         bottom: 0;
         left: -320px;
-        width: 290px;
+        width: min(86vw, 320px);
         z-index: 2000;
         transition: left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
@@ -1699,29 +1803,102 @@
         top: 0;
         bottom: 0;
         right: -320px;
-        width: 300px;
+        width: min(88vw, 320px);
         z-index: 2000;
         transition: right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       }
       .right-drawer.open {
         right: 0;
       }
+
+      /* Chat area expansion */
       .chat-scroll {
-        padding: 12px 10px 140px 10px;
+        flex: 1;
+        padding: 10px 10px 100px 10px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .msg-card {
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        border-radius: 12px;
+        max-width: 100%;
+      }
+      .msg-header {
+        font-size: 11px;
+        margin-bottom: 6px;
+      }
+      .msg-body {
+        font-size: 14.5px;
+        line-height: 1.55;
+      }
+      .msg-body pre {
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        font-size: 12px;
+        padding: 8px 10px;
+      }
+
+      /* Compact mobile composer */
+      .composer-wrap {
+        border-top: 1px solid var(--border);
+        background: var(--bg-base);
+        padding-bottom: max(6px, env(safe-area-inset-bottom, 8px));
       }
       .composer-box {
-        margin: 0 8px 8px 8px;
-        padding: 10px 12px;
+        margin: 6px 8px 4px 8px;
+        padding: 8px 10px;
+        border-radius: 16px;
       }
       .composer-textarea {
         font-size: 16px !important; /* Prevents auto-zoom in iOS Safari */
-        min-height: 54px;
+        min-height: 38px;
+        max-height: 110px;
+        padding: 6px 4px;
+        line-height: 1.4;
       }
-      .msg-card {
-        padding: 12px 14px;
+      .composer-footer {
+        margin-top: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
       }
-      .popover-codex-grid {
-        grid-template-columns: 1fr;
+      .composer-left-tools #liveStatusText {
+        display: none !important;
+      }
+      .attach-btn-full-text {
+        display: none !important;
+      }
+      .attach-btn-short-text {
+        display: inline !important;
+      }
+      #sendBtn {
+        padding: 7px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 8px;
+      }
+
+      /* Mobile Bottom Sheet */
+      .modal.mobile-sheet {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        max-width: 100%;
+        max-height: 82vh;
+        overflow-y: auto;
+        padding: 20px 18px max(20px, env(safe-area-inset-bottom, 20px)) 18px;
+        animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @keyframes slideUp {
+        from { transform: translateY(100%); }
+        to { transform: translateY(0); }
       }
     }
 
@@ -1874,13 +2051,77 @@
   <!-- MOBILE SIDEBAR BACKDROP -->
   <div id="mobileSidebarBackdrop" class="mobile-backdrop" onclick="toggleMobileSidebar()"></div>
 
+  <!-- MOBILE ENGINE & MODEL BOTTOM SHEET -->
+  <div id="mobileEngineSheet" class="modal-backdrop" onclick="closeMobileEngineSheet(event)">
+    <div class="modal mobile-sheet" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <h3 style="font-size:16px; font-weight:700;">⚙️ Engine & Model Settings</h3>
+        <button class="popover-close" onclick="closeMobileEngineSheet()">✕</button>
+      </div>
+
+      <div style="font-size:11.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px; letter-spacing:0.5px;">Active AI Engine</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-bottom:14px;">
+        <button id="mTabAuto" class="btn btn-primary" onclick="setEngineMode('auto'); syncMobileSheet();" style="padding:10px 4px; font-size:12px; font-weight:600;">⚡ Auto</button>
+        <button id="mTabAgy" class="btn" onclick="setEngineMode('antigravity'); syncMobileSheet();" style="padding:10px 4px; font-size:12px; font-weight:600;">🌌 AGY</button>
+        <button id="mTabCodex" class="btn" onclick="setEngineMode('codex'); syncMobileSheet();" style="padding:10px 4px; font-size:12px; font-weight:600;">🟢 Codex</button>
+      </div>
+
+      <div id="mAutoDetails" style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px; color:var(--text-muted); line-height:1.5;">
+        ⚡ <strong>Auto-Pilot</strong> dynamically routes each prompt to the engine with available quota. Auto-switches if remaining quota falls below 12%.
+      </div>
+
+      <div id="mAgyDetails" style="display:none; margin-bottom:12px;">
+        <div class="form-row" style="margin-bottom:10px;">
+          <label style="font-size:12px; font-weight:600;">🌌 Antigravity Model</label>
+          <select id="mAgyModelSelect" onchange="document.getElementById('agyModelSelect').value=this.value; onAgyModelChange(); syncMobileSheet();"></select>
+        </div>
+        <div class="form-row">
+          <label style="font-size:12px; font-weight:600;">Reasoning Effort</label>
+          <select id="mAgyEffortSelect" onchange="document.getElementById('agyEffortSelect').value=this.value; onAgyEffortChange(); syncMobileSheet();">
+            <option value="low">Low (Fast response)</option>
+            <option value="medium" selected>Medium (Standard)</option>
+            <option value="high">High (Deep reasoning)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="mCodexDetails" style="display:none; margin-bottom:12px;">
+        <div class="form-row" style="margin-bottom:10px;">
+          <label style="font-size:12px; font-weight:600;">🟢 OpenAI Codex Model</label>
+          <select id="mCodexModelSelect" onchange="document.getElementById('codexModelSelect').value=this.value; updateSettings(); syncMobileSheet();"></select>
+        </div>
+        <div class="form-row">
+          <label style="font-size:12px; font-weight:600;">Reasoning Effort</label>
+          <select id="mCodexEffortSelect" onchange="document.getElementById('codexEffortSelect').value=this.value; updateSettings(); syncMobileSheet();">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high" selected>High</option>
+            <option value="xhigh">Extra High</option>
+            <option value="max">Max</option>
+            <option value="ultra">Ultra</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-bottom:16px;">
+        <label style="font-size:12px; font-weight:600;">Execution Mode</label>
+        <select id="mExecModeSelect" onchange="document.getElementById('execModeSelect').value=this.value; updateSettings();">
+          <option value="agent" selected>🛠️ Agent (Edit & Run)</option>
+          <option value="plan">📐 Plan (Read-Only)</option>
+        </select>
+      </div>
+
+      <button class="btn btn-primary" style="width:100%; padding:12px; font-weight:700; font-size:14px; border-radius:10px;" onclick="closeMobileEngineSheet()">Done</button>
+    </div>
+  </div>
+
   <!-- TOP TELEMETRY & LIVE CREDITS BAR (UNCLUTTERED) -->
   <header class="topbar">
     <div class="brand">
       <button id="mobileMenuBtn" class="btn mobile-only-btn" style="display:none; font-size:18px; padding:4px 8px; margin-right:4px;" onclick="toggleMobileSidebar()" title="Toggle Sidebar">☰</button>
       <div class="brand-icon">⚡</div>
       <div>
-        <div style="font-weight:700; font-size:15px; color:var(--text-main);">AI Studio Hub</div>
+        <div style="font-weight:700; font-size:14.5px; color:var(--text-main);">AI Studio Hub</div>
         <div style="font-size:10.5px; color:var(--text-muted); font-weight:500;">Antigravity + Codex Unified</div>
       </div>
     </div>
@@ -1929,6 +2170,7 @@
     </div>
 
     <div class="topbar-actions">
+      <button id="mobileNewChatBtn" class="btn btn-primary mobile-only-btn" onclick="createNewThread()" style="display:none; padding:4px 10px; font-size:13px; font-weight:700;" title="New Chat">＋ New</button>
       <div class="selector-group" title="When in Auto-Pilot mode, automatically switch models/engines if remaining quota falls below this percentage">
         <span class="selector-label">Auto-Switch &lt;</span>
         <select id="thresholdSelect" onchange="updateSettings()">
@@ -1949,6 +2191,10 @@
   <div id="workspaceGrid" class="workspace">
     <!-- LEFT SIDEBAR -->
     <aside class="sidebar">
+      <div class="mobile-sidebar-close-row mobile-only-flex" style="display:none; justify-content:space-between; align-items:center; padding:10px 14px 6px 14px; border-bottom:1px solid var(--border); margin-bottom:8px;">
+        <span style="font-weight:700; font-size:14px;">📁 Projects & Chats</span>
+        <button class="popover-close" onclick="toggleMobileSidebar()" style="font-size:16px;">✕</button>
+      </div>
       <div class="sidebar-section">
         <div class="section-header">
           <span>Project / Working Directory</span>
@@ -2066,7 +2312,7 @@
           <div class="composer-footer">
             <div class="composer-left-tools">
               <input id="fileInput" type="file" multiple style="display:none" onchange="handleFileSelect(event)" />
-              <button class="btn" onclick="document.getElementById('fileInput').click()">📎 Attach Files / Drag & Drop</button>
+              <button class="btn" onclick="document.getElementById('fileInput').click()" title="Attach Files">📎 <span class="attach-btn-full-text">Attach Files / Drag & Drop</span><span class="attach-btn-short-text" style="display:none;">Attach</span></button>
               <span id="liveStatusText" style="color:var(--text-muted); font-size:12px;">Ready • All existing AGY, Codex & VS Code chats synced</span>
             </div>
             <div style="display:flex; gap:8px;">
@@ -2349,10 +2595,83 @@
     });
 
     function cycleEngineMode() {
+      if (window.innerWidth <= 768) {
+        openMobileEngineSheet();
+        return;
+      }
       if (currentEngineMode === 'auto') setEngineMode('antigravity');
       else if (currentEngineMode === 'antigravity') setEngineMode('codex');
       else setEngineMode('auto');
     }
+
+    function openMobileEngineSheet() {
+      syncMobileSheet();
+      const sheet = document.getElementById('mobileEngineSheet');
+      if (sheet) sheet.classList.add('open');
+    }
+
+    function closeMobileEngineSheet(e) {
+      if (e && e.target && e.target.id !== 'mobileEngineSheet') return;
+      const sheet = document.getElementById('mobileEngineSheet');
+      if (sheet) sheet.classList.remove('open');
+    }
+
+    function syncMobileSheet() {
+      const mode = currentEngineMode || 'auto';
+      const tabAuto = document.getElementById('mTabAuto');
+      const tabAgy = document.getElementById('mTabAgy');
+      const tabCodex = document.getElementById('mTabCodex');
+      if (tabAuto) tabAuto.className = mode === 'auto' ? 'btn btn-primary' : 'btn';
+      if (tabAgy) tabAgy.className = mode === 'antigravity' ? 'btn btn-primary' : 'btn';
+      if (tabCodex) tabCodex.className = mode === 'codex' ? 'btn btn-primary' : 'btn';
+
+      const autoBox = document.getElementById('mAutoDetails');
+      const agyBox = document.getElementById('mAgyDetails');
+      const codexBox = document.getElementById('mCodexDetails');
+      if (autoBox) autoBox.style.display = mode === 'auto' ? 'block' : 'none';
+      if (agyBox) agyBox.style.display = mode === 'antigravity' ? 'block' : 'none';
+      if (codexBox) codexBox.style.display = mode === 'codex' ? 'block' : 'none';
+
+      const desktopAgySelect = document.getElementById('agyModelSelect');
+      const mobileAgySelect = document.getElementById('mAgyModelSelect');
+      if (desktopAgySelect && mobileAgySelect) {
+        if (mobileAgySelect.options.length !== desktopAgySelect.options.length) {
+          mobileAgySelect.innerHTML = desktopAgySelect.innerHTML;
+        }
+        mobileAgySelect.value = desktopAgySelect.value;
+      }
+
+      const desktopCodexSelect = document.getElementById('codexModelSelect');
+      const mobileCodexSelect = document.getElementById('mCodexModelSelect');
+      if (desktopCodexSelect && mobileCodexSelect) {
+        if (mobileCodexSelect.options.length !== desktopCodexSelect.options.length) {
+          mobileCodexSelect.innerHTML = desktopCodexSelect.innerHTML;
+        }
+        mobileCodexSelect.value = desktopCodexSelect.value;
+      }
+
+      const desktopAgyEffort = document.getElementById('agyEffortSelect');
+      const mobileAgyEffort = document.getElementById('mAgyEffortSelect');
+      if (desktopAgyEffort && mobileAgyEffort) {
+        mobileAgyEffort.value = desktopAgyEffort.value;
+      }
+
+      const desktopCodexEffort = document.getElementById('codexEffortSelect');
+      const mobileCodexEffort = document.getElementById('mCodexEffortSelect');
+      if (desktopCodexEffort && mobileCodexEffort) {
+        mobileCodexEffort.value = desktopCodexEffort.value;
+      }
+
+      const desktopExec = document.getElementById('execModeSelect');
+      const mobileExec = document.getElementById('mExecModeSelect');
+      if (desktopExec && mobileExec) {
+        mobileExec.value = desktopExec.value;
+      }
+    }
+
+    window.addEventListener('resize', () => {
+      updateTopEngineBadge();
+    });
 
     function updateTopEngineBadge() {
       const badgeEl = document.getElementById('topActiveEngineBadge');
@@ -2368,17 +2687,31 @@
       const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
       const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
       const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+      const isMobile = window.innerWidth <= 768;
 
-      if (mode === 'antigravity') {
-        badgeEl.innerHTML = `<span>🌌 Antigravity</span><span class="badge-sub">${escapeHtml(agyLabel)}</span>`;
-        badgeEl.title = `Active Engine: Antigravity (${agyLabel} • ${flashPct}%). Click to switch to OpenAI Codex.`;
-      } else if (mode === 'codex') {
-        badgeEl.innerHTML = `<span>🟢 OpenAI Codex</span><span class="badge-sub">${escapeHtml(codexLabel)}</span>`;
-        badgeEl.title = `Active Engine: OpenAI Codex (${codexLabel} • ${codexPct}%). Click to switch to Auto-Pilot.`;
+      if (isMobile) {
+        if (mode === 'antigravity') {
+          badgeEl.innerHTML = `<span>🌌 AGY</span> <span style="font-size:11px; font-weight:700;">${flashPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `Antigravity (${agyLabel} • ${flashPct}%). Tap to change.`;
+        } else if (mode === 'codex') {
+          badgeEl.innerHTML = `<span>🟢 Codex</span> <span style="font-size:11px; font-weight:700;">${codexPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `OpenAI Codex (${codexLabel} • ${codexPct}%). Tap to change.`;
+        } else {
+          badgeEl.innerHTML = `<span>⚡ Auto</span> <span style="font-size:11px; font-weight:700;">${flashPct > 0 ? flashPct : codexPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `Auto-Pilot. Tap to change engine.`;
+        }
       } else {
-        const autoTarget = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
-        badgeEl.innerHTML = `<span>⚡ Auto-Pilot</span><span class="badge-sub">Routes to ${autoTarget}</span>`;
-        badgeEl.title = `Active Engine: Auto-Pilot (smart routing). Click to switch to Antigravity.`;
+        if (mode === 'antigravity') {
+          badgeEl.innerHTML = `<span>🌌 Antigravity</span><span class="badge-sub">${escapeHtml(agyLabel)}</span>`;
+          badgeEl.title = `Active Engine: Antigravity (${agyLabel} • ${flashPct}%). Click to switch to OpenAI Codex.`;
+        } else if (mode === 'codex') {
+          badgeEl.innerHTML = `<span>🟢 OpenAI Codex</span><span class="badge-sub">${escapeHtml(codexLabel)}</span>`;
+          badgeEl.title = `Active Engine: OpenAI Codex (${codexLabel} • ${codexPct}%). Click to switch to Auto-Pilot.`;
+        } else {
+          const autoTarget = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
+          badgeEl.innerHTML = `<span>⚡ Auto-Pilot</span><span class="badge-sub">Routes to ${autoTarget}</span>`;
+          badgeEl.title = `Active Engine: Auto-Pilot (smart routing). Click to switch to Antigravity.`;
+        }
       }
 
       const autoRouteTargetText = document.getElementById('autoRouteTargetText');
@@ -3215,7 +3548,13 @@
           ? `<div class="narrative-feed">${sNars.map(n => `<div class="narrative-step"><div>${formatMarkdown(n)}</div></div>`).join('')}</div>`
           : '';
         const waitingHint = (!streamInfo.accumulatedText && sNars.length === 0 && sThoughts.length === 0)
-          ? `<div style="font-size:12.5px; color:var(--text-muted); padding:4px 0;">⏳ ${escapeHtml((streamInfo.statusText || 'Generating response…').replace(/^●\s*/, ''))}</div>`
+          ? `<div style="padding:6px 0;">
+               <div class="generating-pill-box ${streamInfo.engine === 'codex' ? 'codex' : ''}">
+                 <span class="generating-pill-dot"></span>
+                 <span style="font-weight:600;">${streamInfo.engine === 'codex' ? '🟢 OpenAI Codex' : '🌌 Antigravity'}</span>
+                 <span style="color:var(--text-muted); font-size:12px;">• ${escapeHtml((streamInfo.statusText || 'Generating response…').replace(/^[●⏳]\s*/, ''))}</span>
+               </div>
+             </div>`
           : '';
         const userPromptTokens = Math.max(1, Math.round(String(streamInfo.userPrompt || '').length / 4));
         const liveTok = computeLiveStreamTokens(streamInfo);
