@@ -27,8 +27,18 @@ export default {
       });
     }
 
-    // 3. Read the registered active tunnel URL
-    const activeUrl = env.GATEWAY_KV ? await env.GATEWAY_KV.get('ACTIVE_TUNNEL') : null;
+    // 3. Read the registered active tunnel URL (from KV or GitHub fallback)
+    let activeUrl = env.GATEWAY_KV ? await env.GATEWAY_KV.get('ACTIVE_TUNNEL') : null;
+    if (!activeUrl) {
+      try {
+        const ghRes = await fetch(`https://raw.githubusercontent.com/mojtabasafdarimm-maker/AI-Studio-Hub/main/public/active-tunnel.json?_t=${Date.now()}`);
+        if (ghRes.ok) {
+          const data = await ghRes.json();
+          if (data && data.url) activeUrl = data.url;
+        }
+      } catch {}
+    }
+
     if (!activeUrl) {
       return new Response(renderOfflineHtml(), {
         headers: { 'Content-Type': 'text/html; charset=utf-8' },

@@ -2193,6 +2193,20 @@ function stopCloudflareTunnel() {
 }
 
 async function registerWithGateway(url) {
+  // 1. Write active tunnel descriptor locally and sync to GitHub
+  try {
+    const activeFile = path.join(__dirname, 'public', 'active-tunnel.json');
+    fs.writeFileSync(activeFile, JSON.stringify({ url, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+    const child = spawn('git', ['add', 'public/active-tunnel.json'], { cwd: __dirname, windowsHide: true });
+    child.on('close', () => {
+      const c2 = spawn('git', ['commit', '-m', 'auto: update active tunnel URL'], { cwd: __dirname, windowsHide: true });
+      c2.on('close', () => {
+        spawn('git', ['push', 'origin', 'main'], { cwd: __dirname, windowsHide: true });
+      });
+    });
+  } catch {}
+
+  // 2. Register with Cloudflare Gateway Worker if active
   const gatewayUrl = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
   const gatewaySecret = '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
   try {
