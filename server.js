@@ -49,8 +49,8 @@ if (!HUB_TOKEN || HUB_TOKEN.length < 32) {
     fs.writeFileSync(TOKEN_FILE, HUB_TOKEN, 'utf8');
   } catch {}
 }
-const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
-const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, 'ai-studio-hub.mojtaba-safdari-mm.workers.dev']);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`, 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev']);
 
 // ---------------------------------------------------------------------------
 // 1. Small Helpers
@@ -2124,6 +2124,7 @@ function startCloudflareTunnel() {
         } catch {}
         tunnelStatus = 'active';
         console.log(`[AI Hub] 📱 Cloudflare Tunnel Live: ${tunnelUrl}`);
+        registerWithGateway(tunnelUrl);
         resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
       };
 
@@ -2189,6 +2190,24 @@ function stopCloudflareTunnel() {
   tunnelHostname = null;
   tunnelStatus = 'inactive';
   return { running: false, status: 'inactive', pin: appState.settings.mobilePin };
+}
+
+async function registerWithGateway(url) {
+  const gatewayUrl = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
+  const gatewaySecret = '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
+  try {
+    const res = await fetch(`${gatewayUrl}/_gateway/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gatewaySecret}`
+      },
+      body: JSON.stringify({ url })
+    });
+    if (res.ok) {
+      console.log(`[AI Hub] 🌟 Permanent Gateway registered: ${gatewayUrl}`);
+    }
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -2595,8 +2614,9 @@ const STATIC_MIME = {
 };
 
 const server = http.createServer(async (req, res) => {
-  // Block DNS-rebinding: only answer requests addressed to this exact local host:port.
-  if (!ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase())) {
+  // Block DNS-rebinding: only answer requests addressed to this exact local host:port or allowed gateway.
+  const incomingHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+  if (!ALLOWED_HOSTS.has(incomingHost) && !ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase())) {
     res.writeHead(421, { 'Content-Type': 'text/plain' });
     return res.end('Misdirected request');
   }

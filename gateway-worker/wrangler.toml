@@ -1,0 +1,8 @@
+name = "ai-studio-hub"
+main = "index.js"
+compatibility_date = "2026-11-09"
+
+[vars]
+GATEWAY_SECRET = "8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9"
+
+# KV namespace will be linked upon creation
