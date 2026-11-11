@@ -3327,6 +3327,31 @@
       renderActiveChat(false);
     }
 
+    async function compactActiveThread() {
+      if (!activeThreadId) return;
+      try {
+        const res = await apiFetch('/api/threads/compact', {
+          method: 'POST',
+          body: JSON.stringify({ threadId: activeThreadId })
+        });
+        const data = await res.json();
+        if (data.ok && data.thread) {
+          const idx = (hubData.state.threads || []).findIndex(t => t.id === activeThreadId);
+          if (idx !== -1) {
+            const existingMsgs = hubData.state.threads[idx].messages;
+            hubData.state.threads[idx] = Object.assign({}, data.thread, {
+              messages: data.thread.messages || existingMsgs
+            });
+          }
+          renderActiveChat(false);
+          const prevK = data.prevTokens ? `${Math.round(data.prevTokens / 1000)}k` : 'heavy';
+          document.getElementById('liveStatusText').textContent = `🧹 Compacted (${prevK} → ~2k ctx) • Next message starts fresh checkpoint session`;
+        }
+      } catch (e) {
+        alert('Could not compact thread: ' + e.message);
+      }
+    }
+
     async function createNewThread() {
       const targetProjId = activeProjectId === 'ALL'
         ? (hubData.state.projects[0]?.id || 'default')
@@ -3464,6 +3489,32 @@
         ? `<span class="badge warn" title="This session is currently open in the native window. Sending a message here will safely fork or bridge context.">🔒 Open in Native App</span>`
         : '';
 
+      const allMsgs = thread.messages || [];
+      const startSliceIdx = Number(thread.compactedAtMsgCount || 0);
+      const activeSlice = startSliceIdx > 0 && startSliceIdx <= allMsgs.length ? allMsgs.slice(startSliceIdx) : allMsgs;
+      const lastAsstUsage = [...activeSlice].reverse().find(m => m.role === 'assistant' && m.usage && (m.usage.input_tokens || m.usage.total_tokens))?.usage;
+      const ctxTok = thread.pendingCompact ? 0 : (thread.contextTokens ?? Number(lastAsstUsage?.input_tokens || 0));
+      const cachedTok = Number(lastAsstUsage?.cached_input_tokens || lastAsstUsage?.cache_read_tokens || 0);
+      const cachePct = ctxTok > 0 ? Math.min(100, Math.round((cachedTok / ctxTok) * 100)) : 0;
+
+      let ctxBadgeHtml = '';
+      if (thread.pendingCompact) {
+        ctxBadgeHtml = `<span class="badge codex" style="background:rgba(16,185,129,0.16); color:#10b981; border:1px solid rgba(16,185,129,0.35);" title="Next message will start a fresh lightweight checkpoint session (~2k tokens)">✨ Compacted (~2k ctx ready)</span>`;
+      } else if (ctxTok > 0) {
+        const ctxK = Math.round(ctxTok / 1000);
+        const isHeavy = ctxTok >= 110000;
+        const isMed = ctxTok >= 60000 && ctxTok < 110000;
+        const pillColor = isHeavy ? '#f59e0b' : (isMed ? '#38bdf8' : '#10b981');
+        const pillBg = isHeavy ? 'rgba(245,158,11,0.15)' : 'rgba(56,189,248,0.12)';
+        const cacheStr = cachePct > 0 ? ` • ${cachePct}% cached` : '';
+        ctxBadgeHtml = `
+          <span class="badge" style="background:${pillBg}; color:${pillColor}; border:1px solid ${pillColor}44;" title="Active context window sent per step: ${ctxTok.toLocaleString()} tokens${cacheStr}. Auto-compacts at 150k.">
+            ${isHeavy ? '⚠️' : '📦'} ${ctxK}k ctx${cacheStr}
+          </span>
+          ${ctxTok >= 25000 ? `<button onclick="compactActiveThread()" style="background:${isHeavy ? '#f59e0b' : 'var(--bg-card)'}; color:${isHeavy ? '#090d16' : 'var(--text)'}; border:1px solid ${isHeavy ? '#f59e0b' : 'var(--border)'}; border-radius:6px; padding:3px 8px; font-size:11px; font-weight:600; cursor:pointer;" title="Compact context into a fresh checkpoint session (${ctxK}k → ~2k tokens) while keeping all messages visible">🧹 Compact (${ctxK}k → ~2k)</button>` : ''}
+        `;
+      }
+
       const originHeader = `
         <div class="session-origin-bar">
           <div>
@@ -3471,6 +3522,7 @@
             <div style="font-size:11px; margin-top:2px;">📁 Working Directory: <code>${escapeHtml(thread.projectPath)}</code></div>
           </div>
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            ${ctxBadgeHtml}
             ${lockBadge}
             ${thread.origin === 'vscode' ? '<span class="badge vscode">💠 Imported from VS Code</span>' : ''}
             ${thread.origin === 'codex' ? '<span class="badge codex">🟢 Imported from Codex Desktop</span>' : ''}
@@ -3479,7 +3531,6 @@
         </div>
       `;
 
-      const allMsgs = thread.messages || [];
       const hiddenCount = Math.max(0, allMsgs.length - visibleMessageLimit);
       const visibleMsgs = hiddenCount > 0 ? allMsgs.slice(-visibleMessageLimit) : allMsgs;
 
@@ -3521,10 +3572,13 @@
           const rawTok = m.usage?.total_tokens || (m.usage ? (m.usage.input_tokens || 0) + (m.usage.output_tokens || 0) : 0);
           const estFallback = Math.max(1, Math.round((bodyText.length + nars.join(' ').length + thoughts.join(' ').length) / 4));
           const tok = rawTok > 0 ? rawTok : estFallback;
+          const mInTok = Number(m.usage?.input_tokens || 0);
+          const mCacheTok = Number(m.usage?.cached_input_tokens || m.usage?.cache_read_tokens || 0);
+          const mCachePct = mInTok > 0 && mCacheTok > 0 ? Math.min(100, Math.round((mCacheTok / mInTok) * 100)) : 0;
           const tokTitle = m.usage && (m.usage.input_tokens || m.usage.output_tokens)
-            ? `Input/Context: ${(m.usage.input_tokens || 0).toLocaleString()} tokens • Output: ${(m.usage.output_tokens || 0).toLocaleString()} tokens`
+            ? `Context window: ${(m.usage.input_tokens || 0).toLocaleString()} input tokens${mCachePct > 0 ? ` (${mCacheTok.toLocaleString()} cached — ${mCachePct}%)` : ''} • Generated: ${(m.usage.output_tokens || 0).toLocaleString()} output tokens`
             : `Estimated response tokens: ${tok.toLocaleString()}`;
-          const tokPill = `<span class="token-pill" title="${escapeHtml(tokTitle)}">🪙 ${rawTok > 0 ? '' : '~'}${tok.toLocaleString()} tokens</span>`;
+          const tokPill = `<span class="token-pill" title="${escapeHtml(tokTitle)}">🪙 ${rawTok > 0 ? '' : '~'}${tok.toLocaleString()} tokens${mCachePct > 0 ? ` (${mCachePct}% cached)` : ''}</span>`;
           const thoughtHtml = thoughts.length > 0
             ? `<details class="thinking-details"><summary>💭 Agent Reasoning & Thought Process (${thoughts.length} step${thoughts.length > 1 ? 's' : ''})</summary><div style="margin-top:8px; white-space:pre-wrap; line-height:1.5;">${escapeHtml(thoughts.join('\n\n'))}</div></details>`
             : '';

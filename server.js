@@ -669,7 +669,7 @@ function readAgyNative(convId, file, thread) {
         const cleaned = step.content
           .replace(/<USER_REQUEST>\s*/g, '')
           .replace(/\s*<\/USER_REQUEST>[\s\S]*$/g, '')
-          .replace(/\[Cross-Engine Context Sync[\s\S]*?<\/conversation_history>\s*/g, '')
+          .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
           .trim();
         if (cleaned) {
           currentTurn = null;
@@ -728,16 +728,18 @@ function readAgyNative(convId, file, thread) {
           currentTurn.content = text;
         }
         if (step.input_tokens || step.output_tokens || step.cache_read_tokens) {
-          const prev = currentTurn.usage || { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0 };
+          const prev = currentTurn.usage || { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cached_input_tokens: 0, total_tokens: 0 };
           const stepIn = Number(step.input_tokens || 0);
           const stepCache = Number(step.cache_read_tokens || 0);
           const stepOut = Number(step.output_tokens || 0);
           const contextIn = Math.max(prev.input_tokens || 0, stepIn + stepCache);
           const nextOut = (prev.output_tokens || 0) + stepOut;
+          const maxCache = Math.max(prev.cache_read_tokens || 0, stepCache);
           currentTurn.usage = {
             input_tokens: contextIn,
             output_tokens: nextOut,
-            cache_read_tokens: Math.max(prev.cache_read_tokens || 0, stepCache),
+            cache_read_tokens: maxCache,
+            cached_input_tokens: maxCache,
             total_tokens: contextIn + nextOut
           };
         }
@@ -794,7 +796,7 @@ function stripInternalCodexTags(text) {
     .replace(/<model_switch>[\s\S]*?<\/model_switch>/gi, '')
     .replace(/<permissions[\s\S]*?<\/permissions>/gi, '')
     .replace(/<collaboration_mode>[\s\S]*?<\/collaboration_mode>/gi, '')
-    .replace(/\[Cross-Engine Context Sync[\s\S]*?<\/conversation_history>\s*/g, '')
+    .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
     .trim();
 }
 
@@ -991,6 +993,49 @@ function sameContent(a, b) {
   return longer.includes(shorter.slice(0, 120));
 }
 
+function updateThreadContextStats(thread) {
+  if (!thread) return;
+  if (thread.pendingCompact) {
+    thread.contextTokens = 0;
+    return;
+  }
+  const msgs = thread.messages || [];
+  const startIdx = Number(thread.compactedAtMsgCount || 0);
+  const activeSlice = startIdx > 0 && startIdx <= msgs.length ? msgs.slice(startIdx) : msgs;
+  const lastAsst = [...activeSlice].reverse().find((m) => m.role === 'assistant' && m.usage && (m.usage.input_tokens || m.usage.total_tokens));
+  if (lastAsst && lastAsst.usage) {
+    const u = lastAsst.usage;
+    const ctxTok = Number(u.input_tokens || 0);
+    const cachedTok = Number(u.cached_input_tokens || u.cache_read_tokens || 0);
+    thread.contextTokens = ctxTok;
+    thread.cachePct = ctxTok > 0 ? Math.min(100, Math.round((cachedTok / ctxTok) * 100)) : 0;
+  } else if (startIdx > 0 && activeSlice.length === 0) {
+    thread.contextTokens = 0;
+    thread.cachePct = 0;
+  }
+}
+
+function compactThreadSession(thread, reason = 'manual') {
+  if (!thread) return null;
+  loadThreadHistory(thread);
+  updateThreadContextStats(thread);
+  const prevTokens = thread.contextTokens || thread.compactedFromTokens || 0;
+  if (thread.codexSessionId && thread.codexSessionId !== thread.nativeSource?.id) {
+    thread.hubSessionIds = thread.hubSessionIds || [];
+    if (!thread.hubSessionIds.includes(thread.codexSessionId)) thread.hubSessionIds.push(thread.codexSessionId);
+  }
+  if (thread.agyConversationId && thread.agyConversationId !== thread.nativeSource?.id) {
+    thread.hubSessionIds = thread.hubSessionIds || [];
+    if (!thread.hubSessionIds.includes(thread.agyConversationId)) thread.hubSessionIds.push(thread.agyConversationId);
+  }
+  thread.pendingCompact = true;
+  thread.compactedFromTokens = prevTokens;
+  thread.compactedAtMsgCount = (thread.messages || []).length;
+  thread.contextTokens = 0;
+  writeContextFile(thread, thread.messages || []);
+  return { prevTokens, reason };
+}
+
 function loadThreadHistory(thread, force = false) {
   if (!thread) return thread;
   const hubTurns = (thread.messages || []).filter((m) => m.fromHub);
@@ -998,11 +1043,15 @@ function loadThreadHistory(thread, force = false) {
   if (!info) {
     thread.messages = hubTurns;
     thread.messagesLoaded = true;
+    updateThreadContextStats(thread);
     return thread;
   }
 
   const key = sourceKey(info, thread);
-  if (!force && thread.messagesLoaded && thread.loadedKey === key) return thread;
+  if (!force && thread.messagesLoaded && thread.loadedKey === key) {
+    updateThreadContextStats(thread);
+    return thread;
+  }
 
   const native = info.type === 'agy' ? readAgyNative(info.id, info.file, thread) : readCodexNative(info.file, thread);
   if (info.type === 'codex') {
@@ -1036,6 +1085,7 @@ function loadThreadHistory(thread, force = false) {
   thread.nativeActions = native.actions;
   thread.messagesLoaded = true;
   thread.loadedKey = key;
+  updateThreadContextStats(thread);
   return thread;
 }
 
@@ -1416,6 +1466,18 @@ function collectRecentActions(thread, history) {
 }
 
 function resumeDecision(thread, engine) {
+  const autoCompactThreshold = Number(appState?.settings?.autoCompactThresholdTokens ?? 150000);
+  if (thread.pendingCompact || (autoCompactThreshold > 0 && (thread.contextTokens || 0) >= autoCompactThreshold)) {
+    const prevTokens = thread.compactedFromTokens || thread.contextTokens || 0;
+    return {
+      resume: false,
+      fork: false,
+      compact: true,
+      prevTokens,
+      reason: thread.pendingCompact ? 'manual-compact' : 'auto-compact',
+      sessionId: null
+    };
+  }
   const lastAssistant = [...(thread.messages || [])].reverse().find((m) => m.role === 'assistant');
   const sessionId = engine === 'antigravity' ? thread.agyConversationId : thread.codexSessionId;
   if (!sessionId) return { resume: false, reason: 'no-session' };
@@ -1480,6 +1542,28 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
   const transcriptFile = writeContextFile(thread, history);
   const recentActions = collectRecentActions(thread, relevantHistory);
   const gitSummary = getGitSummary(thread.projectPath);
+
+  if (decision.compact) {
+    const cpPath = thread.projectPath ? path.join(thread.projectPath, 'CHECKPOINT.md') : null;
+    const hasCheckpoint = cpPath && fs.existsSync(cpPath);
+    const compactHeader = [
+      `[Compacted Checkpoint Session — continuing on ${engine.toUpperCase()}]`,
+      handoffReason ? `Note: ${handoffReason}` : '',
+      hasCheckpoint ? `Primary Workspace Checkpoint File (READ THIS FIRST if you need project state): ${cpPath}` : '',
+      `Full historical session transcript file (read only if older details are needed): ${transcriptFile}`,
+      recentActions.length ? `Recent tool/file actions:\n${recentActions.slice(-6).map((a) => `  - ${a}`).join('\n')}` : '',
+      gitSummary && gitSummary !== 'Git working tree is clean.' ? `Workspace git status:\n${gitSummary}` : '',
+      'Please continue the dialogue naturally based on the recent exchange below.'
+    ].filter(Boolean).join('\n');
+    const recentHist = relevantHistory
+      .slice(-4)
+      .map((m) => `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1200)}`)
+      .join('\n\n');
+    return {
+      prompt: `${compactHeader}\n\n<conversation_history>\n${recentHist}\n</conversation_history>\n\n${request}`,
+      usedBriefing: true
+    };
+  }
 
   const header = [
     `[Cross-Engine Context Sync — continuing on ${engine.toUpperCase()}]`,
@@ -2352,6 +2436,8 @@ function rememberSession(thread, engine, id, syncedMsgCount) {
     thread.hubSessionIds = thread.hubSessionIds || [];
     if (!thread.hubSessionIds.includes(id)) thread.hubSessionIds.push(id);
   }
+  thread.pendingCompact = false;
+  thread.compactedFromTokens = 0;
 }
 
 function sanitizeAttachments(list) {
@@ -2387,6 +2473,28 @@ async function handleChat(req, res, body) {
 
   const attachments = sanitizeAttachments(body.attachments);
   loadThreadHistory(thread);
+
+  if (String(prompt || '').trim().toLowerCase() === '/compact') {
+    const info = compactThreadSession(thread, 'slash-command');
+    saveState(appState);
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
+    const prevK = info?.prevTokens ? `${Math.round(info.prevTokens / 1000)}k` : 'active';
+    const assistantMsg = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      engine: engineMode === 'antigravity' ? 'antigravity' : 'codex',
+      model: 'Context Compactor',
+      content: `🧹 **Context compacted (${prevK} → ~2k tokens).**\n\nYour full conversation history stays visible right here, and your next message will start a fresh, lightweight engine session seeded with your \`CHECKPOINT.md\` and last 4 turns — cutting per-step token usage by up to **90%**.`,
+      narratives: [],
+      thinkingSteps: [],
+      actions: [],
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      fromHub: true,
+      timestamp: new Date().toISOString()
+    };
+    res.write(`data: ${JSON.stringify({ type: 'done', message: assistantMsg, thread })}\n\n`);
+    return res.end();
+  }
 
   const liveTurn = {
     threadId: thread.id,
@@ -2520,7 +2628,13 @@ async function handleChat(req, res, body) {
     liveTurn.model = model;
     const decision = resumeDecision({ ...thread, messages: history }, eng);
     if (!promptOverride) {
-      if (decision.reason === 'open-elsewhere') {
+      if (decision.compact) {
+        const prevK = decision.prevTokens ? `${Math.round(decision.prevTokens / 1000)}k` : 'heavy';
+        sendEvent({
+          type: 'switch_notice',
+          message: `🧹 Context ${decision.reason === 'auto-compact' ? 'auto-' : ''}compacted (${prevK} → ~2k tokens). Starting a fresh checkpoint session with your recent turns and CHECKPOINT.md so every step costs ~90% fewer tokens.`
+        });
+      } else if (decision.reason === 'open-elsewhere') {
         sendEvent({ type: 'switch_notice', message: `This chat is open in Antigravity right now, so the hub continues in a fresh session with the full context. The original is left untouched.` });
       } else if (decision.reason === 'open-elsewhere-fork') {
         sendEvent({ type: 'switch_notice', message: `This chat is open in VS Code / Codex right now; cloning its live session via native fork so both windows can work without lock conflicts.` });
@@ -2606,6 +2720,7 @@ async function handleChat(req, res, body) {
     // Commit userMsg + assistantMsg atomically so failed/aborted turns never leave orphaned user messages
     thread.messages.push(userMsg, assistantMsg);
     thread.updatedAt = assistantMsg.timestamp;
+    updateThreadContextStats(thread);
     saveState(appState);
     writeContextFile(thread, thread.messages);
     syncCrossAppMemory();
@@ -2917,6 +3032,16 @@ const server = http.createServer(async (req, res) => {
       const cwd = parsedUrl.searchParams.get('cwd');
       if (!isAllowedWorkspacePath(cwd)) return sendJson(res, 403, { error: 'Folder is not a registered project.' });
       return sendJson(res, 200, listWorkspaceFiles(normalizeWinPath(cwd)));
+    }
+
+    // --- POST /api/threads/compact (compact active session into a fresh checkpoint handoff) ---
+    if (req.method === 'POST' && pathname === '/api/threads/compact') {
+      const body = await parseJsonBody(req);
+      const thread = appState.threads.find((t) => t.id === body.threadId);
+      if (!thread) return sendJson(res, 404, { error: 'Thread not found' });
+      const info = compactThreadSession(thread, 'manual');
+      saveState(appState);
+      return sendJson(res, 200, { ok: true, prevTokens: info?.prevTokens || 0, thread, threads: appState.threads.map(summarizeThread) });
     }
 
     // --- POST /api/threads (new chat) ---
