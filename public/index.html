@@ -1177,19 +1177,85 @@
     }
 
     .msg-body {
-      white-space: pre-wrap;
+      white-space: normal;
       word-break: break-word;
+      line-height: 1.62;
     }
 
-    .msg-body h1, .msg-body h2, .msg-body h3 {
-      margin: 12px 0 6px;
+    .msg-body p {
+      margin: 0 0 10px;
+    }
+
+    .msg-body p:last-child {
+      margin-bottom: 0;
+    }
+
+    .msg-body h1, .msg-body h2, .msg-body h3, .msg-body h4 {
+      margin: 16px 0 8px;
       line-height: 1.35;
       color: var(--text-main);
     }
 
+    .msg-body h1:first-child, .msg-body h2:first-child, .msg-body h3:first-child, .msg-body h4:first-child {
+      margin-top: 0;
+    }
+
     .msg-body h1 { font-size: 18px; font-weight: 700; }
     .msg-body h2 { font-size: 16px; font-weight: 700; }
-    .msg-body h3 { font-size: 14.5px; font-weight: 600; }
+    .msg-body h3 { font-size: 14.5px; font-weight: 700; }
+    .msg-body h4 { font-size: 13.5px; font-weight: 600; }
+
+    .msg-body ul, .msg-body ol {
+      margin: 6px 0 10px;
+      padding-left: 22px;
+    }
+
+    .msg-body li {
+      margin: 4px 0;
+      line-height: 1.55;
+    }
+
+    .msg-body li > ul, .msg-body li > ol {
+      margin: 4px 0 4px;
+    }
+
+    .msg-body hr.md-hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 14px 0;
+      opacity: 0.65;
+    }
+
+    .msg-body blockquote.md-quote {
+      border-left: 3px solid var(--accent);
+      margin: 8px 0;
+      padding: 4px 12px;
+      color: var(--text-muted);
+      background: rgba(99, 102, 241, 0.05);
+      border-radius: 0 6px 6px 0;
+    }
+
+    .msg-body .md-table-wrap {
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+
+    .msg-body table.md-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+
+    .msg-body table.md-table th, .msg-body table.md-table td {
+      border: 1px solid var(--border);
+      padding: 6px 10px;
+      text-align: left;
+    }
+
+    .msg-body table.md-table th {
+      background: var(--bg-hover);
+      font-weight: 600;
+    }
 
     .msg-body a {
       color: var(--auto-accent);
@@ -4316,6 +4382,7 @@
       const cleaned = String(text || '')
         .replace(/<external_codex_apps_open_page>[\s\S]*?<\/external_codex_apps_open_page>/gi, '')
         .trim();
+      if (!cleaned) return '';
       let html = escapeHtml(cleaned);
 
       // 1. Protect fenced code blocks first so markdown regexes never corrupt code
@@ -4323,58 +4390,193 @@
       html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
         const idx = codeBlocks.length;
         codeBlocks.push(`<div class="code-block-wrap"><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button><pre><code>${code}</code></pre></div>`);
-        return `\x00CODEBLOCK_${idx}\x00`;
+        return `\n\x00CODEBLOCK_${idx}\x00\n`;
       });
 
       const renderedImagePaths = new Set();
 
-      // 2. Codex file citations (:codex-file-citation{path="..."})
-      html = html.replace(/:codex-file-citation\{path=&quot;([^&]+?)&quot;[^}]*\}/g, (_, p) => {
-        if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(p)) {
-          renderedImagePaths.add(p);
-          return renderPlotCardHtml(p, p.split(/[\\/]/).pop());
-        }
-        return `<code>📄 ${p.split(/[\\/]/).pop()}</code>`;
-      });
-
-      // 3. Markdown images: ![alt](path)
-      html = html.replace(/!\[([^\]]*)\]\(([^)\s]+(?:\s+[^)]*)?)\)/g, (_, alt, rawTarget) => {
-        const target = rawTarget.trim().replace(/\s+&quot;.*&quot;$/, '');
-        renderedImagePaths.add(target);
-        return renderPlotCardHtml(target, alt || target.split(/[\\/]/).pop());
-      });
-
-      // 4. Markdown links to local or remote images: [label](path.png)
-      html = html.replace(/\[([^\]]+)\]\(([^)]+\.(?:png|jpe?g|gif|webp|svg|bmp))\)/gi, (_, label, rawTarget) => {
-        const target = rawTarget.trim();
-        const imgUrl = buildLocalImageUrl(target);
-        if (renderedImagePaths.has(target)) {
-          return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-        }
-        renderedImagePaths.add(target);
-        return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>${renderPlotCardHtml(target, label)}`;
-      });
-
-      // 5. Standard HTTP/HTTPS links
-      html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-      // 6. Headings, inline code (with automatic plot preview if a backticked path is an image), and bold
-      html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-      html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-      html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+      // 2. Protect inline code spans before bold/italic/links so `*` or `_` inside backticks is never mangled
+      const inlineCodes = [];
       html = html.replace(/`([^`\n]+)`/g, (_, codeSpan) => {
+        const idx = inlineCodes.length;
         if (/[\\/]/.test(codeSpan) && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(codeSpan.trim()) && !renderedImagePaths.has(codeSpan.trim())) {
           const p = codeSpan.trim();
           renderedImagePaths.add(p);
-          return `<code>${codeSpan}</code>${renderPlotCardHtml(p, p.split(/[\\/]/).pop())}`;
+          inlineCodes.push(`<code>${codeSpan}</code>${renderPlotCardHtml(p, p.split(/[\\/]/).pop())}`);
+        } else {
+          inlineCodes.push(`<code>${codeSpan}</code>`);
         }
-        return `<code>${codeSpan}</code>`;
+        return `\x00INLINECODE_${idx}\x00`;
       });
-      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-      // 7. Restore fenced code blocks
-      html = html.replace(/\x00CODEBLOCK_(\d+)\x00/g, (_, idx) => codeBlocks[Number(idx)] || '');
-      return html;
+      const formatInline = (str) => {
+        let s = str;
+        // Codex file citations (:codex-file-citation{path="..."})
+        s = s.replace(/:codex-file-citation\{path=&quot;([^&]+?)&quot;[^}]*\}/g, (_, p) => {
+          if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(p)) {
+            renderedImagePaths.add(p);
+            return renderPlotCardHtml(p, p.split(/[\\/]/).pop());
+          }
+          return `<code>📄 ${p.split(/[\\/]/).pop()}</code>`;
+        });
+        // Markdown images: ![alt](path)
+        s = s.replace(/!\[([^\]]*)\]\(([^)\s]+(?:\s+[^)]*)?)\)/g, (_, alt, rawTarget) => {
+          const target = rawTarget.trim().replace(/\s+&quot;.*&quot;$/, '');
+          renderedImagePaths.add(target);
+          return renderPlotCardHtml(target, alt || target.split(/[\\/]/).pop());
+        });
+        // Markdown links to local or remote images: [label](path.png)
+        s = s.replace(/\[([^\]]+)\]\(([^)]+\.(?:png|jpe?g|gif|webp|svg|bmp))\)/gi, (_, label, rawTarget) => {
+          const target = rawTarget.trim();
+          const imgUrl = buildLocalImageUrl(target);
+          if (renderedImagePaths.has(target)) {
+            return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+          }
+          renderedImagePaths.add(target);
+          return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>${renderPlotCardHtml(target, label)}`;
+        });
+        // Local file:/// links from Antigravity
+        s = s.replace(/\[([^\]]+)\]\((file:\/\/\/[^\s)]+)\)/g, '<code>$1</code>');
+        // Standard HTTP/HTTPS links
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        // Bold + Italic, Bold, Italic
+        s = s.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+        // Restore inline code spans
+        s = s.replace(/\x00INLINECODE_(\d+)\x00/g, (_, idx) => inlineCodes[Number(idx)] || '');
+        return s;
+      };
+
+      // 3. Block-level parser for headings, horizontal rules, nested lists, tables, blockquotes, and paragraphs
+      const lines = html.split('\n');
+      const out = [];
+      let para = [];
+      let quoteLines = [];
+      const listStack = []; // [{ type: 'ul'|'ol', indent: number }]
+
+      const flushPara = () => {
+        if (para.length) {
+          out.push(`<p>${para.map(formatInline).join('<br>')}</p>`);
+          para = [];
+        }
+      };
+      const flushQuote = () => {
+        if (quoteLines.length) {
+          out.push(`<blockquote class="md-quote">${quoteLines.map(formatInline).join('<br>')}</blockquote>`);
+          quoteLines = [];
+        }
+      };
+      const closeListsTo = (targetIndent) => {
+        while (listStack.length && listStack[listStack.length - 1].indent > targetIndent) {
+          const top = listStack.pop();
+          out.push(`</${top.type}>`);
+        }
+      };
+      const closeAllLists = () => closeListsTo(-1);
+
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        const trimmed = raw.trim();
+
+        if (!trimmed) {
+          flushPara();
+          flushQuote();
+          continue;
+        }
+
+        // Code block placeholder
+        if (/^\x00CODEBLOCK_\d+\x00$/.test(trimmed)) {
+          flushPara();
+          flushQuote();
+          closeAllLists();
+          out.push(trimmed);
+          continue;
+        }
+
+        // Horizontal rule (---, ***, ___)
+        if (/^(?:---+|___+|\*\*\*+)$/.test(trimmed)) {
+          flushPara();
+          flushQuote();
+          closeAllLists();
+          out.push('<hr class="md-hr">');
+          continue;
+        }
+
+        // Headings (# to ####)
+        const hMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+        if (hMatch) {
+          flushPara();
+          flushQuote();
+          closeAllLists();
+          const lvl = hMatch[1].length;
+          out.push(`<h${lvl}>${formatInline(hMatch[2])}</h${lvl}>`);
+          continue;
+        }
+
+        // Markdown Table
+        if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+          flushPara();
+          flushQuote();
+          closeAllLists();
+          const parseRow = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => formatInline(c.trim()));
+          const headers = parseRow(trimmed);
+          i += 2; // skip header and separator
+          const rows = [];
+          while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+            rows.push(parseRow(lines[i]));
+            i++;
+          }
+          i--; // step back one line for outer loop
+          const thead = `<thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>`;
+          const tbody = rows.length ? `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>` : '';
+          out.push(`<div class="md-table-wrap"><table class="md-table">${thead}${tbody}</table></div>`);
+          continue;
+        }
+
+        // Blockquote (> text)
+        const qMatch = trimmed.match(/^&gt;\s?(.*)$/);
+        if (qMatch) {
+          flushPara();
+          closeAllLists();
+          quoteLines.push(qMatch[1]);
+          continue;
+        }
+        flushQuote();
+
+        // Unordered or Ordered List Item
+        const ulMatch = raw.match(/^(\s*)[*-]\s+(.+)$/);
+        const olMatch = raw.match(/^(\s*)(\d+)\.\s+(.+)$/);
+        if (ulMatch || olMatch) {
+          flushPara();
+          const indent = (ulMatch ? ulMatch[1] : olMatch[1]).length;
+          const type = ulMatch ? 'ul' : 'ol';
+          const content = ulMatch ? ulMatch[2] : olMatch[3];
+          const valAttr = olMatch ? ` value="${olMatch[2]}"` : '';
+          closeListsTo(indent);
+          const top = listStack[listStack.length - 1];
+          if (!top || top.indent < indent) {
+            listStack.push({ type, indent });
+            out.push(`<${type}>`);
+          } else if (top.type !== type) {
+            listStack.pop();
+            out.push(`</${top.type}><${type}>`);
+            listStack.push({ type, indent });
+          }
+          out.push(`<li${valAttr}>${formatInline(content)}</li>`);
+          continue;
+        }
+
+        closeAllLists();
+        para.push(trimmed);
+      }
+
+      flushPara();
+      flushQuote();
+      closeAllLists();
+
+      // 4. Restore fenced code blocks
+      return out.join('\n').replace(/\x00CODEBLOCK_(\d+)\x00/g, (_, idx) => codeBlocks[Number(idx)] || '');
     }
 
     function toggleMobileSidebar() {

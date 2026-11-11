@@ -532,8 +532,9 @@ function nativeSourceInfo(thread) {
   const ns = thread.nativeSource;
   if (!ns) return null;
   if (ns.type === 'agy') {
+    const trFull = path.join(HOME, '.gemini', 'antigravity', 'brain', ns.id, '.system_generated', 'logs', 'transcript_full.jsonl');
     const tr = path.join(HOME, '.gemini', 'antigravity', 'brain', ns.id, '.system_generated', 'logs', 'transcript.jsonl');
-    return { ...ns, file: fs.existsSync(tr) ? tr : null };
+    return { ...ns, file: fs.existsSync(trFull) ? trFull : fs.existsSync(tr) ? tr : null };
   }
   if (ns.type === 'codex') {
     const file = ns.rolloutPath && fs.existsSync(ns.rolloutPath) ? ns.rolloutPath : findCodexRollout(ns.id);
@@ -573,7 +574,7 @@ function sourceKey(info, thread) {
   return parts.length ? parts.join('|') : `db:${thread.nativeUpdatedAt || ''}`;
 }
 
-function forEachJsonlLine(file, onObj, maxTailBytes = 25 * 1024 * 1024) {
+function forEachJsonlLine(file, onObj, maxTailBytes = 25 * 1024 * 1024, lineFilter = null) {
   if (!file || !fs.existsSync(file)) return;
   let fd;
   try {
@@ -599,15 +600,19 @@ function forEachJsonlLine(file, onObj, maxTailBytes = 25 * 1024 * 1024) {
         }
         const trimmed = l.trim();
         if (!trimmed) continue;
+        if (lineFilter && !lineFilter(trimmed)) continue;
         try {
           onObj(JSON.parse(trimmed));
         } catch {}
       }
     }
     if (carry.trim() && !skipPartialFirst) {
-      try {
-        onObj(JSON.parse(carry.trim()));
-      } catch {}
+      const trimmed = carry.trim();
+      if (!lineFilter || lineFilter(trimmed)) {
+        try {
+          onObj(JSON.parse(trimmed));
+        } catch {}
+      }
     }
   } catch {} finally {
     if (fd !== undefined) {
@@ -664,7 +669,9 @@ function readAgyNative(convId, file, thread) {
 
   if (file) {
     let currentTurn = null;
-    forEachJsonlLine(file, (step) => {
+    forEachJsonlLine(
+      file,
+      (step) => {
       if (step.type === 'USER_INPUT' && step.content) {
         const cleaned = step.content
           .replace(/<USER_REQUEST>\s*/g, '')
@@ -747,7 +754,10 @@ function readAgyNative(convId, file, thread) {
         }
         if (step.created_at) currentTurn.timestamp = step.created_at;
       }
-    });
+    },
+    40 * 1024 * 1024,
+    (line) => line.includes('"USER_INPUT"') || line.includes('"PLANNER_RESPONSE"')
+    );
   }
 
   // Fallback: the searchable index inside conversation_summaries.db.
