@@ -1528,14 +1528,28 @@ function upsertSharedContextBlock(filePath, blockContent) {
   } catch {}
 }
 
+function stripSharedContextFromFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const sIdx = content.indexOf(SHARED_CTX_START);
+    const eIdx = content.indexOf(SHARED_CTX_END);
+    if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
+      const stripped = (content.slice(0, sIdx) + content.slice(eIdx + SHARED_CTX_END.length)).trim();
+      if (stripped.length === 0) fs.unlinkSync(filePath);
+      else fs.writeFileSync(filePath, stripped + '\n', 'utf8');
+    }
+  } catch {}
+}
+
 function syncCrossAppMemory() {
   try {
     const sorted = [...(appState.threads || [])]
       .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
     if (sorted.length === 0) return;
 
-    // Token-efficient: pick only the top 3 most recent active threads to eliminate context bloat
-    const pickedThreads = sorted.slice(0, 3);
+    // Keep top 5 recent threads in the on-demand file (zero prompt overhead until read)
+    const pickedThreads = sorted.slice(0, 5);
 
     const sections = [];
     for (const t of pickedThreads) {
@@ -1545,11 +1559,11 @@ function syncCrossAppMemory() {
       const ctxFile = writeContextFile(t, msgs);
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
       const lastAsst = [...msgs].reverse().find((m) => m.role === 'assistant');
-      const userSummary = lastUser ? truncate(lastUser.content.replace(/\s+/g, ' ').trim(), 120) : '';
-      const asstSummary = lastAsst ? truncate(lastAsst.content.replace(/\s+/g, ' ').trim(), 140) : '';
+      const userSummary = lastUser ? truncate(lastUser.content.replace(/\s+/g, ' ').trim(), 160) : '';
+      const asstSummary = lastAsst ? truncate(lastAsst.content.replace(/\s+/g, ' ').trim(), 200) : '';
       sections.push(
         `### [${t.originatorLabel || t.origin || 'Hub'}] ${t.title || 'Untitled'}\n` +
-        `- **Workspace:** \`${t.projectPath || DEFAULT_PROJECT_PATH}\`\n` +
+        `- **Workspace:** \`${t.projectPath || DEFAULT_PROJECT_PATH}\` | **Updated:** ${t.updatedAt || 'recent'}\n` +
         `- **Transcript:** \`${ctxFile}\`\n` +
         (userSummary ? `- **Latest Request:** ${userSummary}\n` : '') +
         (asstSummary ? `- **Latest Outcome:** ${asstSummary}` : '')
@@ -1557,6 +1571,7 @@ function syncCrossAppMemory() {
     }
     if (sections.length === 0) return;
 
+    const liveSharedFile = path.join(DATA_DIR, 'LIVE_SHARED_CONTEXT.md');
     const digestBody = [
       '# Live Cross-App Shared Context (Antigravity + VS Code Codex + AI Studio Hub)',
       '> **Note for Agents:** Most recent cross-app state across Antigravity, VS Code, and Codex. For complete history, read the linked transcript file.',
@@ -1565,29 +1580,25 @@ function syncCrossAppMemory() {
     ].join('\n\n');
 
     const hash = crypto.createHash('sha1').update(digestBody).digest('hex');
-    if (hash === lastSyncedDigestHash) return;
-    lastSyncedDigestHash = hash;
+    if (hash !== lastSyncedDigestHash) {
+      lastSyncedDigestHash = hash;
+      // 1. Write changing state ONLY to the external on-demand file so prompt caches are never invalidated
+      fs.writeFileSync(liveSharedFile, digestBody, 'utf8');
+    }
 
-    // 1. Central live context file
-    fs.writeFileSync(path.join(DATA_DIR, 'LIVE_SHARED_CONTEXT.md'), digestBody, 'utf8');
-    // 2. Global OpenAI Codex instructions (auto-loaded once across VS Code & Codex Desktop)
-    upsertSharedContextBlock(path.join(HOME, '.codex', 'AGENTS.md'), digestBody);
-    // 3. Global Antigravity rules (auto-loaded once across Antigravity IDE & CLI)
-    upsertSharedContextBlock(path.join(HOME, '.gemini', 'config', 'rules', 'AGENTS.md'), digestBody);
+    // 2. Keep global AGENTS.md 100% STATIC (~35 tokens) so KV prefix cache hit rate stays 99%+ across turns
+    const staticPointerBlock = [
+      '# Cross-App Shared Context (Antigravity + VS Code Codex + AI Studio Hub)',
+      `When the user refers to a recent conversation, plan, or change from another window/assistant, read \`${liveSharedFile}\` for the live cross-app summary and full transcript links.`
+    ].join('\n');
+    upsertSharedContextBlock(path.join(HOME, '.codex', 'AGENTS.md'), staticPointerBlock);
+    upsertSharedContextBlock(path.join(HOME, '.gemini', 'config', 'rules', 'AGENTS.md'), staticPointerBlock);
 
-    // Remove duplicate from My Drive/AGENTS.md to prevent Antigravity double-injection
-    const myDriveAgents = path.join(DEFAULT_PROJECT_PATH, 'AGENTS.md');
-    if (fs.existsSync(myDriveAgents)) {
-      try {
-        const content = fs.readFileSync(myDriveAgents, 'utf8');
-        const sIdx = content.indexOf(SHARED_CTX_START);
-        const eIdx = content.indexOf(SHARED_CTX_END);
-        if (sIdx !== -1 && eIdx !== -1) {
-          const stripped = (content.slice(0, sIdx) + content.slice(eIdx + SHARED_CTX_END.length)).trim();
-          if (stripped.length === 0) fs.unlinkSync(myDriveAgents);
-          else fs.writeFileSync(myDriveAgents, stripped, 'utf8');
-        }
-      } catch {}
+    // 3. Clean up legacy duplicate blocks in .gemini/config/AGENTS.md and workspace AGENTS.md files
+    stripSharedContextFromFile(path.join(HOME, '.gemini', 'config', 'AGENTS.md'));
+    stripSharedContextFromFile(path.join(DEFAULT_PROJECT_PATH, 'AGENTS.md'));
+    for (const p of appState.projects || []) {
+      if (p.path) stripSharedContextFromFile(path.join(p.path, 'AGENTS.md'));
     }
   } catch (err) {
     console.error('[AI Hub] syncCrossAppMemory warning:', err.message);
