@@ -670,6 +670,7 @@ function readAgyNative(convId, file, thread) {
           .replace(/<USER_REQUEST>\s*/g, '')
           .replace(/\s*<\/USER_REQUEST>[\s\S]*$/g, '')
           .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
+          .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
           .trim();
         if (cleaned) {
           currentTurn = null;
@@ -797,6 +798,7 @@ function stripInternalCodexTags(text) {
     .replace(/<permissions[\s\S]*?<\/permissions>/gi, '')
     .replace(/<collaboration_mode>[\s\S]*?<\/collaboration_mode>/gi, '')
     .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
+    .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
     .trim();
 }
 
@@ -1502,7 +1504,27 @@ function resumeDecision(thread, engine) {
   return { resume: true, deltaOnly: false, sessionId };
 }
 
-function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, decision, handoffReason }) {
+function classifyPromptIntent(prompt, attachments = []) {
+  const clean = String(prompt || '').trim();
+  if (!clean || clean.length > 260 || (attachments && attachments.length > 0) || clean.includes('```')) {
+    return { isLightweightQuestion: false };
+  }
+  const ACTION_RE = /\b(go|proceed|continue|implement|build|fix|edit|write|create|patch|run|execute|test|verify|seal|commit|push|deploy|draw|plot|render|refactor|update|change|add|remove|delete|install|keep running|do these|step by step|one at a time)\b/i;
+  if (ACTION_RE.test(clean)) {
+    return { isLightweightQuestion: false };
+  }
+  const QUESTION_RE = /^(what|whats|what's|why|how|when|where|who|which|status|tell me|explain|summarize|summary|can you explain|do we have|is there|check carefully and give me a road\s*map|give me a road\s*map)\b|\?$/i;
+  if (QUESTION_RE.test(clean)) {
+    const isRoadmap = /road\s*map|left|architecture|plan|overview/i.test(clean);
+    return {
+      isLightweightQuestion: true,
+      suggestedEffort: isRoadmap ? 'medium' : 'low'
+    };
+  }
+  return { isLightweightQuestion: false };
+}
+
+function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, decision, handoffReason, lightweightHint }) {
   let userText = userPrompt;
   if (userText.length > 16000) {
     const f = path.join(CONTEXT_DIR, `${safeFileName(thread.id)}-message-${Date.now()}.md`);
@@ -1512,7 +1534,10 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
   const attachmentBlock = attachments.length
     ? `\n\n[Attached files]:\n${attachments.map((a) => `- ${a.path} (${a.name})`).join('\n')}\nRead these files directly if needed.`
     : '';
-  const request = `${userText}${attachmentBlock}`;
+  const queryHintBlock = lightweightHint
+    ? `\n\n<lightweight_query_hint>Note: This is a status or informational question. Answer concisely using existing context/checkpoint files without running heavy test suites or modifying files.</lightweight_query_hint>`
+    : '';
+  const request = `${userText}${attachmentBlock}${queryHintBlock}`;
 
   // If resuming or forking the same engine with no intervening turns on the other engine, send the user's prompt directly
   if (((decision.resume || decision.fork) && !decision.deltaOnly) || history.length === 0) {
@@ -2560,7 +2585,22 @@ async function handleChat(req, res, body) {
   let engine = engineMode === 'auto' ? defaultEngine : engineMode;
   let agyModelToUse = agyModel;
   let agyEffortToUse = agyEffort;
+  let codexEffortToUse = codexEffort;
   let handoffReason = null;
+
+  const promptIntent = classifyPromptIntent(prompt, attachments);
+  if (promptIntent.isLightweightQuestion) {
+    const targetEff = promptIntent.suggestedEffort || 'low';
+    if (codexEffortToUse === 'high' || codexEffortToUse === 'xhigh' || (codexEffortToUse === 'medium' && targetEff === 'low')) {
+      codexEffortToUse = targetEff;
+    }
+    if (agyEffortToUse === 'high' || (agyEffortToUse === 'medium' && targetEff === 'low')) {
+      agyEffortToUse = targetEff;
+      const fam = agyFamily(agyModelToUse);
+      const lighterModel = agyStatus.models.find((m) => m.family === fam && m.effort === targetEff && (m.remainingPct ?? 100) >= threshold);
+      if (lighterModel) agyModelToUse = lighterModel.modelId;
+    }
+  }
 
   if (engineMode === 'auto') {
     if (engine === 'antigravity' && agyModelPct(agyModel) < threshold) {
@@ -2628,6 +2668,12 @@ async function handleChat(req, res, body) {
     liveTurn.model = model;
     const decision = resumeDecision({ ...thread, messages: history }, eng);
     if (!promptOverride) {
+      if (promptIntent.isLightweightQuestion) {
+        sendEvent({
+          type: 'switch_notice',
+          message: `⚡ Smart Question Routing: Status/info question detected — scaled reasoning effort to ${String(effort || 'low').toUpperCase()} & skipped heavy test sweeps to save your quota.`
+        });
+      }
       if (decision.compact) {
         const prevK = decision.prevTokens ? `${Math.round(decision.prevTokens / 1000)}k` : 'heavy';
         sendEvent({
@@ -2642,7 +2688,7 @@ async function handleChat(req, res, body) {
     }
     const { prompt: promptText, usedBriefing } = promptOverride
       ? { prompt: promptOverride, usedBriefing: false }
-      : buildEnginePrompt({ thread, history, userPrompt: prompt, attachments, engine: eng, decision, handoffReason: reason });
+      : buildEnginePrompt({ thread, history, userPrompt: prompt, attachments, engine: eng, decision, handoffReason: reason, lightweightHint: promptIntent.isLightweightQuestion });
     const actions = [];
     const narratives = [...(liveTurn.narratives || [])];
     const thinkingSteps = [...(liveTurn.thinkingSteps || [])];
@@ -2680,8 +2726,8 @@ async function handleChat(req, res, body) {
       const r = await runCodexTurn({
         thread,
         promptText,
-        modelSlug: codexModel,
-        effort: codexEffort,
+        modelSlug: model,
+        effort: effort,
         mode: executionMode,
         cwd: thread.projectPath,
         resumeSessionId: decision.resume ? decision.sessionId : null,
@@ -2690,7 +2736,7 @@ async function handleChat(req, res, body) {
         onEvent
       });
       rememberSession(thread, 'codex', r.sessionId, history.length);
-      return { engine: eng, model: `${codexModel} (${codexEffort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
+      return { engine: eng, model: `${model} (${effort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
     } catch (runErr) {
       runErr.hadStepProgress = hadStepProgress || Boolean(runErr.hadStepProgress);
       if (!runErr.partialText) {
@@ -2757,7 +2803,7 @@ async function handleChat(req, res, body) {
   try {
     let result;
     try {
-      result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModel, engine === 'antigravity' ? agyEffortToUse : codexEffort, handoffReason);
+      result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModel, engine === 'antigravity' ? agyEffortToUse : codexEffortToUse, handoffReason);
     } catch (primaryErr) {
       if (primaryErr.cancelled) throw primaryErr;
       // Fail over only on genuine quota / rate-limit errors, never on Stop or ordinary errors.
@@ -2765,7 +2811,7 @@ async function handleChat(req, res, body) {
 
       let fbEngine = engine === 'antigravity' ? 'codex' : 'antigravity';
       let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModel;
-      let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffort;
+      let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
       if (engine === 'antigravity') {
         const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1 });
         if (alt) {
