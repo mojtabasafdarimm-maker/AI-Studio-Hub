@@ -49,8 +49,8 @@ if (!HUB_TOKEN || HUB_TOKEN.length < 32) {
     fs.writeFileSync(TOKEN_FILE, HUB_TOKEN, 'utf8');
   } catch {}
 }
-const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, 'ai-studio-hub.mojtaba-safdari-mm.workers.dev']);
-const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`, 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev']);
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, 'ai-studio-hub.mojtaba-safdari-mm.workers.dev', 'parlez-french.mojtaba-safdari-mm.workers.dev']);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`, 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev', 'https://parlez-french.mojtaba-safdari-mm.workers.dev']);
 
 // ---------------------------------------------------------------------------
 // 1. Small Helpers

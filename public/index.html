@@ -1991,14 +1991,25 @@
       </div>
 
       <div id="tunnelActiveView" style="display:none;">
+        <div style="background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.35); border-radius:10px; padding:12px 14px; margin-bottom:14px; text-align:left;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="font-size:12px; font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:6px;">
+              <span>🌟</span> Permanent Phone URL (Never Changes)
+            </div>
+            <button class="btn btn-sm" style="font-size:11px; padding:3px 8px; background:#0284c7; color:#fff; border:none;" onclick="copyPermanentUrl()">📋 Copy</button>
+          </div>
+          <div id="permanentUrlText" style="font-size:12px; font-family:monospace; color:#e0f2fe; word-break:break-all;">https://ai-studio-hub.mojtaba-safdari-mm.workers.dev</div>
+          <div style="font-size:11px; color:#94a3b8; margin-top:4px;">Bookmark this once on your phone or tap <em>Add to Home Screen</em>. It automatically connects to your live PC without buying any domain!</div>
+        </div>
+
         <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
-          Scan with your phone camera to open and control AI Studio Hub:
+          Scan with your phone camera to open and bookmark AI Studio Hub:
         </p>
         <div id="qrcodeBox" style="background:#ffffff; padding:12px; border-radius:12px; display:inline-flex; justify-content:center; align-items:center; box-shadow:0 4px 16px rgba(0,0,0,0.3); margin-bottom:12px;"></div>
         
         <div style="display:flex; gap:8px; margin-bottom:14px;">
           <input id="mobileUrlInput" type="text" readonly style="flex:1; font-size:12px; font-family:monospace; padding:8px 10px; background:var(--bg-base); border:1px solid var(--border); border-radius:6px; color:var(--text-main);" />
-          <button class="btn btn-primary" onclick="copyMobileUrl()">📋 Copy</button>
+          <button class="btn btn-primary" onclick="copyMobileUrl()">📋 Copy Direct</button>
         </div>
 
         <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
@@ -4418,12 +4429,13 @@
           const fullPhoneUrl = `${data.url}/?token=${HUB_TOKEN}`;
           urlInput.value = fullPhoneUrl;
 
-          // Render QR code
+          // Render QR code pointing to the Permanent Gateway URL
+          const permanentLink = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
           const qrBox = document.getElementById('qrcodeBox');
           if (qrBox && window.QRCode) {
             qrBox.innerHTML = '';
             qrcodeInstance = new QRCode(qrBox, {
-              text: fullPhoneUrl,
+              text: permanentLink,
               width: 190,
               height: 190,
               colorDark: '#0b0f19',
@@ -4465,6 +4477,22 @@
       } catch (e) {
         badge.innerHTML = `⚠️ Failed to stop tunnel: ${e.message}`;
       }
+    }
+
+    function copyPermanentUrl() {
+      const url = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
+      const btn = event ? event.target : null;
+      navigator.clipboard.writeText(url).then(() => {
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = '✓ Copied!';
+          setTimeout(() => { btn.textContent = orig; }, 2000);
+        } else {
+          alert('Copied permanent URL: ' + url);
+        }
+      }).catch(() => {
+        prompt('Copy your permanent URL:', url);
+      });
     }
 
     function copyMobileUrl() {
