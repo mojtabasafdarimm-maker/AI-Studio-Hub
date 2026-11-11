@@ -2313,6 +2313,7 @@
             <div class="composer-left-tools">
               <input id="fileInput" type="file" multiple style="display:none" onchange="handleFileSelect(event)" />
               <button class="btn" onclick="document.getElementById('fileInput').click()" title="Attach Files">📎 <span class="attach-btn-full-text">Attach Files / Drag & Drop</span><span class="attach-btn-short-text" style="display:none;">Attach</span></button>
+              <button id="autopilotToggleBtn" class="btn" onclick="toggleAutopilotLoop()" title="Run multi-step Autopilot Loop automatically until task is done or 5-hour quota reaches 95% used" style="padding:5px 10px; font-size:11.5px;">🔁 Autopilot: Off</button>
               <span id="liveStatusText" style="color:var(--text-muted); font-size:12px;">Ready • All existing AGY, Codex & VS Code chats synced</span>
             </div>
             <div style="display:flex; gap:8px;">
@@ -3841,6 +3842,20 @@
                 const sEl = document.getElementById('streamStatus');
                 if (sEl) sEl.textContent = 'Stopped';
               }
+            } else if (evt.type === 'step_done') {
+              const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
+              if (idx !== -1) hubData.state.threads[idx] = evt.thread;
+              streamInfo.userPrompt = evt.nextPrompt || '';
+              streamInfo.accumulatedText = '';
+              streamInfo.narratives = [];
+              streamInfo.thinkingSteps = [];
+              streamInfo.startedAt = new Date().toISOString();
+              streamInfo.statusText = `● Running Autopilot Step ${evt.stepIndex || ''} (${evt.usedPct || 0}% quota used)…`;
+              renderThreads();
+              if (activeThreadId === targetThreadId) {
+                renderActiveChat(true);
+              }
+              refreshStatus(false);
             } else if (evt.type === 'done') {
               const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
               if (idx !== -1) hubData.state.threads[idx] = evt.thread;
@@ -3917,6 +3932,24 @@
       }
     }
 
+    let autopilotLoopEnabled = false;
+    function toggleAutopilotLoop() {
+      autopilotLoopEnabled = !autopilotLoopEnabled;
+      const btn = document.getElementById('autopilotToggleBtn');
+      if (!btn) return;
+      if (autopilotLoopEnabled) {
+        btn.innerHTML = '🔁 Autopilot: <b>ON (to 95%)</b>';
+        btn.style.borderColor = '#10b981';
+        btn.style.color = '#6ee7b7';
+        btn.style.background = 'rgba(16, 185, 129, 0.14)';
+      } else {
+        btn.innerHTML = '🔁 Autopilot: Off';
+        btn.style.borderColor = '';
+        btn.style.color = '';
+        btn.style.background = '';
+      }
+    }
+
     async function sendMessage() {
       if (!activeThreadId) {
         await createNewThread();
@@ -3970,7 +4003,8 @@
             codexModel: document.getElementById('codexModelSelect').value,
             codexEffort: document.getElementById('codexEffortSelect').value,
             executionMode: document.getElementById('execModeSelect').value,
-            attachments: attachmentsToSend
+            attachments: attachmentsToSend,
+            autopilot: autopilotLoopEnabled
           })
         });
 

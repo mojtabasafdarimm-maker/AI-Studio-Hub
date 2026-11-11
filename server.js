@@ -671,6 +671,7 @@ function readAgyNative(convId, file, thread) {
           .replace(/\s*<\/USER_REQUEST>[\s\S]*$/g, '')
           .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
           .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
+          .replace(/<autopilot_step_instruction>[\s\S]*?<\/autopilot_step_instruction>/gi, '')
           .trim();
         if (cleaned) {
           currentTurn = null;
@@ -799,6 +800,7 @@ function stripInternalCodexTags(text) {
     .replace(/<collaboration_mode>[\s\S]*?<\/collaboration_mode>/gi, '')
     .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
     .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
+    .replace(/<autopilot_step_instruction>[\s\S]*?<\/autopilot_step_instruction>/gi, '')
     .trim();
 }
 
@@ -1524,7 +1526,24 @@ function classifyPromptIntent(prompt, attachments = []) {
   return { isLightweightQuestion: false };
 }
 
-function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, decision, handoffReason, lightweightHint }) {
+function detectAutopilotLoop(prompt, autopilotFlag) {
+  const clean = String(prompt || '').trim();
+  const naturalMatch = /keep\s+(running|working|going)\s+until|until\s+you\s+get\s+close\s+to.*limit|do\s+these\s+steps\s+one\s+at\s+a\s+time\s+until|^\/(loop|goal)\b/i.test(clean);
+  if (!autopilotFlag && !naturalMatch) {
+    return { enabled: false };
+  }
+  const pctMatch = clean.match(/(\d{2})\s*(?:%|percent)/i);
+  const targetUsedPct = pctMatch ? Math.min(99, Math.max(50, Number(pctMatch[1]))) : 95;
+  const minRemainingPct = Math.max(1, 100 - targetUsedPct);
+  return {
+    enabled: true,
+    targetUsedPct,
+    minRemainingPct,
+    maxSteps: 12
+  };
+}
+
+function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, decision, handoffReason, lightweightHint, autopilotStep }) {
   let userText = userPrompt;
   if (userText.length > 16000) {
     const f = path.join(CONTEXT_DIR, `${safeFileName(thread.id)}-message-${Date.now()}.md`);
@@ -1537,7 +1556,10 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
   const queryHintBlock = lightweightHint
     ? `\n\n<lightweight_query_hint>Note: This is a status or informational question. Answer concisely using existing context/checkpoint files without running heavy test suites or modifying files.</lightweight_query_hint>`
     : '';
-  const request = `${userText}${attachmentBlock}${queryHintBlock}`;
+  const autopilotBlock = autopilotStep
+    ? `\n\n<autopilot_step_instruction>[AI Studio Hub — Multi-Turn Autopilot Loop (Step ${autopilotStep.step}/${autopilotStep.maxSteps} • Target: ${autopilotStep.targetUsedPct}% quota used)]\nIMPORTANT: AI Studio Hub is orchestrating an automated multi-turn loop for you so your connection never times out.\nDo NOT try to run hours of work inside a single monolithic turn.\nExecute ONLY THE NEXT SINGLE BOUNDED STEP (or milestone) right now, verify it, update CHECKPOINT.md (if used), and finish your turn with a concise summary of what was completed and what the next step is.\nAs soon as you finish this turn, the Hub will check the live quota and automatically trigger the next turn for you.\nIf all planned steps are 100% complete and nothing remains to be done, include [AUTOPILOT_DONE] at the end of your reply.</autopilot_step_instruction>`
+    : '';
+  const request = `${userText}${attachmentBlock}${queryHintBlock}${autopilotBlock}`;
 
   // If resuming or forking the same engine with no intervening turns on the other engine, send the user's prompt directly
   if (((decision.resume || decision.fork) && !decision.deltaOnly) || history.length === 0) {
@@ -2656,11 +2678,22 @@ async function handleChat(req, res, body) {
   liveTurn.engine = engine;
   liveTurn.model = engine === 'antigravity' ? agyModelToUse : codexModel;
 
-  const history = [...thread.messages];
-  const userMsg = { id: crypto.randomUUID(), role: 'user', content: prompt, attachments, fromHub: true, timestamp: new Date().toISOString() };
+  const autopilotCfg = detectAutopilotLoop(prompt, Boolean(body.autopilot));
+  let currentStepIdx = 1;
+  let currentPromptText = prompt.replace(/^\/(loop|goal)\s*/i, '').trim() || 'Continue to the next step and save checkpoint.';
+  let currentAttachments = attachments;
+  let history = [...thread.messages];
+  let userMsg = { id: crypto.randomUUID(), role: 'user', content: currentPromptText, attachments: currentAttachments, fromHub: true, timestamp: new Date().toISOString() };
   if (thread.title === 'New Unified Session') {
-    thread.title = prompt.slice(0, 48) + (prompt.length > 48 ? '…' : '');
+    thread.title = currentPromptText.slice(0, 48) + (currentPromptText.length > 48 ? '…' : '');
     saveState(appState);
+  }
+
+  if (autopilotCfg.enabled) {
+    sendEvent({
+      type: 'switch_notice',
+      message: `🔁 Autopilot Loop Active (Target: ${autopilotCfg.targetUsedPct}% quota used) — running one bounded step per turn and auto-compacting between steps so overnight runs never time out.`
+    });
   }
 
   const execute = async (eng, model, effort, reason, promptOverride = null) => {
@@ -2668,7 +2701,7 @@ async function handleChat(req, res, body) {
     liveTurn.model = model;
     const decision = resumeDecision({ ...thread, messages: history }, eng);
     if (!promptOverride) {
-      if (promptIntent.isLightweightQuestion) {
+      if (promptIntent.isLightweightQuestion && !autopilotCfg.enabled) {
         sendEvent({
           type: 'switch_notice',
           message: `⚡ Smart Question Routing: Status/info question detected — scaled reasoning effort to ${String(effort || 'low').toUpperCase()} & skipped heavy test sweeps to save your quota.`
@@ -2686,9 +2719,12 @@ async function handleChat(req, res, body) {
         sendEvent({ type: 'switch_notice', message: `This chat is open in VS Code / Codex right now; cloning its live session via native fork so both windows can work without lock conflicts.` });
       }
     }
+    const autopilotStep = autopilotCfg.enabled
+      ? { step: currentStepIdx, maxSteps: autopilotCfg.maxSteps, targetUsedPct: autopilotCfg.targetUsedPct }
+      : null;
     const { prompt: promptText, usedBriefing } = promptOverride
       ? { prompt: promptOverride, usedBriefing: false }
-      : buildEnginePrompt({ thread, history, userPrompt: prompt, attachments, engine: eng, decision, handoffReason: reason, lightweightHint: promptIntent.isLightweightQuestion });
+      : buildEnginePrompt({ thread, history, userPrompt: currentPromptText, attachments: currentAttachments, engine: eng, decision, handoffReason: reason, lightweightHint: promptIntent.isLightweightQuestion && !autopilotCfg.enabled, autopilotStep });
     const actions = [];
     const narratives = [...(liveTurn.narratives || [])];
     const thinkingSteps = [...(liveTurn.thinkingSteps || [])];
@@ -2718,7 +2754,7 @@ async function handleChat(req, res, body) {
       if (eng === 'antigravity') {
         const extraDirs = [];
         if (usedBriefing) extraDirs.push(CONTEXT_DIR);
-        if (attachments.some((a) => isInside(a.path, ATTACH_DIR))) extraDirs.push(ATTACH_DIR);
+        if (currentAttachments.some((a) => isInside(a.path, ATTACH_DIR))) extraDirs.push(ATTACH_DIR);
         const r = await runAntigravityTurn({ thread, promptText, modelId: model, effort, mode: executionMode, cwd: thread.projectPath, resumeSessionId: decision.resume ? decision.sessionId : null, extraDirs, onEvent });
         rememberSession(thread, 'antigravity', r.conversationId, history.length);
         return { engine: eng, model: `${model} (${effort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
@@ -2732,7 +2768,7 @@ async function handleChat(req, res, body) {
         cwd: thread.projectPath,
         resumeSessionId: decision.resume ? decision.sessionId : null,
         forkSessionId: decision.fork ? decision.sessionId : null,
-        attachments,
+        attachments: currentAttachments,
         onEvent
       });
       rememberSession(thread, 'codex', r.sessionId, history.length);
@@ -2747,14 +2783,15 @@ async function handleChat(req, res, body) {
     }
   };
 
-  const finishWith = (result, reason, note) => {
-    const cleanNarratives = (result.narratives || []).filter((n) => n && n.trim() && n.trim() !== (result.text || '').trim());
+  const commitTurnMessages = (result, reason, note) => {
+    const cleanText = String(result.text || '').replace(/\[AUTOPILOT_DONE\]/gi, '').trim();
+    const cleanNarratives = (result.narratives || []).filter((n) => n && n.trim() && n.trim() !== cleanText);
     const assistantMsg = {
       id: crypto.randomUUID(),
       role: 'assistant',
       engine: result.engine,
       model: result.model,
-      content: note ? `${result.text}\n\n_${note}_` : result.text,
+      content: note ? `${cleanText}\n\n_${note}_` : cleanText,
       narratives: cleanNarratives,
       thinkingSteps: result.thinkingSteps || [],
       actions: result.actions || [],
@@ -2763,7 +2800,6 @@ async function handleChat(req, res, body) {
       fromHub: true,
       timestamp: new Date().toISOString()
     };
-    // Commit userMsg + assistantMsg atomically so failed/aborted turns never leave orphaned user messages
     thread.messages.push(userMsg, assistantMsg);
     thread.updatedAt = assistantMsg.timestamp;
     updateThreadContextStats(thread);
@@ -2771,6 +2807,11 @@ async function handleChat(req, res, body) {
     writeContextFile(thread, thread.messages);
     syncCrossAppMemory();
     invalidateQuotaCaches();
+    return assistantMsg;
+  };
+
+  const finishWith = (result, reason, note) => {
+    const assistantMsg = commitTurnMessages(result, reason, note);
     sendEvent({ type: 'done', message: assistantMsg, thread });
   };
 
@@ -2801,40 +2842,108 @@ async function handleChat(req, res, body) {
   };
 
   try {
-    let result;
-    try {
-      result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModel, engine === 'antigravity' ? agyEffortToUse : codexEffortToUse, handoffReason);
-    } catch (primaryErr) {
-      if (primaryErr.cancelled) throw primaryErr;
-      // Fail over only on genuine quota / rate-limit errors, never on Stop or ordinary errors.
-      if (!primaryErr.isQuotaError) throw primaryErr;
+    while (true) {
+      let result;
+      try {
+        result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModel, engine === 'antigravity' ? agyEffortToUse : codexEffortToUse, handoffReason);
+      } catch (primaryErr) {
+        if (primaryErr.cancelled) throw primaryErr;
+        if (!primaryErr.isQuotaError) throw primaryErr;
 
-      let fbEngine = engine === 'antigravity' ? 'codex' : 'antigravity';
-      let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModel;
-      let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
-      if (engine === 'antigravity') {
-        const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1 });
-        if (alt) {
-          fbEngine = 'antigravity';
-          fbModel = alt.modelId;
-          fbEffort = alt.effort;
+        let fbEngine = engine === 'antigravity' ? 'codex' : 'antigravity';
+        let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModel;
+        let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
+        if (engine === 'antigravity') {
+          const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1 });
+          if (alt) {
+            fbEngine = 'antigravity';
+            fbModel = alt.modelId;
+            fbEffort = alt.effort;
+          }
+        } else if (agyModelPct(agyModelToUse) < 1) {
+          const alt = pickAgyModel(agyStatus, { preferredEffort: agyEffortToUse, threshold: 1 });
+          if (alt) {
+            fbModel = alt.modelId;
+            fbEffort = alt.effort;
+          }
         }
-      } else if (agyModelPct(agyModelToUse) < 1) {
-        const alt = pickAgyModel(agyStatus, { preferredEffort: agyEffortToUse, threshold: 1 });
-        if (alt) {
-          fbModel = alt.modelId;
-          fbEffort = alt.effort;
-        }
+        const failMsg = `${engine} hit a usage limit (${truncate(primaryErr.message, 140)}). Continuing on ${fbEngine}${fbEngine === 'antigravity' ? ` (${fbModel})` : ''} with the full context.`;
+        sendEvent({ type: 'switch_notice', message: failMsg });
+        handoffReason = failMsg;
+        liveTurn.accumulatedText = '';
+        sendEvent({ type: 'replace_delta', text: '' });
+        result = await executeWithRetry(fbEngine, fbModel, fbEffort, failMsg);
       }
-      const failMsg = `${engine} hit a usage limit (${truncate(primaryErr.message, 140)}). Continuing on ${fbEngine}${fbEngine === 'antigravity' ? ` (${fbModel})` : ''} with the full context.`;
-      sendEvent({ type: 'switch_notice', message: failMsg });
-      handoffReason = failMsg;
-      // Clear any partial error text from the failed model so it doesn't pollute the response bubble
+
+      if (!autopilotCfg.enabled) {
+        finishWith(result, handoffReason);
+        break;
+      }
+
+      // Check if the Autopilot Loop should stop after this bounded step
+      const modelDeclaredDone = /\[AUTOPILOT_DONE\]/i.test(result.text || '');
+      const userStopped = cancelledThreads.delete(thread.id);
+      const [freshAgy, freshCodex] = await Promise.all([getAgyStatus(true), Promise.resolve(getCodexStatus(true))]);
+      const remPct = result.engine === 'antigravity'
+        ? (freshAgy.models.find((m) => m.modelId === agyModelToUse)?.remainingPct ?? 100)
+        : (freshCodex.fiveHourWindow?.remainingPct ?? 100);
+      const usedPct = Math.max(0, Math.min(100, Math.round(100 - remPct)));
+
+      if (userStopped) {
+        finishWith(result, handoffReason, `⏹ Autopilot Loop stopped by user after Step ${currentStepIdx}.`);
+        break;
+      }
+      if (modelDeclaredDone) {
+        finishWith(result, handoffReason, `✅ Autopilot Loop completed all steps after Step ${currentStepIdx} (${usedPct}% quota used).`);
+        break;
+      }
+      if (remPct <= autopilotCfg.minRemainingPct) {
+        finishWith(result, handoffReason, `🎯 Autopilot Loop paused cleanly after Step ${currentStepIdx}: reached ${usedPct}% quota used (target: ${autopilotCfg.targetUsedPct}%).`);
+        break;
+      }
+      if (currentStepIdx >= autopilotCfg.maxSteps) {
+        finishWith(result, handoffReason, `🔁 Autopilot Loop completed ${currentStepIdx} sequential steps (${usedPct}% quota used). Send "go" to run another batch.`);
+        break;
+      }
+
+      // Commit this completed step to disk and immediately transition to the next bounded step!
+      const stepNote = `✅ Autopilot Step ${currentStepIdx} sealed (${usedPct}% of 5h quota used • target ${autopilotCfg.targetUsedPct}%). Continuing automatically to Step ${currentStepIdx + 1}…`;
+      const committedAsstMsg = commitTurnMessages(result, handoffReason, stepNote);
+
+      // Auto-compact between Autopilot steps if context has passed 115k tokens so the next step runs fast and light
+      if ((thread.contextTokens || 0) >= 115000) {
+        compactThreadSession(thread, 'auto-compact');
+        saveState(appState);
+      }
+
+      currentStepIdx += 1;
+      currentPromptText = `[Autopilot Step ${currentStepIdx} • ${usedPct}% quota used] Proceed with the next single bounded step from your roadmap/checkpoint, verify it, update CHECKPOINT.md if used, and summarize progress.`;
+      currentAttachments = [];
+      history = [...thread.messages];
+      handoffReason = null;
+      userMsg = { id: crypto.randomUUID(), role: 'user', content: currentPromptText, attachments: [], fromHub: true, timestamp: new Date().toISOString() };
+
+      liveTurn.userPrompt = currentPromptText;
       liveTurn.accumulatedText = '';
-      sendEvent({ type: 'replace_delta', text: '' });
-      result = await executeWithRetry(fbEngine, fbModel, fbEffort, failMsg);
+      liveTurn.narratives = [];
+      liveTurn.thinkingSteps = [];
+      liveTurn.switchNotices = [
+        `🔁 Autopilot Step ${currentStepIdx}/${autopilotCfg.maxSteps} running (${usedPct}% of ${autopilotCfg.targetUsedPct}% quota target used)…`
+      ];
+      liveTurn.startedAt = new Date().toISOString();
+      liveTurn.statusText = `Starting Autopilot Step ${currentStepIdx}…`;
+
+      sendEvent({
+        type: 'step_done',
+        message: committedAsstMsg,
+        thread,
+        nextPrompt: currentPromptText,
+        stepIndex: currentStepIdx,
+        usedPct
+      });
+
+      await new Promise((r) => setTimeout(r, 1500));
     }
-    finishWith(result, handoffReason);
   } catch (err) {
     if (err.cancelled) {
       if (err.partialText && err.partialText.trim()) {
@@ -3148,11 +3257,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/stop') {
       const body = await parseJsonBody(req);
       const child = activeProcesses.get(body.threadId);
-      if (child) {
+      if (child || activeTurns.has(body.threadId)) {
         cancelledThreads.add(body.threadId);
-        killTree(child);
+        if (child) killTree(child);
       }
-      return sendJson(res, 200, { stopped: !!child });
+      return sendJson(res, 200, { stopped: Boolean(child || activeTurns.has(body.threadId)) });
     }
 
     // --- GET /api/image?path=...&cwd=... (serve plotted photos and workspace images inline) ---
