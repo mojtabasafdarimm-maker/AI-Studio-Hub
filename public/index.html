@@ -2502,15 +2502,17 @@
     function startLiveWatchers() {
       // 1. Live tailing of the active chat (every 2s) so updates in VS Code / Codex / Antigravity stream in automatically
       setInterval(async () => {
-        if (isThreadRunning(activeThreadId) || !activeThreadId || document.hidden) return;
+        const watchedId = activeThreadId;
+        if (isThreadRunning(watchedId) || !watchedId || document.hidden) return;
         try {
-          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(activeThreadId)}&checkOnly=1`);
+          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(watchedId)}&checkOnly=1`);
           if (!res.ok) return;
           const data = await res.json();
+          if (isThreadRunning(watchedId) || activeThreadId !== watchedId) return;
           const lockChanged = Boolean(data.openElsewhere) !== activeThreadOpenElsewhere;
           activeThreadOpenElsewhere = Boolean(data.openElsewhere);
           if (data.changed && data.thread) {
-            const idx = hubData.state.threads.findIndex(t => t.id === activeThreadId);
+            const idx = hubData.state.threads.findIndex(t => t.id === watchedId);
             if (idx !== -1) hubData.state.threads[idx] = data.thread;
             const scrollEl = document.getElementById('chatScroll');
             const nearBottom = (scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight) < 180;
@@ -2534,12 +2536,22 @@
         if (!res.ok) return;
         const incoming = await res.json();
 
-        // Preserve any in-flight or client-side thread choices so polling never reverts them
+        // Preserve any in-flight or client-side thread state (including loaded messages!) so polling never wipes active chats
         if (incoming.state && Array.isArray(incoming.state.threads)) {
           for (const newT of incoming.state.threads) {
             const existing = (hubData.state.threads || []).find(t => t.id === newT.id);
-            if (existing && existing.engineMode && !newT.engineMode) {
-              newT.engineMode = existing.engineMode;
+            if (existing) {
+              if (existing.engineMode && !newT.engineMode) {
+                newT.engineMode = existing.engineMode;
+              }
+              if (Array.isArray(existing.messages) && !Array.isArray(newT.messages)) {
+                newT.messages = existing.messages;
+                newT.messagesLoaded = existing.messagesLoaded;
+                newT.loadedKey = existing.loadedKey;
+              }
+              if (existing.nativeActions && !newT.nativeActions) {
+                newT.nativeActions = existing.nativeActions;
+              }
             }
           }
         }
@@ -3480,7 +3492,8 @@
           const attHtml = (m.attachments && m.attachments.length)
             ? `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">` +
               m.attachments.map(a => `<span class="att-chip">📎 ${escapeHtml(a.name)}</span>`).join('') +
-              `</div>`
+              `</div>` +
+              m.attachments.filter(a => a.path && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(a.path || a.name || '')).map(a => renderPlotCardHtml(a.path, a.name)).join('')
             : '';
           const pTok = m.usage?.total_tokens || m.usage?.input_tokens || Math.max(1, Math.round(String(m.content || '').length / 4));
           const pTokPill = `<span class="token-pill" title="Prompt size: ~${pTok.toLocaleString()} tokens">🪙 ${pTok.toLocaleString()} prompt tokens</span>`;
@@ -3914,8 +3927,9 @@
             if (errJson.error) errMsg = errJson.error;
           } catch {}
           if (res.status === 403 && errMsg.includes('token')) {
-            location.reload();
-            return;
+            const pinModal = document.getElementById('pinLockModal');
+            if (pinModal) pinModal.style.display = 'flex';
+            throw new Error('Session token expired — please re-enter your 6-digit Mobile PIN.');
           }
           throw new Error(errMsg);
         }
@@ -4178,17 +4192,89 @@
       setTimeout(() => { btn.textContent = orig; }, 1400);
     }
 
+    function buildLocalImageUrl(rawPath) {
+      let clean = String(rawPath || '').trim()
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/^["']|["']$/g, '')
+        .replace(/^file:\/\/\/?/i, '');
+      try { clean = decodeURIComponent(clean); } catch {}
+      if (/^https?:\/\//i.test(clean) || /^data:image\//i.test(clean)) return clean;
+      const activeThread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      const cwd = activeThread?.projectPath || '';
+      const tok = HUB_TOKEN || localStorage.getItem('ai_hub_token') || '';
+      return `/api/image?path=${encodeURIComponent(clean)}&cwd=${encodeURIComponent(cwd)}&token=${encodeURIComponent(tok)}`;
+    }
+
+    function renderPlotCardHtml(rawPath, labelText) {
+      const imgUrl = buildLocalImageUrl(rawPath);
+      const fileName = String(rawPath || '').replace(/&amp;/g, '&').split(/[\\/]/).pop() || 'Plot';
+      const title = labelText || fileName;
+      return `<div class="chat-plot-card" style="margin:10px 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#0b0f19; max-width:100%;"><a href="${imgUrl}" target="_blank" rel="noopener noreferrer" style="display:block;"><img src="${imgUrl}" alt="${escapeHtml(title)}" loading="lazy" style="display:block; max-width:100%; max-height:480px; width:auto; margin:0 auto; object-fit:contain; background:#ffffff;" onerror="this.closest('.chat-plot-card').style.display='none'" /></a><div style="padding:6px 10px; font-size:11.5px; color:var(--text-muted); border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:8px;"><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🖼️ ${escapeHtml(title)}</span><a href="${imgUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); text-decoration:none; font-weight:600; flex-shrink:0;">Open full-size ↗</a></div></div>`;
+    }
+
     function formatMarkdown(text) {
-      let html = escapeHtml(text || '');
+      const cleaned = String(text || '')
+        .replace(/<external_codex_apps_open_page>[\s\S]*?<\/external_codex_apps_open_page>/gi, '')
+        .trim();
+      let html = escapeHtml(cleaned);
+
+      // 1. Protect fenced code blocks first so markdown regexes never corrupt code
+      const codeBlocks = [];
       html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
-        return `<div class="code-block-wrap"><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button><pre><code>${code}</code></pre></div>`;
+        const idx = codeBlocks.length;
+        codeBlocks.push(`<div class="code-block-wrap"><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button><pre><code>${code}</code></pre></div>`);
+        return `\x00CODEBLOCK_${idx}\x00`;
       });
+
+      const renderedImagePaths = new Set();
+
+      // 2. Codex file citations (:codex-file-citation{path="..."})
+      html = html.replace(/:codex-file-citation\{path=&quot;([^&]+?)&quot;[^}]*\}/g, (_, p) => {
+        if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(p)) {
+          renderedImagePaths.add(p);
+          return renderPlotCardHtml(p, p.split(/[\\/]/).pop());
+        }
+        return `<code>📄 ${p.split(/[\\/]/).pop()}</code>`;
+      });
+
+      // 3. Markdown images: ![alt](path)
+      html = html.replace(/!\[([^\]]*)\]\(([^)\s]+(?:\s+[^)]*)?)\)/g, (_, alt, rawTarget) => {
+        const target = rawTarget.trim().replace(/\s+&quot;.*&quot;$/, '');
+        renderedImagePaths.add(target);
+        return renderPlotCardHtml(target, alt || target.split(/[\\/]/).pop());
+      });
+
+      // 4. Markdown links to local or remote images: [label](path.png)
+      html = html.replace(/\[([^\]]+)\]\(([^)]+\.(?:png|jpe?g|gif|webp|svg|bmp))\)/gi, (_, label, rawTarget) => {
+        const target = rawTarget.trim();
+        const imgUrl = buildLocalImageUrl(target);
+        if (renderedImagePaths.has(target)) {
+          return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        }
+        renderedImagePaths.add(target);
+        return `<a href="${imgUrl}" target="_blank" rel="noopener noreferrer">${label}</a>${renderPlotCardHtml(target, label)}`;
+      });
+
+      // 5. Standard HTTP/HTTPS links
+      html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+      // 6. Headings, inline code (with automatic plot preview if a backticked path is an image), and bold
       html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
       html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
       html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-      html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      html = html.replace(/`([^`\n]+)`/g, (_, codeSpan) => {
+        if (/[\\/]/.test(codeSpan) && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(codeSpan.trim()) && !renderedImagePaths.has(codeSpan.trim())) {
+          const p = codeSpan.trim();
+          renderedImagePaths.add(p);
+          return `<code>${codeSpan}</code>${renderPlotCardHtml(p, p.split(/[\\/]/).pop())}`;
+        }
+        return `<code>${codeSpan}</code>`;
+      });
       html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+      // 7. Restore fenced code blocks
+      html = html.replace(/\x00CODEBLOCK_(\d+)\x00/g, (_, idx) => codeBlocks[Number(idx)] || '');
       return html;
     }
 

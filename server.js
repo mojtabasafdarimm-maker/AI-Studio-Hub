@@ -542,14 +542,35 @@ function nativeSourceInfo(thread) {
   return null;
 }
 
+function getThreadExtraCodexFiles(thread, primaryId) {
+  if (!thread) return [];
+  const sids = new Set([...(thread.hubSessionIds || []), thread.codexSessionId].filter(Boolean));
+  if (primaryId) sids.delete(primaryId);
+  const files = [];
+  for (const sid of sids) {
+    const f = findCodexRollout(sid);
+    if (f && fs.existsSync(f)) files.push(f);
+  }
+  return files;
+}
+
 function sourceKey(info, thread) {
+  const parts = [];
   if (info && info.file) {
     try {
       const st = fs.statSync(info.file);
-      return `${info.file}:${st.mtimeMs}:${st.size}`;
+      parts.push(`${info.file}:${st.mtimeMs}:${st.size}`);
     } catch {}
   }
-  return `db:${thread.nativeUpdatedAt || ''}`;
+  if (info && info.type === 'codex') {
+    for (const ef of getThreadExtraCodexFiles(thread, info.id)) {
+      try {
+        const st = fs.statSync(ef);
+        parts.push(`${ef}:${st.mtimeMs}:${st.size}`);
+      } catch {}
+    }
+  }
+  return parts.length ? parts.join('|') : `db:${thread.nativeUpdatedAt || ''}`;
 }
 
 function forEachJsonlLine(file, onObj, maxTailBytes = 25 * 1024 * 1024) {
@@ -648,6 +669,7 @@ function readAgyNative(convId, file, thread) {
         const cleaned = step.content
           .replace(/<USER_REQUEST>\s*/g, '')
           .replace(/\s*<\/USER_REQUEST>[\s\S]*$/g, '')
+          .replace(/\[Cross-Engine Context Sync[\s\S]*?<\/conversation_history>\s*/g, '')
           .trim();
         if (cleaned) {
           currentTurn = null;
@@ -761,6 +783,21 @@ function extractCodexText(contentArr) {
     .trim();
 }
 
+function stripInternalCodexTags(text) {
+  return String(text || '')
+    .replace(/<external_codex_apps_open_page>[\s\S]*?<\/external_codex_apps_open_page>/gi, '')
+    .replace(/<codex_apps_client_time_context>[\s\S]*?<\/codex_apps_client_time_context>/gi, '')
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, '')
+    .replace(/<in-app-browser-context[\s\S]*?<\/in-app-browser-context>/gi, '')
+    .replace(/<turn_aborted>[\s\S]*?<\/turn_aborted>/gi, '')
+    .replace(/<skills_instructions>[\s\S]*?<\/skills_instructions>/gi, '')
+    .replace(/<model_switch>[\s\S]*?<\/model_switch>/gi, '')
+    .replace(/<permissions[\s\S]*?<\/permissions>/gi, '')
+    .replace(/<collaboration_mode>[\s\S]*?<\/collaboration_mode>/gi, '')
+    .replace(/\[Cross-Engine Context Sync[\s\S]*?<\/conversation_history>\s*/g, '')
+    .trim();
+}
+
 function readCodexNative(file, thread) {
   const messages = [];
   const actions = [];
@@ -790,9 +827,20 @@ function readCodexNative(file, thread) {
   };
 
   const addUserTurn = (text, ts) => {
-    const clean = String(text || '').trim();
+    const clean = stripInternalCodexTags(text);
     if (!clean || clean === lastUserText) return;
-    if (clean.startsWith('<codex_apps_client_time_context>') || clean.startsWith('<environment_context>') || clean.startsWith('# AGENTS.md instructions') || clean.startsWith('<INSTRUCTIONS>')) return;
+    if (
+      clean.startsWith('<codex_apps_') ||
+      clean.startsWith('<external_codex_') ||
+      clean.startsWith('<environment_context>') ||
+      clean.startsWith('# AGENTS.md instructions') ||
+      clean.startsWith('<INSTRUCTIONS>') ||
+      clean.startsWith('<skills_instructions>') ||
+      clean.startsWith('<turn_aborted>') ||
+      clean.startsWith('<!-- AI-STUDIO-HUB-SHARED-CONTEXT:START -->')
+    ) {
+      return;
+    }
     lastUserText = clean;
     currentTurn = null;
     messages.push({ id: `cx-u-${messages.length}`, role: 'user', content: clean, timestamp: ts || thread.createdAt });
@@ -804,6 +852,10 @@ function readCodexNative(file, thread) {
 
     // 1. User messages (both modern response_item and legacy event_msg)
     if (o.type === 'response_item' && p.type === 'message' && p.role === 'user') {
+      const kinds = p.internal_chat_message_metadata_passthrough?.content_item_kinds;
+      if (Array.isArray(kinds) && kinds.length > 0 && kinds.every((k) => String(k).startsWith('additional_content.'))) {
+        return;
+      }
       addUserTurn(extractCodexText(p.content), ts);
     } else if (o.type === 'event_msg' && p.type === 'user_message' && p.message) {
       addUserTurn(p.message, ts);
@@ -837,12 +889,21 @@ function readCodexNative(file, thread) {
       } else if (!turn.finalAnswer) {
         turn.commentary = txt;
       }
-    } else if (o.type === 'event_msg' && p.type === 'task_complete' && p.last_agent_message) {
-      const txt = p.last_agent_message.trim();
-      if (!txt) return;
-      const turn = ensureAssistantTurn(ts);
-      turn.finalAnswer = txt;
-      turn.content = txt;
+    } else if (o.type === 'event_msg' && p.type === 'task_complete') {
+      if (p.last_agent_message) {
+        const txt = p.last_agent_message.trim();
+        if (txt) {
+          const turn = ensureAssistantTurn(ts);
+          turn.finalAnswer = txt;
+          turn.content = txt;
+        }
+      } else if (p.error?.message) {
+        const turn = ensureAssistantTurn(ts);
+        const mins = p.duration_ms ? Math.round(p.duration_ms / 60000) : 0;
+        const errNote = `⚠️ **Turn interrupted by server${mins > 0 ? ` after ${mins}m` : ''}:** ${p.error.message}`;
+        turn.finalAnswer = turn.commentary ? `${turn.commentary}\n\n${errNote}` : errNote;
+        turn.content = turn.finalAnswer;
+      }
     }
     // 3. Tool calls, commands, file edits, MCP calls
     else if (o.type === 'event_msg' && p.type === 'item_completed' && p.item) {
@@ -944,10 +1005,34 @@ function loadThreadHistory(thread, force = false) {
   if (!force && thread.messagesLoaded && thread.loadedKey === key) return thread;
 
   const native = info.type === 'agy' ? readAgyNative(info.id, info.file, thread) : readCodexNative(info.file, thread);
+  if (info.type === 'codex') {
+    for (const extraFile of getThreadExtraCodexFiles(thread, info.id)) {
+      const forkData = readCodexNative(extraFile, thread);
+      for (const fm of forkData.messages) {
+        const fmTs = Date.parse(fm.timestamp) || 0;
+        const isDuplicate = native.messages.some((m) =>
+          m.role === fm.role &&
+          ((fmTs && m.timestamp && Math.abs((Date.parse(m.timestamp) || 0) - fmTs) < 2000) ||
+            (m.timestamp === fm.timestamp && sameContent(m.content, fm.content)))
+        );
+        if (!isDuplicate) {
+          native.messages.push({ ...fm, id: `${fm.id}-fork` });
+        }
+      }
+      for (const act of forkData.actions) {
+        if (!native.actions.includes(act)) native.actions.push(act);
+      }
+    }
+    native.actions = native.actions.slice(-25);
+  }
   // Hub turns that resumed the original session also appear in the native log; drop duplicates.
   const extraHub = hubTurns.filter((h) => !native.messages.some((n) => n.role === h.role && sameContent(n.content, h.content)));
   const ts = (m) => Date.parse(m.timestamp) || 0;
   thread.messages = [...native.messages, ...extraHub].sort((a, b) => ts(a) - ts(b));
+  const lastMsg = thread.messages[thread.messages.length - 1];
+  if (lastMsg?.timestamp && (Date.parse(lastMsg.timestamp) || 0) > (Date.parse(thread.updatedAt) || 0)) {
+    thread.updatedAt = lastMsg.timestamp;
+  }
   thread.nativeActions = native.actions;
   thread.messagesLoaded = true;
   thread.loadedKey = key;
@@ -1997,6 +2082,8 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
         const msg = evt.error?.message || lastError || 'Codex turn failed';
         settle(() => {
           const err = new Error(msg);
+          err.partialText = (fullText || lastCommentary || '').trim();
+          err.hadStepProgress = Boolean(fullText || lastCommentary || gotFirstOutput);
           if (QUOTA_RE.test(msg)) err.isQuotaError = true;
           reject(err);
         });
@@ -2480,7 +2567,11 @@ async function handleChat(req, res, body) {
       rememberSession(thread, 'codex', r.sessionId, history.length);
       return { engine: eng, model: `${codexModel} (${codexEffort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
     } catch (runErr) {
-      runErr.hadStepProgress = hadStepProgress;
+      runErr.hadStepProgress = hadStepProgress || Boolean(runErr.hadStepProgress);
+      if (!runErr.partialText) {
+        runErr.partialText = (liveTurn.accumulatedText || narratives[narratives.length - 1] || '').trim();
+      }
+      runErr.actions = actions.slice(-25);
       throw runErr;
     }
   };
@@ -2511,7 +2602,7 @@ async function handleChat(req, res, body) {
     sendEvent({ type: 'done', message: assistantMsg, thread });
   };
 
-  const TRANSIENT_NET_RE = /network error|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|502 Bad Gateway|503 Service Unavailable|504 Gateway|UNAVAILABLE|stream.*closed|connection.*reset/i;
+  const TRANSIENT_NET_RE = /network error|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|502 Bad Gateway|503 Service Unavailable|504 Gateway|UNAVAILABLE|stream.*closed|connection.*reset|at capacity|server_overloaded|overloaded|temporarily unavailable/i;
   const executeWithRetry = async (eng, model, effort, reason) => {
     let lastErr;
     let hadAnyProgress = false;
@@ -2528,10 +2619,10 @@ async function handleChat(req, res, body) {
         if (err.cancelled || err.isQuotaError || !TRANSIENT_NET_RE.test(err.message || '') || attempt === 2) {
           throw err;
         }
-        const retryMsg = `↻ Transient network blip (${truncate(err.message, 60)}) — automatically resuming session (retry ${attempt + 1}/2)…`;
+        const retryMsg = `↻ Transient server/network blip (${truncate(err.message, 60)}) — automatically resuming session (retry ${attempt + 1}/2)…`;
         sendEvent({ type: 'status', message: retryMsg });
         sendEvent({ type: 'narrative', text: `▸ ${retryMsg}` });
-        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
       }
     }
     throw lastErr;
@@ -2575,14 +2666,32 @@ async function handleChat(req, res, body) {
   } catch (err) {
     if (err.cancelled) {
       if (err.partialText && err.partialText.trim()) {
-        finishWith({ engine, model: 'stopped', text: err.partialText.trim(), usage: null, actions: [] }, handoffReason, 'Stopped by user.');
+        finishWith({ engine, model: 'stopped', text: err.partialText.trim(), usage: liveTurn.usage || null, narratives: liveTurn.narratives || [], thinkingSteps: liveTurn.thinkingSteps || [], actions: err.actions || [] }, handoffReason, 'Stopped by user.');
       } else {
         saveState(appState);
         sendEvent({ type: 'cancelled', message: 'Stopped by user.', restorePrompt: prompt });
       }
     } else {
-      saveState(appState);
-      sendEvent({ type: 'error', message: err.message || 'Execution failed', restorePrompt: prompt });
+      const partial = (liveTurn.accumulatedText || err.partialText || '').trim();
+      const hasProgress = Boolean(partial || (liveTurn.narratives && liveTurn.narratives.length > 0) || (liveTurn.thinkingSteps && liveTurn.thinkingSteps.length > 0));
+      if (hasProgress) {
+        finishWith(
+          {
+            engine,
+            model: liveTurn.model || (engine === 'antigravity' ? agyModelToUse : codexModel),
+            text: partial || (liveTurn.narratives && liveTurn.narratives[liveTurn.narratives.length - 1]) || '',
+            narratives: liveTurn.narratives || [],
+            thinkingSteps: liveTurn.thinkingSteps || [],
+            actions: err.actions || [],
+            usage: liveTurn.usage || null
+          },
+          handoffReason,
+          `⚠️ Turn interrupted: ${err.message || 'Execution failed'}`
+        );
+      } else {
+        saveState(appState);
+        sendEvent({ type: 'error', message: err.message || 'Execution failed', restorePrompt: prompt });
+      }
     }
   } finally {
     closeAllSubscribers();
@@ -2864,6 +2973,63 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { stopped: !!child });
     }
 
+    // --- GET /api/image?path=...&cwd=... (serve plotted photos and workspace images inline) ---
+    if (req.method === 'GET' && pathname === '/api/image') {
+      let rawPath = String(parsedUrl.searchParams.get('path') || '').trim();
+      const cwdParam = String(parsedUrl.searchParams.get('cwd') || '').trim();
+      if (!rawPath) return sendJson(res, 400, { error: 'Missing image path' });
+
+      rawPath = rawPath.replace(/^file:\/\/\/?/i, '').replace(/^["']|["']$/g, '');
+      try {
+        rawPath = decodeURIComponent(rawPath);
+      } catch {}
+      rawPath = rawPath.replace(/\//g, path.sep);
+
+      const candidatePaths = [];
+      if (path.isAbsolute(rawPath)) {
+        candidatePaths.push(path.normalize(rawPath));
+      } else {
+        if (cwdParam) candidatePaths.push(path.resolve(cwdParam, rawPath));
+        for (const p of appState.projects || []) {
+          if (p.path) candidatePaths.push(path.resolve(p.path, rawPath));
+        }
+        candidatePaths.push(path.resolve(ATTACH_DIR, rawPath));
+        candidatePaths.push(path.resolve(DATA_DIR, rawPath));
+      }
+
+      const IMG_MIME = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.svg': 'image/svg+xml',
+        '.bmp': 'image/bmp'
+      };
+
+      const foundFile = candidatePaths.find((cp) => {
+        try {
+          const ext = path.extname(cp).toLowerCase();
+          return IMG_MIME[ext] && fs.existsSync(cp) && fs.statSync(cp).isFile();
+        } catch {
+          return false;
+        }
+      });
+
+      if (!foundFile) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('Image not found');
+      }
+
+      const ext = path.extname(foundFile).toLowerCase();
+      res.writeHead(200, {
+        'Content-Type': IMG_MIME[ext] || 'application/octet-stream',
+        'Cache-Control': 'private, max-age=300',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      return fs.createReadStream(foundFile).pipe(res);
+    }
+
     // --- POST /api/chat (SSE streaming turn) ---
     if (req.method === 'POST' && pathname === '/api/chat') {
       return await handleChat(req, res, await parseJsonBody(req));
@@ -2887,7 +3053,7 @@ const server = http.createServer(async (req, res) => {
     };
     if (ext === '.html') {
       headers['Content-Security-Policy'] =
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'";
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-ancestors 'none'";
 
       const qToken = parsedUrl.searchParams.get('token');
       const cookieHeader = req.headers.cookie || '';
