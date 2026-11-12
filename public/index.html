@@ -2038,21 +2038,103 @@
       background: linear-gradient(to bottom, var(--status-strip) 0, var(--status-strip) var(--safe-top), var(--bg-panel) var(--safe-top));
     }
     @media (max-width: 768px) {
+      html,
+      body {
+        width: 100%;
+        max-width: 100%;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+      }
       .topbar {
+        width: 100%;
         height: calc(50px + var(--safe-top));
-        padding-left: max(10px, var(--safe-left));
-        padding-right: max(10px, var(--safe-right));
+        padding-left: max(8px, var(--safe-left));
+        padding-right: max(8px, var(--safe-right));
+        gap: 4px;
+      }
+      .brand {
+        gap: 5px;
+        font-size: 13.5px;
+        min-width: 0;
+      }
+      #mobileMenuBtn {
+        padding: 4px 6px !important;
+        margin-right: 0 !important;
+      }
+      .topbar-center {
+        min-width: 0;
+      }
+      .top-engine-badge {
+        padding: 4px 8px;
+        font-size: 11px;
+      }
+      .topbar-actions {
+        gap: 5px;
+        flex-shrink: 0;
+      }
+      #mobileNewChatBtn {
+        padding: 4px 8px !important;
+        font-size: 12px !important;
+      }
+      #pushBellBtn {
+        padding: 4px 7px;
+        font-size: 13px;
+      }
+      .workspace {
+        grid-template-columns: minmax(0, 1fr) !important;
+        flex: 1;
+        min-height: 0;
+        width: 100%;
+        max-width: 100%;
       }
       .main-area {
-        height: calc(100vh - 50px - var(--safe-top));
-        height: calc(100dvh - 50px - var(--safe-top));
+        width: 100%;
+        max-width: 100%;
+        height: 100%;
+        min-height: 0;
       }
-      .sidebar,
+      .sidebar {
+        padding-top: var(--safe-top);
+        box-shadow: none;
+      }
+      .sidebar.open {
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+      }
       .right-drawer {
         padding-top: var(--safe-top);
       }
       .modal-backdrop {
         padding-top: var(--safe-top);
+      }
+      .composer-wrap {
+        padding: 6px 8px max(6px, env(safe-area-inset-bottom, 8px)) 8px;
+      }
+      .composer-box {
+        margin: 0;
+        max-width: 100%;
+      }
+      .composer-footer {
+        gap: 6px;
+      }
+      .composer-left-tools {
+        gap: 5px;
+        min-width: 0;
+      }
+      .composer-left-tools .btn {
+        padding: 5px 8px !important;
+        font-size: 11.5px !important;
+        white-space: nowrap;
+      }
+      #sendBtn, #stopBtn {
+        padding: 6px 11px;
+        font-size: 12.5px;
+        white-space: nowrap;
+      }
+    }
+    @media (max-width: 480px) {
+      .brand-studio {
+        display: none;
       }
     }
   </style>
@@ -2281,7 +2363,7 @@
       <button id="mobileMenuBtn" class="btn mobile-only-btn" style="display:none; font-size:18px; padding:4px 8px; margin-right:4px;" onclick="toggleMobileSidebar()" title="Toggle Sidebar">☰</button>
       <div class="brand-icon">⚡</div>
       <div>
-        <div style="font-weight:700; font-size:14.5px; color:var(--text-main);">AI Studio Hub</div>
+        <div style="font-weight:700; font-size:14.5px; color:var(--text-main);">AI<span class="brand-studio"> Studio</span> Hub</div>
         <div style="font-size:10.5px; color:var(--text-muted); font-weight:500;">Antigravity + Codex Unified</div>
       </div>
     </div>
