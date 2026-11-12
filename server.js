@@ -1116,7 +1116,12 @@ const DEFAULT_SETTINGS = {
   executionMode: 'agent',
   codexBinary: '',
   mobilePin: '849201',
-  autoStartTunnel: true
+  autoStartTunnel: true,
+  // Push notifications (phone / desktop) when an agent turn finishes
+  pushEnabled: true,
+  pushOnHubTurns: true,
+  pushOnNativeTurns: true,
+  pushMinSeconds: 30
 };
 
 function sanitizeForDisk(state) {
@@ -1759,8 +1764,19 @@ function syncLocalAppMirror() {
     const srcIndex = path.join(__dirname, 'public', 'index.html');
     if (!fs.existsSync(srcServer) || !fs.existsSync(srcIndex)) return;
     fs.mkdirSync(path.join(LOCAL_APP_MIRROR_DIR, 'public'), { recursive: true });
-    fs.copyFileSync(srcServer, path.join(LOCAL_APP_MIRROR_DIR, 'server.js'));
-    fs.copyFileSync(srcIndex, path.join(LOCAL_APP_MIRROR_DIR, 'public', 'index.html'));
+    const copyIfChanged = (from, to) => {
+      try {
+        const a = fs.statSync(from);
+        const b = fs.existsSync(to) ? fs.statSync(to) : null;
+        if (!b || b.size !== a.size || b.mtimeMs < a.mtimeMs) fs.copyFileSync(from, to);
+      } catch {}
+    };
+    copyIfChanged(srcServer, path.join(LOCAL_APP_MIRROR_DIR, 'server.js'));
+    // Whole public folder (service worker, manifest, icons, QR lib), not just index.html
+    for (const name of fs.readdirSync(PUBLIC_DIR)) {
+      const from = path.join(PUBLIC_DIR, name);
+      if (fs.statSync(from).isFile()) copyIfChanged(from, path.join(LOCAL_APP_MIRROR_DIR, 'public', name));
+    }
   } catch {}
 }
 
@@ -2569,6 +2585,9 @@ async function handleChat(req, res, body) {
   };
   activeTurns.set(thread.id, liveTurn);
   subscribeSseResponse(res, liveTurn);
+  const turnStartedAtMs = Date.now();
+  let pushInfo = null; // what to tell the phone when this turn ends
+  recentHubTurnAt.set(thread.id, turnStartedAtMs);
 
   const sendEvent = (obj) => {
     if (obj.type === 'status' && obj.message) liveTurn.statusText = obj.message;
@@ -2822,6 +2841,8 @@ async function handleChat(req, res, body) {
 
   const finishWith = (result, reason, note) => {
     const assistantMsg = commitTurnMessages(result, reason, note);
+    const outcome = /Stopped by user|stopped by user/.test(note || '') ? 'stopped' : /Turn interrupted/.test(note || '') ? 'error' : 'done';
+    pushInfo = { engine: result.engine, text: String(result.text || '').replace(/\[AUTOPILOT_DONE\]/gi, '').trim() || note || '', outcome };
     sendEvent({ type: 'done', message: assistantMsg, thread });
   };
 
@@ -2981,12 +3002,306 @@ async function handleChat(req, res, body) {
         );
       } else {
         saveState(appState);
+        pushInfo = { engine, text: err.message || 'Execution failed', outcome: 'error' };
         sendEvent({ type: 'error', message: err.message || 'Execution failed', restorePrompt: prompt });
       }
     }
   } finally {
     closeAllSubscribers();
+    recentHubTurnAt.set(thread.id, Date.now());
+    // Push only for turns that ended on their own (not ones the user stopped).
+    if (pushInfo && pushInfo.outcome !== 'stopped') {
+      notifyTurnFinished({ thread, engine: pushInfo.engine, text: pushInfo.text, outcome: pushInfo.outcome, durationMs: Date.now() - turnStartedAtMs, source: 'hub' });
+    }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 11b. Web Push Notifications (VAPID + RFC 8291 aes128gcm; no npm dependencies)
+//      Pushes go straight from this PC to Apple/Google push services, so they
+//      work even when the phone app is closed. The Cloudflare Worker is not involved.
+// ---------------------------------------------------------------------------
+const PUSH_VAPID_FILE = path.join(DATA_DIR, 'push_vapid.json');
+const PUSH_SUBS_FILE = path.join(DATA_DIR, 'push_subscriptions.json');
+const PUSH_CONTACT = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
+
+const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64url = (s) => Buffer.from(String(s || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+function loadVapidKeys() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(PUSH_VAPID_FILE, 'utf8'));
+    if (saved?.privateJwk?.d && saved.privateJwk.x && saved.privateJwk.y) return saved;
+  } catch {}
+  const { privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const keys = { privateJwk: privateKey.export({ format: 'jwk' }), createdAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(PUSH_VAPID_FILE, JSON.stringify(keys, null, 2), 'utf8');
+  } catch {}
+  return keys;
+}
+
+const VAPID = loadVapidKeys();
+const VAPID_PRIVATE_KEY = crypto.createPrivateKey({ key: VAPID.privateJwk, format: 'jwk' });
+const VAPID_PUBLIC_B64 = b64url(Buffer.concat([Buffer.from([0x04]), fromB64url(VAPID.privateJwk.x), fromB64url(VAPID.privateJwk.y)]));
+
+let pushSubs = (() => {
+  try {
+    const a = JSON.parse(fs.readFileSync(PUSH_SUBS_FILE, 'utf8'));
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+})();
+
+function savePushSubs() {
+  try {
+    fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(pushSubs, null, 2), 'utf8');
+  } catch (e) {
+    console.error('[AI Hub] Could not save push subscriptions:', e.message);
+  }
+}
+
+function vapidAuthHeader(endpoint) {
+  const aud = new URL(endpoint).origin;
+  const header = b64url(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
+  const claims = b64url(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: PUSH_CONTACT }));
+  const unsigned = `${header}.${claims}`;
+  const sig = crypto.sign('sha256', Buffer.from(unsigned), { key: VAPID_PRIVATE_KEY, dsaEncoding: 'ieee-p1363' });
+  return `vapid t=${unsigned}.${b64url(sig)}, k=${VAPID_PUBLIC_B64}`;
+}
+
+// RFC 8291 (Message Encryption for Web Push) with RFC 8188 aes128gcm content coding.
+function encryptPushPayload(sub, plaintext) {
+  const uaPublic = fromB64url(sub.keys.p256dh);
+  const authSecret = fromB64url(sub.keys.auth);
+  const ecdh = crypto.createECDH('prime256v1');
+  const asPublic = ecdh.generateKeys();
+  const sharedSecret = ecdh.computeSecret(uaPublic);
+  const salt = crypto.randomBytes(16);
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+
+  const prkKey = hmac(authSecret, sharedSecret);
+  const ikm = hmac(prkKey, Buffer.concat([Buffer.from('WebPush: info\0'), uaPublic, asPublic, Buffer.from([1])]));
+  const prk = hmac(salt, ikm);
+  const cek = hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16);
+  const nonce = hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12);
+
+  const cipher = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+  const record = Buffer.concat([cipher.update(Buffer.concat([Buffer.from(plaintext, 'utf8'), Buffer.from([2])])), cipher.final(), cipher.getAuthTag()]);
+  const header = Buffer.alloc(21);
+  salt.copy(header, 0);
+  header.writeUInt32BE(4096, 16);
+  header.writeUInt8(asPublic.length, 20);
+  return Buffer.concat([header, asPublic, record]);
+}
+
+async function sendPushToAll(payload, onlyEndpoint = null) {
+  const targets = onlyEndpoint ? pushSubs.filter((s) => s.endpoint === onlyEndpoint) : pushSubs;
+  if (!targets.length) return { sent: 0, failed: 0, removed: 0, devices: pushSubs.length };
+  const json = JSON.stringify(payload);
+  let sent = 0;
+  let failed = 0;
+  const dead = new Set();
+  await Promise.all(
+    targets.map(async (sub) => {
+      try {
+        const res = await fetch(sub.endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: vapidAuthHeader(sub.endpoint),
+            'Content-Encoding': 'aes128gcm',
+            'Content-Type': 'application/octet-stream',
+            TTL: '86400',
+            Urgency: 'high'
+          },
+          body: encryptPushPayload(sub, json),
+          signal: AbortSignal.timeout(15000)
+        });
+        if (res.status === 404 || res.status === 410) {
+          dead.add(sub.endpoint);
+        } else if (res.ok) {
+          sent++;
+          sub.lastOkAt = new Date().toISOString();
+        } else {
+          failed++;
+          const detail = await res.text().catch(() => '');
+          console.error(`[AI Hub] Push rejected (${res.status}) by ${new URL(sub.endpoint).host}: ${truncate(detail, 200)}`);
+        }
+      } catch (e) {
+        failed++;
+        console.error('[AI Hub] Push send error:', e.message);
+      }
+    })
+  );
+  if (dead.size) pushSubs = pushSubs.filter((s) => !dead.has(s.endpoint));
+  savePushSubs();
+  return { sent, failed, removed: dead.size, devices: pushSubs.length };
+}
+
+function plainPreview(text, max = 170) {
+  const s = String(text || '')
+    .replace(/```[\s\S]*?```/g, ' [code] ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/^\s*(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
+    .replace(/[*_`~|]+/g, '')
+    .replace(/-{3,}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s;
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${String(sec % 60).padStart(2, '0')}s`;
+  return `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`;
+}
+
+const recentHubTurnAt = new Map(); // threadId -> ms; stops the native watcher double-notifying hub-driven turns
+
+function notifyTurnFinished({ thread, engine, text, outcome = 'done', durationMs = null, source = 'hub' }) {
+  const s = appState.settings || {};
+  if (!pushSubs.length || s.pushEnabled === false) return;
+  if (source === 'hub' && s.pushOnHubTurns === false) return;
+  if (source === 'native' && s.pushOnNativeTurns === false) return;
+  const minMs = Math.max(0, Number(s.pushMinSeconds ?? 30)) * 1000;
+  if (durationMs != null && durationMs < minMs) return;
+
+  const engineLabel = engine === 'codex' ? 'Codex' : 'Antigravity';
+  const icon = outcome === 'error' ? '⚠️' : '✅';
+  const verb = outcome === 'error' ? 'needs attention' : 'finished';
+  const dur = formatDuration(durationMs);
+  const title = `${icon} ${engineLabel} ${verb}${dur ? ` · ${dur}` : ''}`;
+  const chatTitle = truncate(String(thread?.title || 'Chat').split('\n')[0], 60).replace(/\n…\[truncated\]…$/, '…');
+  const body = `${chatTitle}\n${plainPreview(text) || (outcome === 'error' ? 'The turn stopped with an error.' : 'Reply is ready.')}`;
+  sendPushToAll({
+    title,
+    body,
+    tag: `turn-${thread?.id || 'hub'}`,
+    url: thread?.id ? `/?thread=${encodeURIComponent(thread.id)}` : '/',
+    threadId: thread?.id || null,
+    ts: Date.now()
+  }).catch((e) => console.error('[AI Hub] Push notify failed:', e.message));
+}
+
+// --- Native completion watcher: Antigravity desktop / Codex Desktop / VS Code turns ---
+const nativeWatch = new Map(); // threadId -> { fileKey, completionKey }
+
+function nativeTranscriptFile(thread) {
+  const ns = thread.nativeSource;
+  if (!ns) return null;
+  if (ns.type === 'agy') {
+    const dir = path.join(HOME, '.gemini', 'antigravity', 'brain', ns.id, '.system_generated', 'logs');
+    // The compact transcript is small and has everything needed to detect a finished turn.
+    return [path.join(dir, 'transcript.jsonl'), path.join(dir, 'transcript_full.jsonl')].find((f) => fs.existsSync(f)) || null;
+  }
+  if (ns.type === 'codex') return nativeSourceInfo(thread)?.file || null;
+  return null;
+}
+
+function tailJsonLines(file, maxBytes, mustInclude) {
+  const out = [];
+  let raw;
+  try {
+    raw = readTail(file, maxBytes);
+  } catch {
+    return out;
+  }
+  const lines = raw.split('\n');
+  if (raw.length >= maxBytes) lines.shift(); // first line is probably partial
+  for (const l of lines) {
+    if (!l || !mustInclude.some((m) => l.includes(m))) continue;
+    try {
+      out.push(JSON.parse(l));
+    } catch {}
+  }
+  return out;
+}
+
+function detectNativeCompletion(thread, file) {
+  if (thread.nativeSource.type === 'codex') {
+    const starts = new Map();
+    let last = null;
+    for (const o of tailJsonLines(file, 2 * 1024 * 1024, ['"task_complete"', '"task_started"'])) {
+      if (o.type !== 'event_msg' || !o.payload) continue;
+      if (o.payload.type === 'task_started') {
+        starts.set(o.payload.turn_id, o.payload.started_at ? Number(o.payload.started_at) * 1000 : Date.parse(o.timestamp));
+      } else if (o.payload.type === 'task_complete') {
+        last = {
+          key: o.payload.turn_id || o.timestamp,
+          endedAt: Date.parse(o.timestamp),
+          text: o.payload.error?.message || o.payload.last_agent_message || '',
+          outcome: o.payload.error ? 'error' : 'done'
+        };
+      }
+    }
+    if (last) last.startedAt = starts.get(last.key) || null;
+    return last;
+  }
+
+  // Antigravity: the turn is finished when the latest planner step has a reply and no further tool calls.
+  let turnStartedAt = null;
+  let lastStep = null;
+  for (const o of tailJsonLines(file, 1024 * 1024, ['"USER_INPUT"', '"PLANNER_RESPONSE"'])) {
+    if (o.type === 'USER_INPUT') {
+      turnStartedAt = Date.parse(o.created_at) || null;
+      lastStep = o;
+    } else if (o.type === 'PLANNER_RESPONSE') {
+      lastStep = o;
+    }
+  }
+  if (!lastStep || lastStep.type !== 'PLANNER_RESPONSE') return null;
+  if (lastStep.status && lastStep.status !== 'DONE') return null;
+  if ((lastStep.tool_calls || []).length > 0 || !String(lastStep.content || '').trim()) return null;
+  return { key: `step-${lastStep.step_index}`, endedAt: Date.parse(lastStep.created_at) || Date.now(), startedAt: turnStartedAt, text: lastStep.content, outcome: 'done' };
+}
+
+function checkNativeCompletions() {
+  const now = Date.now();
+  const seen = new Set();
+  for (const thread of appState.threads || []) {
+    if (!thread.nativeSource) continue;
+    const updated = Date.parse(thread.nativeUpdatedAt || thread.updatedAt || 0) || 0;
+    if (now - updated > 26 * 3600 * 1000 && !nativeWatch.has(thread.id)) continue;
+    seen.add(thread.id);
+    const file = nativeTranscriptFile(thread);
+    if (!file) continue;
+    let st;
+    try {
+      st = fs.statSync(file);
+    } catch {
+      continue;
+    }
+    const fileKey = `${file}:${st.size}:${st.mtimeMs}`;
+    const prev = nativeWatch.get(thread.id);
+    if (prev && prev.fileKey === fileKey) continue;
+    if (!prev && now - st.mtimeMs > 6 * 3600 * 1000) {
+      nativeWatch.set(thread.id, { fileKey, completionKey: null, stale: true });
+      continue;
+    }
+
+    const completion = detectNativeCompletion(thread, file);
+    const completionKey = completion?.key || prev?.completionKey || null;
+    nativeWatch.set(thread.id, { fileKey, completionKey });
+    // First sighting only records a baseline, so old turns never notify after a restart.
+    if (!prev || !completion || completion.key === prev.completionKey) continue;
+    if (activeTurns.has(thread.id) || now - (recentHubTurnAt.get(thread.id) || 0) < 5 * 60 * 1000) continue;
+    if (now - completion.endedAt > 10 * 60 * 1000) continue;
+    notifyTurnFinished({
+      thread,
+      engine: thread.nativeSource.type === 'agy' ? 'antigravity' : 'codex',
+      text: completion.text,
+      outcome: completion.outcome,
+      durationMs: completion.startedAt ? completion.endedAt - completion.startedAt : null,
+      source: 'native'
+    });
+  }
+  for (const id of nativeWatch.keys()) if (!seen.has(id)) nativeWatch.delete(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -3331,6 +3646,63 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(foundFile).pipe(res);
     }
 
+    // --- Push notifications ---
+    if (req.method === 'GET' && pathname === '/api/push/config') {
+      const s = appState.settings;
+      return sendJson(res, 200, {
+        publicKey: VAPID_PUBLIC_B64,
+        devices: pushSubs.map((d) => ({ label: d.label, createdAt: d.createdAt, lastOkAt: d.lastOkAt || null, host: new URL(d.endpoint).host })),
+        settings: { pushEnabled: s.pushEnabled !== false, pushOnHubTurns: s.pushOnHubTurns !== false, pushOnNativeTurns: s.pushOnNativeTurns !== false, pushMinSeconds: Number(s.pushMinSeconds ?? 30) }
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/subscribe') {
+      const body = await parseJsonBody(req);
+      const sub = body.subscription || {};
+      let endpointUrl;
+      try {
+        endpointUrl = new URL(String(sub.endpoint || ''));
+      } catch {}
+      if (!endpointUrl || endpointUrl.protocol !== 'https:' || !sub.keys?.p256dh || !sub.keys?.auth) {
+        return sendJson(res, 400, { error: 'Invalid push subscription' });
+      }
+      if (fromB64url(sub.keys.p256dh).length !== 65 || fromB64url(sub.keys.auth).length < 16) {
+        return sendJson(res, 400, { error: 'Invalid push subscription keys' });
+      }
+      pushSubs = pushSubs.filter((d) => d.endpoint !== sub.endpoint);
+      pushSubs.push({
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+        label: truncate(String(body.label || 'Device'), 60),
+        createdAt: new Date().toISOString()
+      });
+      savePushSubs();
+      return sendJson(res, 200, { ok: true, devices: pushSubs.length });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+      const body = await parseJsonBody(req);
+      const before = pushSubs.length;
+      pushSubs = pushSubs.filter((d) => d.endpoint !== body.endpoint);
+      savePushSubs();
+      return sendJson(res, 200, { ok: true, removed: before - pushSubs.length, devices: pushSubs.length });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/test') {
+      const body = await parseJsonBody(req);
+      const r = await sendPushToAll(
+        {
+          title: '🔔 AI Studio Hub',
+          body: 'Notifications are working. You will get one like this when a long agent task finishes.',
+          tag: 'hub-test',
+          url: '/',
+          ts: Date.now()
+        },
+        body.endpoint || null
+      );
+      return sendJson(res, 200, r);
+    }
+
     // --- POST /api/chat (SSE streaming turn) ---
     if (req.method === 'POST' && pathname === '/api/chat') {
       return await handleChat(req, res, await parseJsonBody(req));
@@ -3412,5 +3784,13 @@ server.listen(PORT, '127.0.0.1', () => {
       syncCrossAppMemory();
       syncLocalAppMirror();
     } catch {}
+    try {
+      checkNativeCompletions();
+    } catch (e) {
+      console.error('[AI Hub] Native completion watcher:', e.message);
+    }
   }, 12000);
+  try {
+    checkNativeCompletions(); // record a baseline right away
+  } catch {}
 });

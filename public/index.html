@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#4f46e5" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <script src="/qrcode.min.js"></script>
   <title>AI Studio Hub — Antigravity + OpenAI Codex + VS Code</title>
   <style>
@@ -1826,8 +1826,15 @@
       .topbar-actions .selector-group,
       .topbar-actions #themeToggleBtn,
       .topbar-actions #mobileModalBtn,
-      .topbar-actions button:not(#mobileNewChatBtn) {
+      .topbar-actions button:not(#mobileNewChatBtn):not(#pushBellBtn) {
         display: none !important;
+      }
+      #pushBellBtn {
+        padding: 4px 9px;
+        font-size: 14px;
+      }
+      #pushBellBtn .bell-label {
+        display: none;
       }
       .mobile-only-btn {
         display: inline-flex !important;
@@ -2039,6 +2046,42 @@
         <button class="btn" onclick="closeProjectModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveNewProject()">Add Project</button>
       </div>
+    </div>
+  </div>
+
+  <!-- PUSH NOTIFICATIONS MODAL -->
+  <div id="pushModal" class="modal-backdrop" onclick="if (event.target === this) closePushModal()">
+    <div class="modal" style="max-width: 440px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="display:flex; align-items:center; gap:8px; font-size:17px;"><span>🔔</span> Task-Finished Alerts</h3>
+        <button class="popover-close" onclick="closePushModal()">✕</button>
+      </div>
+
+      <div id="pushDeviceStatus" style="font-size:13px; font-weight:600; padding:8px 12px; border-radius:10px; background:var(--bg-card); border:1px solid var(--border);">Checking this device…</div>
+      <div id="pushHelpText" style="display:none; font-size:12.5px; line-height:1.55; color:var(--text-muted); background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); border-radius:8px; padding:10px 12px;"></div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="pushEnableBtn" class="btn btn-primary" onclick="enablePushOnThisDevice()">Turn on for this device</button>
+        <button id="pushTestBtn" class="btn" onclick="sendTestPush()">Send test</button>
+        <button id="pushDisableBtn" class="btn" style="color:#ef4444;" onclick="disablePushOnThisDevice()">Turn off here</button>
+      </div>
+
+      <div style="border-top:1px solid var(--border); padding-top:12px; display:flex; flex-direction:column; gap:10px; font-size:13px;">
+        <label style="display:flex; gap:8px; align-items:center; cursor:pointer;"><input type="checkbox" id="pushOnHubTurns" onchange="savePushSettings()" /> Chats run from AI Studio Hub</label>
+        <label style="display:flex; gap:8px; align-items:center; cursor:pointer;"><input type="checkbox" id="pushOnNativeTurns" onchange="savePushSettings()" /> Chats run in Antigravity, Codex Desktop or VS Code</label>
+        <label style="display:flex; gap:8px; align-items:center;">Only when the task took longer than
+          <select id="pushMinSeconds" onchange="savePushSettings()" style="background:var(--bg-input); border:1px solid var(--border); color:var(--text-main); padding:4px 6px; border-radius:6px;">
+            <option value="0">any time</option>
+            <option value="15">15 s</option>
+            <option value="30">30 s</option>
+            <option value="60">1 min</option>
+            <option value="120">2 min</option>
+            <option value="300">5 min</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="pushDevicesList" style="font-size:11.5px; color:var(--text-dim);"></div>
     </div>
   </div>
 
@@ -2257,6 +2300,7 @@
           <option value="30">30%</option>
         </select>
       </div>
+      <button id="pushBellBtn" class="btn" onclick="openPushModal()" title="Get a notification on this device when an agent task finishes">🔔<span class="bell-label"> Alerts</span></button>
       <button id="mobileModalBtn" class="btn btn-primary" onclick="openMobileModal()" title="Control AI Studio Hub from your phone via Cloudflare Tunnel">📱 Phone App</button>
       <button id="themeToggleBtn" class="btn" onclick="toggleTheme()" title="Toggle Light / Dark Mode">☀️ Light</button>
       <button class="btn" onclick="refreshStatus(true)" title="Force Sync All Chats, Projects & Live Credits">🔄 Sync</button>
@@ -2561,9 +2605,22 @@
 
     async function initHub() {
       initTheme();
+      registerHubServiceWorker();
       await refreshStatus(false);
       setupDragAndDrop();
       startLiveWatchers();
+      updatePushBell();
+
+      // Tapping a "task finished" notification opens /?thread=<id>
+      const params = new URLSearchParams(location.search);
+      const linkedThreadId = params.get('thread');
+      if (linkedThreadId) {
+        params.delete('thread');
+        const qs = params.toString();
+        history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : ''));
+        await openThreadFromNotification(linkedThreadId);
+        if (activeThreadId === linkedThreadId) return;
+      }
 
       let savedThreadId = null;
       try {
@@ -4591,6 +4648,210 @@
         sb.classList.add('open');
         if (bd) bd.classList.add('open');
       }
+    }
+
+    // ---------------------------------------------------------------------
+    // Push notifications ("task finished" alerts on phone / desktop)
+    // ---------------------------------------------------------------------
+    const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    let swRegistrationPromise = null;
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data && e.data.type === 'open-thread' && e.data.threadId) openThreadFromNotification(e.data.threadId);
+      });
+    }
+
+    function registerHubServiceWorker() {
+      if (!('serviceWorker' in navigator) || !window.isSecureContext) return Promise.resolve(null);
+      if (!swRegistrationPromise) {
+        swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+          console.warn('Service worker registration failed:', err);
+          swRegistrationPromise = null;
+          return null;
+        });
+      }
+      return swRegistrationPromise;
+    }
+
+    async function openThreadFromNotification(threadId) {
+      try {
+        if (!(hubData.state.threads || []).some((t) => t.id === threadId)) await refreshStatus(true);
+        if ((hubData.state.threads || []).some((t) => t.id === threadId)) await selectThread(threadId);
+      } catch {}
+    }
+
+    function pushSupportProblem() {
+      if (!window.isSecureContext) {
+        return 'Alerts need a secure (HTTPS) page. On your phone, open https://ai-studio-hub.mojtaba-safdari-mm.workers.dev.';
+      }
+      if (IS_IOS && !IS_STANDALONE) {
+        return 'On iPhone / iPad, alerts only work from the Home Screen app: tap Share ⎋ → "Add to Home Screen", open AI Hub from that new icon, then tap 🔔 again. (Needs iOS 16.4 or newer.)';
+      }
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        return 'This browser does not support push notifications. Try Chrome, Edge, Firefox, or Safari on iOS 16.4+ (Home Screen app).';
+      }
+      if (Notification.permission === 'denied') {
+        return 'Notifications are blocked for this site. Allow them in the browser / phone settings for AI Hub, then come back and tap "Turn on".';
+      }
+      return null;
+    }
+
+    function pushDeviceLabel() {
+      const ua = navigator.userAgent;
+      const dev = /iPhone/.test(ua) ? 'iPhone' : (/iPad/.test(ua) || IS_IOS) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows PC' : /Mac/.test(ua) ? 'Mac' : 'Device';
+      const br = /Edg\//.test(ua) ? 'Edge' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Browser';
+      return `${dev} · ${br}${IS_STANDALONE ? ' (app)' : ''}`;
+    }
+
+    function urlBase64ToUint8Array(b64) {
+      const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+      const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    }
+
+    async function getCurrentPushSubscription() {
+      if (pushSupportProblem()) return null;
+      const reg = await registerHubServiceWorker();
+      return reg ? reg.pushManager.getSubscription() : null;
+    }
+
+    async function updatePushBell() {
+      const btn = document.getElementById('pushBellBtn');
+      if (!btn) return;
+      let on = false;
+      try {
+        on = Boolean(await getCurrentPushSubscription());
+      } catch {}
+      btn.innerHTML = `${on ? '🔔' : '🔕'}<span class="bell-label"> Alerts</span>`;
+      btn.title = on ? 'Task-finished alerts are ON for this device' : 'Turn on task-finished alerts for this device';
+    }
+
+    async function openPushModal() {
+      document.getElementById('pushModal').classList.add('open');
+      await refreshPushModal();
+    }
+
+    function closePushModal() {
+      document.getElementById('pushModal').classList.remove('open');
+    }
+
+    async function refreshPushModal(statusOverride) {
+      const statusEl = document.getElementById('pushDeviceStatus');
+      const helpEl = document.getElementById('pushHelpText');
+      const enableBtn = document.getElementById('pushEnableBtn');
+      const testBtn = document.getElementById('pushTestBtn');
+      const disableBtn = document.getElementById('pushDisableBtn');
+      const listEl = document.getElementById('pushDevicesList');
+
+      let cfg = null;
+      try {
+        const r = await apiFetch('/api/push/config');
+        if (r.ok) cfg = await r.json();
+      } catch {}
+      if (cfg && cfg.settings) {
+        document.getElementById('pushOnHubTurns').checked = cfg.settings.pushOnHubTurns;
+        document.getElementById('pushOnNativeTurns').checked = cfg.settings.pushOnNativeTurns;
+        const sel = document.getElementById('pushMinSeconds');
+        sel.value = String(cfg.settings.pushMinSeconds);
+        if (sel.value !== String(cfg.settings.pushMinSeconds)) sel.value = '30';
+      }
+
+      const problem = pushSupportProblem();
+      let sub = null;
+      try {
+        sub = await getCurrentPushSubscription();
+      } catch {}
+      const onHere = Boolean(sub);
+
+      helpEl.style.display = problem ? 'block' : 'none';
+      helpEl.textContent = problem || '';
+      statusEl.innerHTML = statusOverride || (onHere ? '🟢 Alerts are <b>ON</b> for this device' : '⚪ Alerts are <b>OFF</b> for this device');
+      enableBtn.style.display = !onHere && !problem ? '' : 'none';
+      disableBtn.style.display = onHere ? '' : 'none';
+      const devices = (cfg && cfg.devices) || [];
+      testBtn.style.display = devices.length ? '' : 'none';
+      testBtn.textContent = devices.length > 1 ? `Send test to all ${devices.length}` : 'Send test';
+      listEl.innerHTML = devices.length
+        ? `<div style="font-weight:600; margin-bottom:4px;">Devices receiving alerts (${devices.length})</div>` +
+          devices.map((d) => `<div>• ${escapeHtml(d.label || 'Device')} <span style="opacity:0.7;">— added ${new Date(d.createdAt).toLocaleDateString()}</span></div>`).join('')
+        : 'No devices are receiving alerts yet.';
+      updatePushBell();
+    }
+
+    async function enablePushOnThisDevice() {
+      const problem = pushSupportProblem();
+      if (problem) return refreshPushModal();
+      const btn = document.getElementById('pushEnableBtn');
+      btn.disabled = true;
+      btn.textContent = 'Turning on…';
+      let status = null;
+      try {
+        // Ask first, directly inside the tap: iOS rejects permission prompts after an await.
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') throw new Error('Notification permission was not granted.');
+        const reg = await registerHubServiceWorker();
+        if (!reg) throw new Error('The background service could not start.');
+        await navigator.serviceWorker.ready;
+        const cfg = await (await apiFetch('/api/push/config')).json();
+        const key = urlBase64ToUint8Array(cfg.publicKey);
+        let sub = await reg.pushManager.getSubscription();
+        if (sub && sub.options && sub.options.applicationServerKey) {
+          const cur = new Uint8Array(sub.options.applicationServerKey);
+          if (cur.length !== key.length || cur.some((b, i) => b !== key[i])) {
+            await sub.unsubscribe();
+            sub = null;
+          }
+        }
+        if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        const r = await apiFetch('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), label: pushDeviceLabel() }) });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'The hub rejected the subscription.');
+        const t = await (await apiFetch('/api/push/test', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) })).json();
+        status = t.sent ? '🟢 Alerts are <b>ON</b>. A test notification is on its way.' : '🟡 Subscribed, but the test push failed. Check the hub console log.';
+      } catch (e) {
+        status = `⚠️ Could not turn on alerts: ${escapeHtml(e.message || String(e))}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Turn on for this device';
+        await refreshPushModal(status);
+      }
+    }
+
+    async function disablePushOnThisDevice() {
+      try {
+        const sub = await getCurrentPushSubscription();
+        if (sub) {
+          await apiFetch('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) });
+          await sub.unsubscribe();
+        }
+      } catch {}
+      await refreshPushModal();
+    }
+
+    async function sendTestPush() {
+      try {
+        const r = await (await apiFetch('/api/push/test', { method: 'POST', body: JSON.stringify({}) })).json();
+        const msg = r.sent
+          ? `📨 Test sent to ${r.sent} device${r.sent > 1 ? 's' : ''}${r.failed ? ` (${r.failed} failed)` : ''}${r.removed ? ` · removed ${r.removed} expired` : ''}.`
+          : `⚠️ Test could not be delivered${r.removed ? ` (${r.removed} expired device removed)` : ''}.`;
+        await refreshPushModal(msg);
+      } catch (e) {
+        await refreshPushModal(`⚠️ ${escapeHtml(e.message)}`);
+      }
+    }
+
+    async function savePushSettings() {
+      const payload = {
+        pushOnHubTurns: document.getElementById('pushOnHubTurns').checked,
+        pushOnNativeTurns: document.getElementById('pushOnNativeTurns').checked,
+        pushMinSeconds: Number(document.getElementById('pushMinSeconds').value)
+      };
+      try {
+        const r = await apiFetch('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+        const data = await r.json();
+        if (data.settings && hubData.state) hubData.state.settings = data.settings;
+      } catch {}
     }
 
     let qrcodeInstance = null;
