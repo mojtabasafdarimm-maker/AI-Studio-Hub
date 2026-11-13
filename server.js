@@ -1523,24 +1523,335 @@ function resumeDecision(thread, engine) {
   return { resume: true, deltaOnly: false, sessionId };
 }
 
-function classifyPromptIntent(prompt, attachments = []) {
+function classifyTaskComplexity(prompt, attachments = []) {
   const clean = String(prompt || '').trim();
-  if (!clean || clean.length > 260 || (attachments && attachments.length > 0) || clean.includes('```')) {
-    return { isLightweightQuestion: false };
-  }
-  const ACTION_RE = /\b(go|proceed|continue|implement|build|fix|edit|write|create|patch|run|execute|test|verify|seal|commit|push|deploy|draw|plot|render|refactor|update|change|add|remove|delete|install|keep running|do these|step by step|one at a time)\b/i;
-  if (ACTION_RE.test(clean)) {
-    return { isLightweightQuestion: false };
-  }
-  const QUESTION_RE = /^(what|whats|what's|why|how|when|where|who|which|status|tell me|explain|summarize|summary|can you explain|do we have|is there|check carefully and give me a road\s*map|give me a road\s*map)\b|\?$/i;
-  if (QUESTION_RE.test(clean)) {
-    const isRoadmap = /road\s*map|left|architecture|plan|overview/i.test(clean);
+  const attachCount = Array.isArray(attachments) ? attachments.length : 0;
+
+  // 1. Complex signals: Deep architecture, concurrency, deadlocks, security audits, memory/crashes, formal algorithms, large specifications
+  const COMPLEX_KEYWORDS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed system|consensus|raft|paxos|race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|penetration test(ing)?|formal verification|mathematical proof|compiler(s)?|ast parser|kernel|zero[- ]downtime|end-to-end implementation|full implementation|from scratch|comprehensive review|thoroughly analyze|deep dive|step-by-step refactor|multi-tenant|transaction isolation|high[- ]throughput)\b/i;
+
+  const hasMultipleSteps = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length >= 3;
+  const isLongSpecification = clean.length > 700 && hasMultipleSteps;
+
+  if (COMPLEX_KEYWORDS.test(clean) || isLongSpecification || (attachCount >= 3 && clean.length > 300)) {
     return {
-      isLightweightQuestion: true,
-      suggestedEffort: isRoadmap ? 'medium' : 'low'
+      complexity: 'complex',
+      suggestedEffort: 'high',
+      isLightweightQuestion: false,
+      isInformationalQuestion: false,
+      reason: 'Deep reasoning / complex task'
     };
   }
-  return { isLightweightQuestion: false };
+
+  // 2. Simple signals: Micro-tasks, typos, quick snippets, explanations, status, casual Q&A
+  const TRIVIAL_ACTION = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|type annotations?|one[- ]liner|1[- ]liner|regex|simple function|quick script|hello world|bash alias|curl command|git command|quick test|simple helper|rephrase|proofread)\b/i;
+  const CASUAL_GREETING = /^(hi|hello|hey|thanks|thank you|ok|okay|got it|sounds good|yes|no|perfect|great)[\.\!\?]?$/i;
+  const STATUS_OR_META = /^(status|what's left|summary of recent|what did we do|where was i|ping|test)[\.\!\?]?$/i;
+  const INFORMATIONAL_QUESTION = /^(what|whats|what's|why|how|when|where|who|which|can you explain|tell me about|summarize|explain)\b/i;
+
+  const isShort = clean.length < 450;
+  const isQuestion = INFORMATIONAL_QUESTION.test(clean) || clean.endsWith('?');
+
+  if (CASUAL_GREETING.test(clean) || STATUS_OR_META.test(clean)) {
+    return {
+      complexity: 'simple',
+      suggestedEffort: 'low',
+      isLightweightQuestion: true,
+      isInformationalQuestion: true,
+      reason: 'Conversational / status check'
+    };
+  }
+
+  if (TRIVIAL_ACTION.test(clean) && isShort && attachCount <= 1) {
+    return {
+      complexity: 'simple',
+      suggestedEffort: 'low',
+      isLightweightQuestion: true,
+      isInformationalQuestion: false, // Do NOT block file modifications for simple edits!
+      reason: 'Micro-task / simple edit'
+    };
+  }
+
+  if (isQuestion && isShort && attachCount <= 1 && !COMPLEX_KEYWORDS.test(clean)) {
+    return {
+      complexity: 'simple',
+      suggestedEffort: 'low',
+      isLightweightQuestion: true,
+      isInformationalQuestion: true,
+      reason: 'Lightweight question / explanation'
+    };
+  }
+
+  const MODERATE_ACTION = /\b(implement|refactor|migrate|rewrite|build|integrate|(create|add)\s+.*(endpoint|route|feature|component|service|module))\b/i;
+  if (MODERATE_ACTION.test(clean) || attachCount > 1 || clean.length > 400) {
+    return {
+      complexity: 'moderate',
+      suggestedEffort: 'medium',
+      isLightweightQuestion: false,
+      isInformationalQuestion: false,
+      reason: 'Standard coding / execution task'
+    };
+  }
+
+  return {
+    complexity: 'simple',
+    suggestedEffort: 'medium',
+    isLightweightQuestion: true,
+    isInformationalQuestion: false,
+    reason: 'Straightforward request'
+  };
+}
+
+function classifyPromptIntent(prompt, attachments = []) {
+  return classifyTaskComplexity(prompt, attachments);
+}
+
+function selectAgyAutoModel(models = [], complexity = 'simple', threshold = 12) {
+  const getModel = (familySlug, effort) =>
+    models.find(
+      (m) =>
+        m.modelId &&
+        m.modelId.toLowerCase().includes(familySlug.toLowerCase()) &&
+        m.effort === effort &&
+        (m.remainingPct ?? 100) >= threshold
+    );
+
+  const getAnyModelInFamily = (familySlug) => {
+    const familyModels = models
+      .filter(
+        (m) =>
+          m.modelId &&
+          m.modelId.toLowerCase().includes(familySlug.toLowerCase()) &&
+          (m.remainingPct ?? 100) >= threshold
+      )
+      .sort((a, b) => (b.remainingPct ?? 100) - (a.remainingPct ?? 100));
+    return familyModels[0] || null;
+  };
+
+  if (complexity === 'simple') {
+    // 1. Extra Anthropic models in Antigravity (Claude Sonnet 5.5, then Claude Opus 5.5)
+    const sonnet =
+      getModel('claude-sonnet-5-5', 'medium') ||
+      getModel('claude-sonnet-5-5', 'low') ||
+      getAnyModelInFamily('claude-sonnet-5-5');
+    if (sonnet) {
+      return {
+        model: sonnet,
+        reason: 'Extra model (Claude Sonnet 5.5) prioritized for simple task to save Argon quota'
+      };
+    }
+
+    const opus =
+      getModel('claude-opus-5-5', 'medium') ||
+      getModel('claude-opus-5-5', 'low') ||
+      getAnyModelInFamily('claude-opus-5-5');
+    if (opus) {
+      return {
+        model: opus,
+        reason: 'Extra model (Claude Opus 5.5) prioritized for simple task to save Argon quota'
+      };
+    }
+
+    // 2. Gemini 3.8 Flash (abundant quota, fast execution)
+    const flash =
+      getModel('gemini-3.8-flash', 'medium') ||
+      getModel('gemini-3.8-flash', 'high') ||
+      getModel('gemini-3.8-flash', 'low') ||
+      getAnyModelInFamily('gemini-3.8-flash');
+    if (flash) {
+      return {
+        model: flash,
+        reason: 'Gemini 3.8 Flash (abundant quota) selected for simple task'
+      };
+    }
+
+    // 3. Other extra / secondary models (Gemini 4 Hydrogen, GPT-OSS)
+    const hydro =
+      getModel('gemini-4-hydrogen', 'low') ||
+      getModel('gemini-4-hydrogen', 'medium') ||
+      getAnyModelInFamily('gemini-4-hydrogen');
+    if (hydro) {
+      return {
+        model: hydro,
+        reason: 'Gemini 4 Hydrogen selected for simple task'
+      };
+    }
+
+    const gptoss = getAnyModelInFamily('gpt-oss');
+    if (gptoss) {
+      return {
+        model: gptoss,
+        reason: 'GPT-OSS 120B selected for simple task'
+      };
+    }
+
+    // 4. Fallback: Gemini 4 Argon low/medium (only if all extra models are depleted)
+    const argon =
+      getModel('gemini-4-argon', 'low') ||
+      getModel('gemini-4-argon', 'medium') ||
+      getAnyModelInFamily('gemini-4-argon');
+    if (argon) {
+      return {
+        model: argon,
+        reason: 'Gemini 4 Argon (all extra models depleted below threshold)'
+      };
+    }
+
+    return {
+      model: models.find((m) => (m.remainingPct ?? 100) > 0) || models[0],
+      reason: 'Last available model'
+    };
+  }
+
+  if (complexity === 'complex') {
+    // 1. Flagship frontier model: Gemini 4 Argon (High or Medium)
+    const argon =
+      getModel('gemini-4-argon', 'high') ||
+      getModel('gemini-4-argon', 'medium') ||
+      getAnyModelInFamily('gemini-4-argon');
+    if (argon) {
+      return {
+        model: argon,
+        reason: 'Gemini 4 Argon (Flagship Reasoning) allocated for complex task'
+      };
+    }
+
+    // 2. High reasoning fallback: Claude Opus 5.5 High
+    const opus =
+      getModel('claude-opus-5-5', 'high') ||
+      getModel('claude-opus-5-5', 'medium') ||
+      getAnyModelInFamily('claude-opus-5-5');
+    if (opus) {
+      return {
+        model: opus,
+        reason: 'Claude Opus 5.5 (Deep Reasoning) allocated for complex task'
+      };
+    }
+
+    // 3. Gemini 4 Hydrogen High / XHigh
+    const hydro =
+      getModel('gemini-4-hydrogen', 'high') ||
+      getModel('gemini-4-hydrogen', 'xhigh') ||
+      getAnyModelInFamily('gemini-4-hydrogen');
+    if (hydro) {
+      return {
+        model: hydro,
+        reason: 'Gemini 4 Hydrogen (High) allocated for complex task'
+      };
+    }
+
+    return {
+      model: models.find((m) => (m.remainingPct ?? 100) > 0) || models[0],
+      reason: 'Available reasoning model'
+    };
+  }
+
+  // Moderate task
+  const sonnet = getModel('claude-sonnet-5-5', 'medium') || getAnyModelInFamily('claude-sonnet-5-5');
+  if (sonnet) {
+    return {
+      model: sonnet,
+      reason: 'Claude Sonnet 5.5 balanced model selected for standard task'
+    };
+  }
+
+  const flash =
+    getModel('gemini-3.8-flash', 'high') ||
+    getModel('gemini-3.8-flash', 'medium') ||
+    getAnyModelInFamily('gemini-3.8-flash');
+  if (flash) {
+    return {
+      model: flash,
+      reason: 'Gemini 3.8 Flash balanced model selected for standard task'
+    };
+  }
+
+  const hydro = getModel('gemini-4-hydrogen', 'medium') || getAnyModelInFamily('gemini-4-hydrogen');
+  if (hydro) {
+    return {
+      model: hydro,
+      reason: 'Gemini 4 Hydrogen balanced model selected for standard task'
+    };
+  }
+
+  const argon = getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
+  if (argon) {
+    return {
+      model: argon,
+      reason: 'Gemini 4 Argon selected for standard task'
+    };
+  }
+
+  return {
+    model: models[0],
+    reason: 'Default model'
+  };
+}
+
+function selectCodexAutoModel(models = [], complexity = 'simple', userEffort = 'medium') {
+  const hasModel = (slug) => models.some((m) => m.slug === slug);
+
+  if (complexity === 'simple') {
+    const slug = hasModel('gpt-6-luna')
+      ? 'gpt-6-luna'
+      : hasModel('gpt-5.6-luna')
+      ? 'gpt-5.6-luna'
+      : hasModel('gpt-6.1-sol')
+      ? 'gpt-6.1-sol'
+      : models[0]?.slug || 'gpt-6.1-sol';
+    const name = models.find((m) => m.slug === slug)?.name || slug;
+    return {
+      modelSlug: slug,
+      effort: 'low',
+      label: `${name} (Low)`,
+      reason: 'Lightweight Codex model prioritized for simple task'
+    };
+  }
+
+  if (complexity === 'complex') {
+    const slug = hasModel('gpt-6-astra')
+      ? 'gpt-6-astra'
+      : hasModel('gpt-6.1-sol')
+      ? 'gpt-6.1-sol'
+      : models[0]?.slug || 'gpt-6.1-sol';
+    const name = models.find((m) => m.slug === slug)?.name || slug;
+    return {
+      modelSlug: slug,
+      effort: 'high',
+      label: `${name} (High)`,
+      reason: 'Frontier reasoning Codex model allocated for complex task'
+    };
+  }
+
+  // Moderate
+  const slug = hasModel('gpt-6.1-sol')
+    ? 'gpt-6.1-sol'
+    : hasModel('gpt-6-sol')
+    ? 'gpt-6-sol'
+    : models[0]?.slug || 'gpt-6.1-sol';
+  const name = models.find((m) => m.slug === slug)?.name || slug;
+  return {
+    modelSlug: slug,
+    effort: 'medium',
+    label: `${name} (Medium)`,
+    reason: 'Balanced Codex model selected for standard task'
+  };
+}
+
+function formatModelLabel(engine, modelId, effort, agyModels = [], codexModels = []) {
+  if (engine === 'antigravity') {
+    const cleanId = String(modelId || '').replace(/\s*\([^)]+\)$/, '').trim();
+    const found = agyModels.find((m) => m.modelId === cleanId);
+    if (found?.label) return found.label;
+    return cleanId
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  const cleanSlug = String(modelId || '').replace(/\s*\([^)]+\)$/, '').trim();
+  const found = codexModels.find((m) => m.slug === cleanSlug);
+  const baseName = found?.name || cleanSlug;
+  const eff = effort ? ` (${effort[0].toUpperCase()}${effort.slice(1)})` : '';
+  return `${baseName}${eff}`;
 }
 
 function detectAutopilotLoop(prompt, autopilotFlag) {
@@ -2676,52 +2987,61 @@ async function handleChat(req, res, body) {
   let engine = engineMode === 'auto' ? defaultEngine : engineMode;
   let agyModelToUse = agyModel;
   let agyEffortToUse = agyEffort;
+  let codexModelToUse = codexModel;
   let codexEffortToUse = codexEffort;
   let handoffReason = null;
-
-  const promptIntent = classifyPromptIntent(prompt, attachments);
   let smartRouted = false;
-  // Only downshift effort/model automatically in Auto-Pilot mode; never override the user's explicit model/effort choice in manual mode.
-  if (engineMode === 'auto' && promptIntent.isLightweightQuestion) {
-    const targetEff = promptIntent.suggestedEffort || 'low';
-    if (codexEffortToUse === 'high' || codexEffortToUse === 'xhigh' || (codexEffortToUse === 'medium' && targetEff === 'low')) {
-      codexEffortToUse = targetEff;
-      smartRouted = true;
-    }
-    if (agyEffortToUse === 'high' || agyEffortToUse === 'xhigh' || (agyEffortToUse === 'medium' && targetEff === 'low')) {
-      agyEffortToUse = targetEff;
-      const fam = agyFamily(agyModelToUse);
-      const lighterModel = agyStatus.models.find((m) => m.family === fam && m.effort === targetEff && (m.remainingPct ?? 100) >= threshold);
-      if (lighterModel) agyModelToUse = lighterModel.modelId;
-      smartRouted = true;
-    }
-  }
+
+  const taskAnalysis = classifyTaskComplexity(prompt, attachments);
 
   if (engineMode === 'auto') {
-    if (engine === 'antigravity' && agyModelPct(agyModel) < threshold) {
-      // Try another Antigravity model family first: cheaper than a cross-engine handoff.
-      const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModel), preferredEffort: agyEffort, threshold });
-      if (alt) {
-        agyModelToUse = alt.modelId;
-        agyEffortToUse = alt.effort;
-        sendEvent({ type: 'switch_notice', message: `Switched model inside Antigravity: ${agyModel} (${agyModelPct(agyModel)}% left) → ${alt.label} (${alt.remainingPct}% left).` });
-      } else if (codexPct >= threshold) {
+    // 1. Quota check & automatic cross-engine failover
+    if (engine === 'antigravity') {
+      const anyAgyAlive = agyStatus.models.some((m) => (m.remainingPct ?? 100) >= threshold);
+      if (!anyAgyAlive && codexPct >= threshold) {
         engine = 'codex';
         handoffReason = `Auto-switched from Antigravity (all models below ${threshold}%) to Codex (${codexPct}% left).`;
         sendEvent({ type: 'switch_notice', message: handoffReason });
       }
-    } else if (engine === 'codex' && codexPct < threshold) {
-      const target = agyModelPct(agyModel) >= threshold ? agyStatus.models.find((m) => m.modelId === agyModel) : pickAgyModel(agyStatus, { preferredEffort: agyEffort, threshold });
-      if (target) {
-        engine = 'antigravity';
-        agyModelToUse = target.modelId;
-        agyEffortToUse = target.effort;
-        handoffReason = `Auto-switched from Codex (${codexPct}% left) to Antigravity ${target.label} (${target.remainingPct ?? 100}% left).`;
-        sendEvent({ type: 'switch_notice', message: handoffReason });
+    } else if (engine === 'codex') {
+      if (codexPct < threshold) {
+        const anyAgyAlive = agyStatus.models.some((m) => (m.remainingPct ?? 100) >= threshold);
+        if (anyAgyAlive) {
+          engine = 'antigravity';
+          handoffReason = `Auto-switched from Codex (${codexPct}% left) to Antigravity (${threshold}% threshold).`;
+          sendEvent({ type: 'switch_notice', message: handoffReason });
+        }
+      }
+    }
+
+    // 2. Intelligent Model & Effort Routing based on task complexity
+    if (engine === 'antigravity') {
+      const autoPick = selectAgyAutoModel(agyStatus.models, taskAnalysis.complexity, threshold);
+      if (autoPick?.model) {
+        agyModelToUse = autoPick.model.modelId;
+        agyEffortToUse = autoPick.model.effort || taskAnalysis.suggestedEffort;
+        smartRouted = true;
+        const compLabel = taskAnalysis.complexity[0].toUpperCase() + taskAnalysis.complexity.slice(1);
+        sendEvent({
+          type: 'switch_notice',
+          message: `⚡ Auto-Pilot (${compLabel} Task): ${autoPick.reason} → ${autoPick.model.label} (${autoPick.model.remainingPct ?? 100}% quota).`
+        });
+      }
+    } else if (engine === 'codex') {
+      const autoCodex = selectCodexAutoModel(codexStatus.models || [], taskAnalysis.complexity, codexEffort);
+      if (autoCodex) {
+        codexModelToUse = autoCodex.modelSlug;
+        codexEffortToUse = autoCodex.effort;
+        smartRouted = true;
+        const compLabel = taskAnalysis.complexity[0].toUpperCase() + taskAnalysis.complexity.slice(1);
+        sendEvent({
+          type: 'switch_notice',
+          message: `⚡ Auto-Pilot (${compLabel} Task): ${autoCodex.reason} → ${autoCodex.label}.`
+        });
       }
     }
   } else {
-    // Even in manual mode, pre-flight check 0% exhausted models so we never spawn a dead CLI that hangs
+    // Manual mode: NEVER override user's explicit model or effort choice unless it has 0% quota
     if (engine === 'antigravity' && agyModelPct(agyModel) <= 0) {
       const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModel), preferredEffort: agyEffort, threshold: 1 });
       if (alt) {
@@ -2754,9 +3074,24 @@ async function handleChat(req, res, body) {
     agyEffortToUse = alignedAgy.effort;
   }
 
+  const displayModel = formatModelLabel(
+    engine,
+    engine === 'antigravity' ? agyModelToUse : codexModelToUse,
+    engine === 'antigravity' ? agyEffortToUse : codexEffortToUse,
+    agyStatus.models,
+    codexStatus.models
+  );
+
   liveTurn.engine = engine;
-  liveTurn.model = engine === 'antigravity' ? agyModelToUse : codexModel;
+  liveTurn.model = displayModel;
   liveTurn.effort = engine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
+
+  sendEvent({
+    type: 'init',
+    engine,
+    model: displayModel,
+    effort: liveTurn.effort
+  });
 
   const autopilotCfg = detectAutopilotLoop(prompt, Boolean(body.autopilot));
   let currentStepIdx = 1;
@@ -2782,12 +3117,6 @@ async function handleChat(req, res, body) {
     liveTurn.effort = effort;
     const decision = resumeDecision({ ...thread, messages: history }, eng);
     if (!promptOverride) {
-      if (smartRouted && !autopilotCfg.enabled) {
-        sendEvent({
-          type: 'switch_notice',
-          message: `⚡ Smart Question Routing (Auto-Pilot): Informational question detected — scaled reasoning effort to ${String(effort || 'low').toUpperCase()} (${model}) to save quota.`
-        });
-      }
       if (decision.compact) {
         const prevK = decision.prevTokens ? `${Math.round(decision.prevTokens / 1000)}k` : 'heavy';
         sendEvent({
@@ -2805,7 +3134,7 @@ async function handleChat(req, res, body) {
       : null;
     const { prompt: promptText, usedBriefing } = promptOverride
       ? { prompt: promptOverride, usedBriefing: false }
-      : buildEnginePrompt({ thread, history, userPrompt: currentPromptText, attachments: currentAttachments, engine: eng, decision, handoffReason: reason, lightweightHint: smartRouted && !autopilotCfg.enabled, autopilotStep });
+      : buildEnginePrompt({ thread, history, userPrompt: currentPromptText, attachments: currentAttachments, engine: eng, decision, handoffReason: reason, lightweightHint: smartRouted && taskAnalysis.isInformationalQuestion && !autopilotCfg.enabled, autopilotStep });
     const actions = [];
     const narratives = [...(liveTurn.narratives || [])];
     const thinkingSteps = [...(liveTurn.thinkingSteps || [])];
@@ -2847,7 +3176,7 @@ async function handleChat(req, res, body) {
         if (r.model && aligned.modelId && r.model !== aligned.modelId) {
           sendEvent({ type: 'switch_notice', message: `Antigravity CLI executed with ${r.model} (requested ${aligned.modelId}).` });
         }
-        return { engine: eng, model: usedEffort ? `${usedModel} (${usedEffort})` : usedModel, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
+        return { engine: eng, model: formatModelLabel(eng, usedModel, usedEffort, agyStatus.models, codexStatus.models), text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
       }
       const r = await runCodexTurn({
         thread,
@@ -2867,7 +3196,7 @@ async function handleChat(req, res, body) {
       if (r.model && model && r.model !== model) {
         sendEvent({ type: 'switch_notice', message: `Codex CLI executed with ${r.model} (requested ${model}).` });
       }
-      return { engine: eng, model: usedEffort ? `${usedModel} (${usedEffort})` : usedModel, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
+      return { engine: eng, model: formatModelLabel(eng, usedModel, usedEffort, agyStatus.models, codexStatus.models), text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
     } catch (runErr) {
       runErr.hadStepProgress = hadStepProgress || Boolean(runErr.hadStepProgress);
       if (!runErr.partialText) {
@@ -2942,13 +3271,13 @@ async function handleChat(req, res, body) {
     while (true) {
       let result;
       try {
-        result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModel, engine === 'antigravity' ? agyEffortToUse : codexEffortToUse, handoffReason);
+        result = await executeWithRetry(engine, engine === 'antigravity' ? agyModelToUse : codexModelToUse, engine === 'antigravity' ? agyEffortToUse : codexEffortToUse, handoffReason);
       } catch (primaryErr) {
         if (primaryErr.cancelled) throw primaryErr;
         if (!primaryErr.isQuotaError) throw primaryErr;
 
         let fbEngine = engine === 'antigravity' ? 'codex' : 'antigravity';
-        let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModel;
+        let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModelToUse;
         let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
         if (engine === 'antigravity') {
           const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1 });
@@ -3056,7 +3385,7 @@ async function handleChat(req, res, body) {
         finishWith(
           {
             engine,
-            model: liveTurn.model || (engine === 'antigravity' ? agyModelToUse : codexModel),
+            model: liveTurn.model || (engine === 'antigravity' ? agyModelToUse : codexModelToUse),
             text: partial || (liveTurn.narratives && liveTurn.narratives[liveTurn.narratives.length - 1]) || '',
             narratives: liveTurn.narratives || [],
             thinkingSteps: liveTurn.thinkingSteps || [],

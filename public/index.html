@@ -2379,7 +2379,7 @@
       </div>
 
       <div id="mAutoDetails" style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px; color:var(--text-muted); line-height:1.5;">
-        ⚡ <strong>Auto-Pilot</strong> dynamically routes each prompt to the engine with available quota. Auto-switches if remaining quota falls below 12%.
+        ⚡ <strong>Auto-Pilot (Smart Task Routing)</strong> automatically routes simple tasks to extra models (Claude Sonnet 5.5, Claude Opus 5.5, Gemini 3.8 Flash) to preserve frontier quota, and reserves Gemini 4 Argon & Codex Sol for complex reasoning tasks.
       </div>
 
       <div id="mAgyDetails" style="display:none; margin-bottom:12px;">
@@ -2572,7 +2572,7 @@
 
         <div class="model-selectors">
           <div id="autoRouteNotice" class="auto-route-notice">
-            <span>⚡ Auto-Pilot: routing next prompt to <b id="autoRouteTargetText">🌌 Antigravity (Flash)</b></span>
+            <span>⚡ Auto-Pilot: <b id="autoRouteTargetText">Smart Task Routing (Claude/Flash for simple • Argon for complex)</b></span>
           </div>
 
           <div id="agySelectorGroup" class="selector-group agy" style="display:none;">
@@ -2629,6 +2629,7 @@
             <div class="composer-left-tools">
               <input id="fileInput" type="file" multiple style="position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;" onchange="handleFileSelect(event)" />
               <label for="fileInput" id="attachBtnLabel" class="btn" role="button" tabindex="0" title="Attach Files or Photos" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('fileInput').click();}">📎 <span class="attach-btn-full-text">Attach Files / Drag & Drop</span><span class="attach-btn-short-text" style="display:none;">Attach</span></label>
+              <button type="button" id="micBtn" class="btn" onclick="toggleVoiceInput()" title="Dictate prompt (voice to text)" style="padding:5px 10px; font-size:11.5px;">🎤 Voice</button>
               <button type="button" id="autopilotToggleBtn" class="btn" onclick="toggleAutopilotLoop()" title="Run multi-step Autopilot Loop automatically until task is done or 5-hour quota reaches 95% used" style="padding:5px 10px; font-size:11.5px;">🔁 Autopilot: Off</button>
               <span id="liveStatusText" style="color:var(--text-muted); font-size:12px;">Ready • All existing AGY, Codex & VS Code chats synced</span>
             </div>
@@ -2982,6 +2983,10 @@
               }
             }
           }
+          if (activeThreadId && !incoming.state.threads.some(t => t.id === activeThreadId)) {
+            const activeObj = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+            if (activeObj) incoming.state.threads.unshift(activeObj);
+          }
         }
         hubData = incoming;
 
@@ -3116,7 +3121,119 @@
       updateTopEngineBadge();
     });
 
-    function getPredictedAutoRoute() {
+    function classifyTaskComplexity(prompt, attachments = []) {
+      const clean = String(prompt || '').trim();
+      const attachCount = Array.isArray(attachments) ? attachments.length : 0;
+      const COMPLEX_KEYWORDS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed system|consensus|raft|paxos|race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|penetration test(ing)?|formal verification|mathematical proof|compiler(s)?|ast parser|kernel|zero[- ]downtime|end-to-end implementation|full implementation|from scratch|comprehensive review|thoroughly analyze|deep dive|step-by-step refactor|multi-tenant|transaction isolation|high[- ]throughput)\b/i;
+      const hasMultipleSteps = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length >= 3;
+      const isLongSpecification = clean.length > 700 && hasMultipleSteps;
+      if (COMPLEX_KEYWORDS.test(clean) || isLongSpecification || (attachCount >= 3 && clean.length > 300)) {
+        return { complexity: 'complex', suggestedEffort: 'high', reason: 'Deep reasoning / complex task' };
+      }
+      const TRIVIAL_ACTION = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|type annotations?|one[- ]liner|1[- ]liner|regex|simple function|quick script|hello world|bash alias|curl command|git command|quick test|simple helper|rephrase|proofread)\b/i;
+      const CASUAL_GREETING = /^(hi|hello|hey|thanks|thank you|ok|okay|got it|sounds good|yes|no|perfect|great)[\.\!\?]?$/i;
+      const STATUS_OR_META = /^(status|what's left|summary of recent|what did we do|where was i|ping|test)[\.\!\?]?$/i;
+      const INFORMATIONAL_QUESTION = /^(what|whats|what's|why|how|when|where|who|which|can you explain|tell me about|summarize|explain)\b/i;
+      const isShort = clean.length < 450;
+      const isQuestion = INFORMATIONAL_QUESTION.test(clean) || clean.endsWith('?');
+      if (CASUAL_GREETING.test(clean) || STATUS_OR_META.test(clean)) {
+        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Conversational / status check' };
+      }
+      if (TRIVIAL_ACTION.test(clean) && isShort && attachCount <= 1) {
+        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Micro-task / simple edit' };
+      }
+      if (isQuestion && isShort && attachCount <= 1 && !COMPLEX_KEYWORDS.test(clean)) {
+        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Lightweight question / explanation' };
+      }
+      const MODERATE_ACTION = /\b(implement|refactor|migrate|rewrite|build|integrate|(create|add)\s+.*(endpoint|route|feature|component|service|module))\b/i;
+      if (MODERATE_ACTION.test(clean) || attachCount > 1 || clean.length > 400) {
+        return { complexity: 'moderate', suggestedEffort: 'medium', reason: 'Standard coding / execution task' };
+      }
+      return { complexity: 'simple', suggestedEffort: 'medium', reason: 'Straightforward request' };
+    }
+
+    function selectAgyAutoModel(models = [], complexity = 'simple', threshold = 12) {
+      const getModel = (familySlug, effort) =>
+        models.find(m => m.modelId && m.modelId.toLowerCase().includes(familySlug.toLowerCase()) && m.effort === effort && (m.remainingPct ?? 100) >= threshold);
+      const getAnyModelInFamily = (familySlug) => {
+        const list = models.filter(m => m.modelId && m.modelId.toLowerCase().includes(familySlug.toLowerCase()) && (m.remainingPct ?? 100) >= threshold)
+          .sort((a, b) => (b.remainingPct ?? 100) - (a.remainingPct ?? 100));
+        return list[0] || null;
+      };
+      if (complexity === 'simple') {
+        const sonnet = getModel('claude-sonnet-5-5', 'medium') || getModel('claude-sonnet-5-5', 'low') || getAnyModelInFamily('claude-sonnet-5-5');
+        if (sonnet) return { model: sonnet, reason: 'Extra model (Claude Sonnet 5.5) prioritized for simple task' };
+        const opus = getModel('claude-opus-5-5', 'medium') || getModel('claude-opus-5-5', 'low') || getAnyModelInFamily('claude-opus-5-5');
+        if (opus) return { model: opus, reason: 'Extra model (Claude Opus 5.5) prioritized for simple task' };
+        const flash = getModel('gemini-3.8-flash', 'medium') || getModel('gemini-3.8-flash', 'high') || getModel('gemini-3.8-flash', 'low') || getAnyModelInFamily('gemini-3.8-flash');
+        if (flash) return { model: flash, reason: 'Gemini 3.8 Flash (abundant quota) selected for simple task' };
+        const hydro = getModel('gemini-4-hydrogen', 'low') || getModel('gemini-4-hydrogen', 'medium') || getAnyModelInFamily('gemini-4-hydrogen');
+        if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen selected for simple task' };
+        const gptoss = getAnyModelInFamily('gpt-oss');
+        if (gptoss) return { model: gptoss, reason: 'GPT-OSS 120B selected for simple task' };
+        const argon = getModel('gemini-4-argon', 'low') || getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
+        if (argon) return { model: argon, reason: 'Gemini 4 Argon (all extra models depleted)' };
+        return { model: models.find(m => (m.remainingPct ?? 100) > 0) || models[0], reason: 'Available model' };
+      }
+      if (complexity === 'complex') {
+        const argon = getModel('gemini-4-argon', 'high') || getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
+        if (argon) return { model: argon, reason: 'Gemini 4 Argon (Flagship Reasoning) allocated for complex task' };
+        const opus = getModel('claude-opus-5-5', 'high') || getModel('claude-opus-5-5', 'medium') || getAnyModelInFamily('claude-opus-5-5');
+        if (opus) return { model: opus, reason: 'Claude Opus 5.5 (Deep Reasoning) allocated for complex task' };
+        const hydro = getModel('gemini-4-hydrogen', 'high') || getModel('gemini-4-hydrogen', 'xhigh') || getAnyModelInFamily('gemini-4-hydrogen');
+        if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen (High) allocated for complex task' };
+        return { model: models.find(m => (m.remainingPct ?? 100) > 0) || models[0], reason: 'Available reasoning model' };
+      }
+      const sonnet = getModel('claude-sonnet-5-5', 'medium') || getAnyModelInFamily('claude-sonnet-5-5');
+      if (sonnet) return { model: sonnet, reason: 'Claude Sonnet 5.5 balanced model' };
+      const flash = getModel('gemini-3.8-flash', 'high') || getModel('gemini-3.8-flash', 'medium') || getAnyModelInFamily('gemini-3.8-flash');
+      if (flash) return { model: flash, reason: 'Gemini 3.8 Flash balanced model' };
+      const hydro = getModel('gemini-4-hydrogen', 'medium') || getAnyModelInFamily('gemini-4-hydrogen');
+      if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen balanced model' };
+      const argon = getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
+      if (argon) return { model: argon, reason: 'Gemini 4 Argon' };
+      return { model: models[0], reason: 'Default model' };
+    }
+
+    function selectCodexAutoModel(models = [], complexity = 'simple', userEffort = 'medium') {
+      const hasModel = slug => models.some(m => m.slug === slug);
+      if (complexity === 'simple') {
+        const slug = hasModel('gpt-6-luna') ? 'gpt-6-luna' : (hasModel('gpt-5.6-luna') ? 'gpt-5.6-luna' : (hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (models[0]?.slug || 'gpt-6.1-sol')));
+        const name = models.find(m => m.slug === slug)?.name || slug;
+        return { modelSlug: slug, effort: 'low', label: `${name} (Low)`, reason: 'Lightweight Codex model prioritized for simple task' };
+      }
+      if (complexity === 'complex') {
+        const slug = hasModel('gpt-6-astra') ? 'gpt-6-astra' : (hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (models[0]?.slug || 'gpt-6.1-sol'));
+        const name = models.find(m => m.slug === slug)?.name || slug;
+        return { modelSlug: slug, effort: 'high', label: `${name} (High)`, reason: 'Frontier reasoning Codex model allocated for complex task' };
+      }
+      const slug = hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (hasModel('gpt-6-sol') ? 'gpt-6-sol' : (models[0]?.slug || 'gpt-6.1-sol'));
+      const name = models.find(m => m.slug === slug)?.name || slug;
+      return { modelSlug: slug, effort: 'medium', label: `${name} (Medium)`, reason: 'Balanced Codex model selected for standard task' };
+    }
+
+    function humanizeModelName(engine, rawModel) {
+      if (!rawModel) return '';
+      let str = String(rawModel).trim();
+      str = str.replace(/\((low|medium|high|xhigh|max)\)\s*\(\1\)/i, '($1)');
+      if (engine === 'antigravity') {
+        const cleanId = str.replace(/\s*\([^)]+\)$/, '').trim();
+        const found = (hubData.antigravity?.models || []).find(m => m.modelId === cleanId || m.modelId === str);
+        if (found?.label) return found.label;
+        return str
+          .replace(/-/g, ' ')
+          .replace(/\b\w/g, c => c.toUpperCase());
+      }
+      const cleanSlug = str.replace(/\s*\([^)]+\)$/, '').trim();
+      const found = (hubData.codex?.models || []).find(m => m.slug === cleanSlug);
+      if (found?.name) {
+        const effMatch = str.match(/\((low|medium|high|xhigh|max)\)/i);
+        return effMatch ? `${found.name} (${effMatch[1][0].toUpperCase()}${effMatch[1].slice(1).toLowerCase()})` : found.name;
+      }
+      return str;
+    }
+
+    function getPredictedAutoRoute(promptText = '') {
       const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
       const msgs = thread?.messages || [];
       let lastAssistant = null;
@@ -3128,6 +3245,7 @@
       const threshold = Number(hubData.state.settings?.autoSwitchThresholdPct) || 12;
 
       const agyModels = hubData.antigravity?.models || [];
+      const codexModels = hubData.codex?.models || [];
       const agyModelEl = document.getElementById('agyModelSelect');
       const codexModelEl = document.getElementById('codexModelSelect');
       const selectedAgyId = agyModelEl?.value || hubData.state.settings?.agyModel;
@@ -3140,40 +3258,49 @@
       const codex7d = hubData.codex?.weeklyWindow?.remainingPct ?? 100;
       const codexPct = Math.round(Math.min(codex5h, codex7d));
 
-      const altAgy = agyModels.find(m => m.family !== selectedAgy?.family && (m.remainingPct ?? 100) >= threshold)
-        || agyModels.find(m => (m.remainingPct ?? 100) >= threshold);
-
       let targetEngine = defaultEngine;
-      let targetLabel = defaultEngine === 'codex' ? codexLabel : agyLabel;
-      let targetPct = defaultEngine === 'codex' ? codexPct : agyPct;
+      const anyAgyAlive = agyModels.some(m => (m.remainingPct ?? 100) >= threshold);
 
-      if (defaultEngine === 'antigravity' && agyPct < threshold) {
-        if (altAgy) {
-          targetLabel = altAgy.label;
-          targetPct = Math.round(altAgy.remainingPct ?? 100);
-        } else if (codexPct >= threshold) {
-          targetEngine = 'codex';
-          targetLabel = codexLabel;
-          targetPct = codexPct;
+      if (defaultEngine === 'antigravity' && !anyAgyAlive && codexPct >= threshold) {
+        targetEngine = 'codex';
+      } else if (defaultEngine === 'codex' && codexPct < threshold && anyAgyAlive) {
+        targetEngine = 'antigravity';
+      }
+
+      const task = promptText ? classifyTaskComplexity(promptText) : null;
+      let targetLabel = targetEngine === 'codex' ? codexLabel : agyLabel;
+      let targetPct = targetEngine === 'codex' ? codexPct : agyPct;
+      let targetEffort = 'medium';
+
+      if (targetEngine === 'antigravity') {
+        const autoAgy = selectAgyAutoModel(agyModels, task ? task.complexity : 'moderate', threshold);
+        if (autoAgy?.model) {
+          targetLabel = autoAgy.model.label;
+          targetPct = Math.round(autoAgy.model.remainingPct ?? 100);
+          targetEffort = autoAgy.model.effort || (task?.suggestedEffort || 'medium');
         }
-      } else if (defaultEngine === 'codex' && codexPct < threshold) {
-        if (agyPct >= threshold && selectedAgy) {
-          targetEngine = 'antigravity';
-          targetLabel = agyLabel;
-          targetPct = agyPct;
-        } else if (altAgy) {
-          targetEngine = 'antigravity';
-          targetLabel = altAgy.label;
-          targetPct = Math.round(altAgy.remainingPct ?? 100);
+      } else {
+        const autoCodex = selectCodexAutoModel(codexModels, task ? task.complexity : 'moderate');
+        if (autoCodex) {
+          targetLabel = autoCodex.label;
+          targetEffort = autoCodex.effort;
         }
       }
+
+      const shortSummary = task
+        ? `${targetLabel} (${targetPct}%)`
+        : 'Smart Task Routing';
+      const fullSummary = task
+        ? (targetEngine === 'codex' ? `🟢 OpenAI Codex (${targetLabel} • ${targetPct}%)` : `🌌 Antigravity (${targetLabel} • ${targetPct}%)`)
+        : 'Smart Task Routing (Claude/Flash for simple, Argon for complex)';
 
       return {
         engine: targetEngine,
         label: targetLabel,
+        effort: targetEffort,
         pct: targetPct,
-        shortText: targetEngine === 'codex' ? `${targetLabel} (${targetPct}%)` : `${targetLabel} (${targetPct}%)`,
-        fullText: targetEngine === 'codex' ? `🟢 OpenAI Codex (${targetLabel} • ${targetPct}%)` : `🌌 Antigravity (${targetLabel} • ${targetPct}%)`,
+        shortText: shortSummary,
+        fullText: fullSummary,
         agyLabel,
         agyPct,
         codexLabel,
@@ -3785,6 +3912,8 @@
       activeThreadOpenElsewhere = false;
       renderThreads();
       updateActiveCwdDisplay();
+      // Immediately clear previous chat view and switch to the new active thread
+      renderActiveChat(true);
 
       try {
         document.getElementById('liveStatusText').textContent = 'Syncing native transcript...';
@@ -3801,6 +3930,8 @@
                 data.thread.engineMode = currentT.engineMode;
               }
               hubData.state.threads[idx] = data.thread;
+            } else {
+              hubData.state.threads.unshift(data.thread);
             }
           }
         }
@@ -3850,6 +3981,23 @@
         ? (hubData.state.projects[0]?.id || 'default')
         : activeProjectId;
 
+      // 1. Reset source filter to all so the new session is never hidden by active AGY/Codex/VSC tabs
+      setSourceFilter('all');
+
+      // 2. Clear any search filter
+      const sInput = document.getElementById('threadSearchInput');
+      if (sInput && sInput.value) sInput.value = '';
+
+      // 3. Immediately close mobile sidebar if open
+      if (window.innerWidth <= 768) {
+        const sb = document.querySelector('.sidebar');
+        const bd = document.getElementById('mobileSidebarBackdrop');
+        if (sb && sb.classList.contains('open')) {
+          sb.classList.remove('open');
+          if (bd) bd.classList.remove('open');
+        }
+      }
+
       const res = await apiFetch('/api/threads', {
         method: 'POST',
         body: JSON.stringify({
@@ -3862,13 +4010,25 @@
         })
       });
       const data = await res.json();
-      hubData.state.threads = data.threads;
-      activeThreadId = data.thread.id;
-      restoreEngineMode();
-      activeThreadOpenElsewhere = false;
-      renderThreads();
-      renderActiveChat(true);
-      document.getElementById('promptInput').focus();
+      if (!data || !data.thread) return;
+
+      // 4. Update threads list and ensure full new thread object is present in memory
+      hubData.state.threads = data.threads || [];
+      const exIdx = hubData.state.threads.findIndex(t => t.id === data.thread.id);
+      if (exIdx !== -1) {
+        hubData.state.threads[exIdx] = data.thread;
+      } else {
+        hubData.state.threads.unshift(data.thread);
+      }
+
+      // 5. Switch to and open the new conversation immediately
+      await selectThread(data.thread.id);
+
+      const pInput = document.getElementById('promptInput');
+      if (pInput) {
+        pInput.value = '';
+        pInput.focus();
+      }
     }
 
     async function deleteThread(e, id) {
@@ -4057,9 +4217,10 @@
           `;
         } else {
           const isAgy = m.engine === 'antigravity';
+          const modelText = humanizeModelName(m.engine, m.model);
           const badge = isAgy
-            ? `<span class="badge agy">🌌 Antigravity • ${escapeHtml(m.model || '')}</span>`
-            : `<span class="badge codex">🟢 OpenAI Codex • ${escapeHtml(m.model || '')}</span>`;
+            ? `<span class="badge agy">🌌 Antigravity • ${escapeHtml(modelText || '')}</span>`
+            : `<span class="badge codex">🟢 OpenAI Codex • ${escapeHtml(modelText || '')}</span>`;
           const handoffBanner = m.handoffReason
             ? `<div class="switch-banner" style="margin-bottom:10px;">🔄 <span>${escapeHtml(m.handoffReason)}</span></div>`
             : '';
@@ -4218,12 +4379,13 @@
 
     function formatStreamBadgeHtml(engine, model, effort) {
       const isAgy = engine === 'antigravity';
-      const label = model
-        ? (effort && !String(model).includes(`(${effort})`) ? `${model} (${effort})` : model)
-        : '';
+      let clean = humanizeModelName(engine, model);
+      if (clean && effort && !/\((low|medium|high|xhigh|max)\)/i.test(clean)) {
+        clean = `${clean} (${effort[0].toUpperCase()}${effort.slice(1).toLowerCase()})`;
+      }
       return isAgy
-        ? `<span class="badge agy">🌌 Antigravity${label ? ` • ${escapeHtml(label)}` : ''}</span>`
-        : `<span class="badge codex">🟢 OpenAI Codex${label ? ` • ${escapeHtml(label)}` : ''}</span>`;
+        ? `<span class="badge agy">🌌 Antigravity${clean ? ` • ${escapeHtml(clean)}` : ''}</span>`
+        : `<span class="badge codex">🟢 OpenAI Codex${clean ? ` • ${escapeHtml(clean)}` : ''}</span>`;
     }
 
     async function consumeSseResponse(res, targetThreadId, streamInfo) {
@@ -4505,10 +4667,10 @@
       const selectedAgyEffort = document.getElementById('agyEffortSelect').value;
       const selectedCodexModel = document.getElementById('codexModelSelect').value;
       const selectedCodexEffort = document.getElementById('codexEffortSelect').value;
-      const route = getPredictedAutoRoute();
+      const route = getPredictedAutoRoute(prompt);
       const initialEngine = currentEngineMode === 'auto' ? route.engine : (currentEngineMode === 'codex' ? 'codex' : 'antigravity');
-      const initialModel = initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel;
-      const initialEffort = initialEngine === 'codex' ? selectedCodexEffort : selectedAgyEffort;
+      const initialModel = currentEngineMode === 'auto' ? route.label : (initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel);
+      const initialEffort = currentEngineMode === 'auto' ? route.effort : (initialEngine === 'codex' ? selectedCodexEffort : selectedAgyEffort);
       const streamInfo = {
         userPrompt: prompt,
         accumulatedText: '',
@@ -5621,5 +5783,34 @@
 
     initHub();
   </script>
-</body>
+<script>
+// ===== Voice dictation (browser SpeechRecognition) =====
+let _voiceRec = null, _voiceActive = false, _voiceBase = '';
+function toggleVoiceInput() {
+  const btn = document.getElementById('micBtn');
+  const ta = document.getElementById('promptInput');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('Voice input is not supported in this browser. Use Chrome, Edge or Safari over HTTPS/localhost.'); return; }
+  if (_voiceActive) { _voiceRec && _voiceRec.stop(); return; }
+  _voiceRec = new SR();
+  _voiceRec.lang = navigator.language || 'en-US';
+  _voiceRec.continuous = true;
+  _voiceRec.interimResults = true;
+  _voiceBase = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+  let finalText = '';
+  _voiceRec.onstart = () => { _voiceActive = true; btn.textContent = '⏹ Stop dictation'; btn.style.borderColor = 'var(--danger)'; };
+  _voiceRec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finalText += r[0].transcript; else interim += r[0].transcript;
+    }
+    ta.value = _voiceBase + finalText + interim;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  _voiceRec.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') alert('Voice error: ' + e.error + (e.error === 'not-allowed' ? ' (allow microphone access)' : '')); };
+  _voiceRec.onend = () => { _voiceActive = false; btn.textContent = '🎤 Voice'; btn.style.borderColor = ''; ta.focus(); };
+  try { _voiceRec.start(); } catch (err) { console.error(err); }
+}
+</script></body>
 </html>
