@@ -2393,6 +2393,7 @@
             <option value="low">Low (Fast response)</option>
             <option value="medium" selected>Medium (Standard)</option>
             <option value="high">High (Deep reasoning)</option>
+            <option value="xhigh">Extra High (Max depth)</option>
           </select>
         </div>
       </div>
@@ -2582,6 +2583,7 @@
               <option value="low">Low</option>
               <option value="medium" selected>Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">Extra High</option>
             </select>
           </div>
 
@@ -2663,7 +2665,7 @@
   </div>
 
   <script>
-    const HUB_CLIENT_VERSION = '2026-11-12-att-v2';
+    const HUB_CLIENT_VERSION = '2026-11-12-model-sync-v1';
     let HUB_TOKEN = "__HUB_TOKEN__";
     if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
       HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
@@ -2965,9 +2967,11 @@
           for (const newT of incoming.state.threads) {
             const existing = (hubData.state.threads || []).find(t => t.id === newT.id);
             if (existing) {
-              if (existing.engineMode && !newT.engineMode) {
-                newT.engineMode = existing.engineMode;
-              }
+              if (existing.engineMode && !newT.engineMode) newT.engineMode = existing.engineMode;
+              if (existing.agyModel && !newT.agyModel) newT.agyModel = existing.agyModel;
+              if (existing.agyEffort && !newT.agyEffort) newT.agyEffort = existing.agyEffort;
+              if (existing.codexModel && !newT.codexModel) newT.codexModel = existing.codexModel;
+              if (existing.codexEffort && !newT.codexEffort) newT.codexEffort = existing.codexEffort;
               if (Array.isArray(existing.messages) && !Array.isArray(newT.messages)) {
                 newT.messages = existing.messages;
                 newT.messagesLoaded = existing.messagesLoaded;
@@ -2982,14 +2986,17 @@
         hubData = incoming;
 
         const s = hubData.state.settings || {};
-        restoreEngineMode();
         document.getElementById('thresholdSelect').value = String(s.autoSwitchThresholdPct || 12);
-        document.getElementById('agyEffortSelect').value = s.agyEffort || 'medium';
-        document.getElementById('codexEffortSelect').value = s.codexEffort || 'high';
         document.getElementById('execModeSelect').value = s.executionMode || 'agent';
 
+        const activeSelId = document.activeElement?.id || '';
+        const editingModelControls = ['agyModelSelect', 'agyEffortSelect', 'codexModelSelect', 'codexEffortSelect', 'mAgyModelSelect', 'mAgyEffortSelect', 'mCodexModelSelect', 'mCodexEffortSelect'].includes(activeSelId);
+
         renderTopQuotas();
-        renderModelSelectors();
+        if (!editingModelControls) {
+          renderModelSelectors();
+          restoreEngineMode();
+        }
         renderCodexBinarySelector();
         setEngineModeUI(currentEngineMode);
         renderProjects();
@@ -3071,7 +3078,7 @@
       const desktopAgySelect = document.getElementById('agyModelSelect');
       const mobileAgySelect = document.getElementById('mAgyModelSelect');
       if (desktopAgySelect && mobileAgySelect) {
-        if (mobileAgySelect.options.length !== desktopAgySelect.options.length) {
+        if (mobileAgySelect.innerHTML !== desktopAgySelect.innerHTML) {
           mobileAgySelect.innerHTML = desktopAgySelect.innerHTML;
         }
         mobileAgySelect.value = desktopAgySelect.value;
@@ -3080,7 +3087,7 @@
       const desktopCodexSelect = document.getElementById('codexModelSelect');
       const mobileCodexSelect = document.getElementById('mCodexModelSelect');
       if (desktopCodexSelect && mobileCodexSelect) {
-        if (mobileCodexSelect.options.length !== desktopCodexSelect.options.length) {
+        if (mobileCodexSelect.innerHTML !== desktopCodexSelect.innerHTML) {
           mobileCodexSelect.innerHTML = desktopCodexSelect.innerHTML;
         }
         mobileCodexSelect.value = desktopCodexSelect.value;
@@ -3109,52 +3116,107 @@
       updateTopEngineBadge();
     });
 
+    function getPredictedAutoRoute() {
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      const msgs = thread?.messages || [];
+      let lastAssistant = null;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'assistant') { lastAssistant = msgs[i]; break; }
+      }
+      const nativeEngine = (thread?.origin === 'vscode' || thread?.origin === 'codex') ? 'codex' : 'antigravity';
+      const defaultEngine = lastAssistant?.engine || nativeEngine;
+      const threshold = Number(hubData.state.settings?.autoSwitchThresholdPct) || 12;
+
+      const agyModels = hubData.antigravity?.models || [];
+      const agyModelEl = document.getElementById('agyModelSelect');
+      const codexModelEl = document.getElementById('codexModelSelect');
+      const selectedAgyId = agyModelEl?.value || hubData.state.settings?.agyModel;
+      const selectedAgy = agyModels.find(m => m.modelId === selectedAgyId) || agyModels[0];
+      const agyLabel = agyModelEl?.options[agyModelEl.selectedIndex]?.text?.replace(/\s*\[.*\]$/, '') || selectedAgy?.label || 'Antigravity';
+      const agyPct = Math.round(selectedAgy?.remainingPct ?? 100);
+
+      const codexLabel = codexModelEl?.options[codexModelEl.selectedIndex]?.text || hubData.state.settings?.codexModel || 'Codex';
+      const codex5h = hubData.codex?.fiveHourWindow?.remainingPct ?? 100;
+      const codex7d = hubData.codex?.weeklyWindow?.remainingPct ?? 100;
+      const codexPct = Math.round(Math.min(codex5h, codex7d));
+
+      const altAgy = agyModels.find(m => m.family !== selectedAgy?.family && (m.remainingPct ?? 100) >= threshold)
+        || agyModels.find(m => (m.remainingPct ?? 100) >= threshold);
+
+      let targetEngine = defaultEngine;
+      let targetLabel = defaultEngine === 'codex' ? codexLabel : agyLabel;
+      let targetPct = defaultEngine === 'codex' ? codexPct : agyPct;
+
+      if (defaultEngine === 'antigravity' && agyPct < threshold) {
+        if (altAgy) {
+          targetLabel = altAgy.label;
+          targetPct = Math.round(altAgy.remainingPct ?? 100);
+        } else if (codexPct >= threshold) {
+          targetEngine = 'codex';
+          targetLabel = codexLabel;
+          targetPct = codexPct;
+        }
+      } else if (defaultEngine === 'codex' && codexPct < threshold) {
+        if (agyPct >= threshold && selectedAgy) {
+          targetEngine = 'antigravity';
+          targetLabel = agyLabel;
+          targetPct = agyPct;
+        } else if (altAgy) {
+          targetEngine = 'antigravity';
+          targetLabel = altAgy.label;
+          targetPct = Math.round(altAgy.remainingPct ?? 100);
+        }
+      }
+
+      return {
+        engine: targetEngine,
+        label: targetLabel,
+        pct: targetPct,
+        shortText: targetEngine === 'codex' ? `${targetLabel} (${targetPct}%)` : `${targetLabel} (${targetPct}%)`,
+        fullText: targetEngine === 'codex' ? `🟢 OpenAI Codex (${targetLabel} • ${targetPct}%)` : `🌌 Antigravity (${targetLabel} • ${targetPct}%)`,
+        agyLabel,
+        agyPct,
+        codexLabel,
+        codexPct
+      };
+    }
+
     function updateTopEngineBadge() {
       const badgeEl = document.getElementById('topActiveEngineBadge');
       if (!badgeEl) return;
       const mode = currentEngineMode || 'auto';
       badgeEl.className = `top-engine-badge ${mode}`;
 
-      const agyModelEl = document.getElementById('agyModelSelect');
-      const codexModelEl = document.getElementById('codexModelSelect');
-      const agyLabel = agyModelEl?.options[agyModelEl.selectedIndex]?.text?.replace(/\s*\[.*\]$/, '') || 'Gemini 3.8 Flash';
-      const codexLabel = codexModelEl?.options[codexModelEl.selectedIndex]?.text || 'GPT-6.1 Sol';
-
-      const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
-      const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
-      const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+      const route = getPredictedAutoRoute();
       const isMobile = window.innerWidth <= 768;
 
       if (isMobile) {
         if (mode === 'antigravity') {
-          badgeEl.innerHTML = `<span>🌌 AGY</span> <span style="font-size:11px; font-weight:700;">${flashPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
-          badgeEl.title = `Antigravity (${agyLabel} • ${flashPct}%). Tap to change.`;
+          badgeEl.innerHTML = `<span>🌌 AGY</span> <span style="font-size:11px; font-weight:700;">${route.agyPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `Antigravity (${route.agyLabel} • ${route.agyPct}%). Tap to change.`;
         } else if (mode === 'codex') {
-          badgeEl.innerHTML = `<span>🟢 Codex</span> <span style="font-size:11px; font-weight:700;">${codexPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
-          badgeEl.title = `OpenAI Codex (${codexLabel} • ${codexPct}%). Tap to change.`;
+          badgeEl.innerHTML = `<span>🟢 Codex</span> <span style="font-size:11px; font-weight:700;">${route.codexPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `OpenAI Codex (${route.codexLabel} • ${route.codexPct}%). Tap to change.`;
         } else {
-          badgeEl.innerHTML = `<span>⚡ Auto</span> <span style="font-size:11px; font-weight:700;">${flashPct > 0 ? flashPct : codexPct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
-          badgeEl.title = `Auto-Pilot. Tap to change engine.`;
+          badgeEl.innerHTML = `<span>⚡ Auto</span> <span style="font-size:11px; font-weight:700;">${route.pct}%</span> <span style="font-size:9px; opacity:0.6;">▾</span>`;
+          badgeEl.title = `Auto-Pilot (${route.fullText}). Tap to change engine.`;
         }
       } else {
         if (mode === 'antigravity') {
-          badgeEl.innerHTML = `<span>🌌 Antigravity</span><span class="badge-sub">${escapeHtml(agyLabel)}</span>`;
-          badgeEl.title = `Active Engine: Antigravity (${agyLabel} • ${flashPct}%). Click to switch to OpenAI Codex.`;
+          badgeEl.innerHTML = `<span>🌌 Antigravity</span><span class="badge-sub">${escapeHtml(route.agyLabel)}</span>`;
+          badgeEl.title = `Active Engine: Antigravity (${route.agyLabel} • ${route.agyPct}%). Click to switch to OpenAI Codex.`;
         } else if (mode === 'codex') {
-          badgeEl.innerHTML = `<span>🟢 OpenAI Codex</span><span class="badge-sub">${escapeHtml(codexLabel)}</span>`;
-          badgeEl.title = `Active Engine: OpenAI Codex (${codexLabel} • ${codexPct}%). Click to switch to Auto-Pilot.`;
+          badgeEl.innerHTML = `<span>🟢 OpenAI Codex</span><span class="badge-sub">${escapeHtml(route.codexLabel)}</span>`;
+          badgeEl.title = `Active Engine: OpenAI Codex (${route.codexLabel} • ${route.codexPct}%). Click to switch to Auto-Pilot.`;
         } else {
-          const autoTarget = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
-          badgeEl.innerHTML = `<span>⚡ Auto-Pilot</span><span class="badge-sub">Routes to ${autoTarget}</span>`;
-          badgeEl.title = `Active Engine: Auto-Pilot (smart routing). Click to switch to Antigravity.`;
+          badgeEl.innerHTML = `<span>⚡ Auto-Pilot</span><span class="badge-sub">Routes to ${escapeHtml(route.shortText)}</span>`;
+          badgeEl.title = `Active Engine: Auto-Pilot (smart routing → ${route.fullText}). Click to switch to Antigravity.`;
         }
       }
 
       const autoRouteTargetText = document.getElementById('autoRouteTargetText');
       if (autoRouteTargetText) {
-        autoRouteTargetText.textContent = flashModel
-          ? `🌌 Antigravity (${flashModel.label} • ${flashPct}%)`
-          : `🟢 OpenAI Codex (${codexPct}%)`;
+        autoRouteTargetText.textContent = route.fullText;
       }
     }
 
@@ -3250,6 +3312,9 @@
 
     function renderModelSelectors() {
       const s = hubData.state.settings || {};
+      const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      const preferredAgyModel = thread?.agyModel || s.agyModel;
+      const preferredCodexModel = thread?.codexModel || s.codexModel;
 
       const agySelect = document.getElementById('agyModelSelect');
       const agyModels = hubData.antigravity?.models || [];
@@ -3261,14 +3326,14 @@
         } else if (m.remainingPct != null) {
           pctText = ` [${m.remainingPct}%]`;
         }
-        const sel = m.modelId === s.agyModel ? 'selected' : '';
+        const sel = m.modelId === preferredAgyModel ? 'selected' : '';
         return `<option value="${m.modelId}" data-effort="${m.effort || 'medium'}" ${sel}>${m.label}${pctText}</option>`;
       }).join('');
 
       const codexSelect = document.getElementById('codexModelSelect');
       const codexModels = hubData.codex?.models || [];
       codexSelect.innerHTML = codexModels.map(m => {
-        const sel = m.slug === s.codexModel ? 'selected' : '';
+        const sel = m.slug === preferredCodexModel ? 'selected' : '';
         return `<option value="${m.slug}" ${sel}>${m.name}</option>`;
       }).join('');
     }
@@ -3301,12 +3366,17 @@
       const effort = document.getElementById('agyEffortSelect').value;
       const sel = document.getElementById('agyModelSelect');
       const currentVal = sel.value || '';
-      const targetVal = currentVal.replace(/-(low|medium|high)$/i, `-${effort}`);
+      const targetVal = currentVal.replace(/-(low|medium|high|xhigh|max)$/i, `-${effort}`);
+      let matched = false;
       for (let i = 0; i < sel.options.length; i++) {
         if (sel.options[i].value === targetVal) {
           sel.selectedIndex = i;
+          matched = true;
           break;
         }
+      }
+      if (!matched && sel.options[sel.selectedIndex]?.dataset?.effort) {
+        document.getElementById('agyEffortSelect').value = sel.options[sel.selectedIndex].dataset.effort;
       }
       updateSettings();
     }
@@ -3335,24 +3405,34 @@
     }
 
     function restoreEngineMode() {
+      const s = hubData.state.settings || {};
       const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
       currentEngineMode = getThreadEngine(thread);
       setEngineModeUI(currentEngineMode);
 
-      if (thread) {
-        if (thread.agyModel && document.getElementById('agyModelSelect')) {
-          document.getElementById('agyModelSelect').value = thread.agyModel;
-        }
-        if (thread.agyEffort && document.getElementById('agyEffortSelect')) {
-          document.getElementById('agyEffortSelect').value = thread.agyEffort;
-        }
-        if (thread.codexModel && document.getElementById('codexModelSelect')) {
-          document.getElementById('codexModelSelect').value = thread.codexModel;
-        }
-        if (thread.codexEffort && document.getElementById('codexEffortSelect')) {
-          document.getElementById('codexEffortSelect').value = thread.codexEffort;
-        }
+      const agySel = document.getElementById('agyModelSelect');
+      const agyEff = document.getElementById('agyEffortSelect');
+      const codexSel = document.getElementById('codexModelSelect');
+      const codexEff = document.getElementById('codexEffortSelect');
+
+      const wantAgyModel = thread?.agyModel || s.agyModel;
+      if (wantAgyModel && agySel && [...agySel.options].some(o => o.value === wantAgyModel)) {
+        agySel.value = wantAgyModel;
       }
+      const selectedAgyOpt = agySel?.options[agySel.selectedIndex];
+      const wantAgyEffort = selectedAgyOpt?.dataset?.effort || thread?.agyEffort || s.agyEffort || 'medium';
+      if (agyEff) agyEff.value = wantAgyEffort;
+
+      const wantCodexModel = thread?.codexModel || s.codexModel;
+      if (wantCodexModel && codexSel && [...codexSel.options].some(o => o.value === wantCodexModel)) {
+        codexSel.value = wantCodexModel;
+      }
+      const wantCodexEffort = thread?.codexEffort || s.codexEffort || 'high';
+      if (codexEff) codexEff.value = wantCodexEffort;
+
+      syncMobileSheet();
+      updateTopEngineBadge();
+      updateComposerEngineUI(currentEngineMode);
     }
 
     function setEngineMode(mode) {
@@ -3437,17 +3517,7 @@
       if (!barEl) return;
 
       const currentMode = mode || currentEngineMode || 'auto';
-      const agyModelEl = document.getElementById('agyModelSelect');
-      const codexModelEl = document.getElementById('codexModelSelect');
-      const agyOpt = agyModelEl?.options[agyModelEl.selectedIndex];
-      const codexOpt = codexModelEl?.options[codexModelEl.selectedIndex];
-
-      const agyLabel = agyOpt ? agyOpt.text.replace(/\s*\[.*\]$/, '') : 'Gemini 3.8 Flash';
-      const codexLabel = codexOpt ? codexOpt.text : 'GPT-6.1 Sol';
-
-      const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
-      const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
-      const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
+      const route = getPredictedAutoRoute();
 
       const switcherHtml = `
         <div class="engine-switcher-btns">
@@ -3458,11 +3528,9 @@
       `;
 
       if (currentMode === 'antigravity') {
-        const curAgy = (hubData.antigravity?.models || []).find(m => m.modelId === agyModelEl?.value);
-        const curPct = curAgy?.remainingPct != null ? Math.round(curAgy.remainingPct) : flashPct;
         barEl.innerHTML = `
           <div class="composer-engine-pill antigravity" onclick="setEngineMode('codex')" title="Currently targeting Antigravity. Click to switch to Codex.">
-            🌌 Active Engine: <b>Antigravity</b> (${escapeHtml(agyLabel)}) • <b>${curPct}%</b> quota
+            🌌 Active Engine: <b>Antigravity</b> (${escapeHtml(route.agyLabel)}) • <b>${route.agyPct}%</b> quota
           </div>
           ${switcherHtml}
         `;
@@ -3470,11 +3538,11 @@
           sendBtn.textContent = 'Send to Antigravity ↵';
           sendBtn.style.background = 'linear-gradient(135deg, #7c5cff, #6366f1)';
         }
-        if (promptInput) promptInput.placeholder = `Message Antigravity (${agyLabel})...`;
+        if (promptInput) promptInput.placeholder = `Message Antigravity (${route.agyLabel})...`;
       } else if (currentMode === 'codex') {
         barEl.innerHTML = `
           <div class="composer-engine-pill codex" onclick="setEngineMode('auto')" title="Currently targeting OpenAI Codex. Click to switch to Auto-Pilot.">
-            🟢 Active Engine: <b>OpenAI Codex</b> (${escapeHtml(codexLabel)}) • <b>${codexPct}%</b> 5h window
+            🟢 Active Engine: <b>OpenAI Codex</b> (${escapeHtml(route.codexLabel)}) • <b>${route.codexPct}%</b> 5h window
           </div>
           ${switcherHtml}
         `;
@@ -3482,13 +3550,12 @@
           sendBtn.textContent = 'Send to Codex ↵';
           sendBtn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
         }
-        if (promptInput) promptInput.placeholder = `Message OpenAI Codex (${codexLabel})...`;
+        if (promptInput) promptInput.placeholder = `Message OpenAI Codex (${route.codexLabel})...`;
       } else {
         // Auto-Pilot
-        const autoTarget = flashModel ? `🌌 Antigravity (${flashModel.label} • ${flashPct}%)` : `🟢 Codex (${codexPct}%)`;
         barEl.innerHTML = `
           <div class="composer-engine-pill auto" onclick="setEngineMode('antigravity')" title="Auto-Pilot dynamically routes to the engine with quota.">
-            ⚡ Active Engine: <b>Auto-Pilot</b> (Next turn → ${autoTarget})
+            ⚡ Active Engine: <b>Auto-Pilot</b> (Next turn → ${escapeHtml(route.fullText)})
           </div>
           ${switcherHtml}
         `;
@@ -3785,7 +3852,14 @@
 
       const res = await apiFetch('/api/threads', {
         method: 'POST',
-        body: JSON.stringify({ projectId: targetProjId, engineMode: currentEngineMode })
+        body: JSON.stringify({
+          projectId: targetProjId,
+          engineMode: currentEngineMode,
+          agyModel: document.getElementById('agyModelSelect')?.value,
+          agyEffort: document.getElementById('agyEffortSelect')?.value,
+          codexModel: document.getElementById('codexModelSelect')?.value,
+          codexEffort: document.getElementById('codexEffortSelect')?.value
+        })
       });
       const data = await res.json();
       hubData.state.threads = data.threads;
@@ -3827,10 +3901,7 @@
       }
 
       if (!thread || ((!thread.messages || thread.messages.length === 0) && !threadStreams.has(thread.id))) {
-        const flashModel = (hubData.antigravity?.models || []).find(m => m.family.includes('Flash') && m.remainingPct > 0);
-        const flashPct = flashModel ? Math.round(flashModel.remainingPct) : 0;
-        const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? 100);
-        const autoTargetText = flashModel ? `Flash (${flashPct}%)` : `Codex (${codexPct}%)`;
+        const autoTargetText = escapeHtml(getPredictedAutoRoute().shortText);
 
         scrollEl.innerHTML = `
           <div class="landing-hero">
@@ -4145,6 +4216,16 @@
       }
     }
 
+    function formatStreamBadgeHtml(engine, model, effort) {
+      const isAgy = engine === 'antigravity';
+      const label = model
+        ? (effort && !String(model).includes(`(${effort})`) ? `${model} (${effort})` : model)
+        : '';
+      return isAgy
+        ? `<span class="badge agy">🌌 Antigravity${label ? ` • ${escapeHtml(label)}` : ''}</span>`
+        : `<span class="badge codex">🟢 OpenAI Codex${label ? ` • ${escapeHtml(label)}` : ''}</span>`;
+    }
+
     async function consumeSseResponse(res, targetThreadId, streamInfo) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -4220,18 +4301,18 @@
                 if (bEl) bEl.innerHTML = '';
                 renderActiveChat(true);
               }
-            } else if (evt.type === 'init') {
+            } else if (evt.type === 'init' || evt.type === 'model_update') {
               const isAgy = evt.engine === 'antigravity';
               streamInfo.engine = isAgy ? 'antigravity' : 'codex';
-              streamInfo.badgeHtml = isAgy
-                ? `<span class="badge agy">🌌 Antigravity</span>`
-                : `<span class="badge codex">🟢 OpenAI Codex</span>`;
-              streamInfo.statusText = '● Generating response…';
+              if (evt.model) streamInfo.model = evt.model;
+              if (evt.effort) streamInfo.effort = evt.effort;
+              streamInfo.badgeHtml = formatStreamBadgeHtml(streamInfo.engine, streamInfo.model, streamInfo.effort);
+              if (evt.type === 'init') streamInfo.statusText = '● Generating response…';
               if (activeThreadId === targetThreadId) {
                 const bEl = document.getElementById('streamBadge');
                 const sEl = document.getElementById('streamStatus');
                 if (bEl) bEl.innerHTML = streamInfo.badgeHtml;
-                if (sEl) sEl.textContent = streamInfo.statusText;
+                if (sEl && evt.type === 'init') sEl.textContent = streamInfo.statusText;
               }
             } else if (evt.type === 'replace_delta') {
               streamInfo.accumulatedText = evt.text || '';
@@ -4323,8 +4404,10 @@
         userPrompt: turn.userPrompt || '',
         accumulatedText: turn.accumulatedText || '',
         statusText: '● ' + (turn.statusText || 'Responding…'),
-        badgeHtml: isCodex ? `<span class="badge codex">🟢 OpenAI Codex</span>` : `<span class="badge agy">🌌 Antigravity</span>`,
+        badgeHtml: formatStreamBadgeHtml(isCodex ? 'codex' : 'antigravity', turn.model, turn.effort),
         engine: isCodex ? 'codex' : 'antigravity',
+        model: turn.model || '',
+        effort: turn.effort || '',
         narratives: Array.isArray(turn.narratives) ? [...turn.narratives] : [],
         thinkingSteps: Array.isArray(turn.thinkingSteps) ? [...turn.thinkingSteps] : [],
         switchNotices: Array.isArray(turn.switchNotices) ? [...turn.switchNotices] : [],
@@ -4418,13 +4501,22 @@
       document.getElementById('stopBtn').style.display = 'inline-flex';
       document.getElementById('liveStatusText').textContent = 'Running agent turn…';
 
-      const initialEngine = currentEngineMode === 'codex' ? 'codex' : 'antigravity';
+      const selectedAgyModel = document.getElementById('agyModelSelect').value;
+      const selectedAgyEffort = document.getElementById('agyEffortSelect').value;
+      const selectedCodexModel = document.getElementById('codexModelSelect').value;
+      const selectedCodexEffort = document.getElementById('codexEffortSelect').value;
+      const route = getPredictedAutoRoute();
+      const initialEngine = currentEngineMode === 'auto' ? route.engine : (currentEngineMode === 'codex' ? 'codex' : 'antigravity');
+      const initialModel = initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel;
+      const initialEffort = initialEngine === 'codex' ? selectedCodexEffort : selectedAgyEffort;
       const streamInfo = {
         userPrompt: prompt,
         accumulatedText: '',
         statusText: '● Starting…',
-        badgeHtml: initialEngine === 'codex' ? `<span class="badge codex">🟢 OpenAI Codex</span>` : `<span class="badge agy">🌌 Antigravity</span>`,
+        badgeHtml: formatStreamBadgeHtml(initialEngine, initialModel, initialEffort),
         engine: initialEngine,
+        model: initialModel,
+        effort: initialEffort,
         narratives: [],
         thinkingSteps: [],
         switchNotices: [],

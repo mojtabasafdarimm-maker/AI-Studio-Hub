@@ -1309,25 +1309,27 @@ async function getAgyStatus(force = false) {
     }
 
     const us = data.userStatus || {};
-    const models = (us.cascadeModelConfigData?.clientModelConfigs || []).map((m) => {
-      const effortMatch = m.label.match(/\((Low|Medium|High)\)/i);
-      let remainingPct = 100;
-      if (m.quotaInfo?.remainingFraction != null) {
-        remainingPct = Math.round(m.quotaInfo.remainingFraction * 1000) / 10;
-      } else if (m.quotaInfo?.resetTime) {
-        const resetMs = new Date(m.quotaInfo.resetTime).getTime();
-        if (resetMs > Date.now()) remainingPct = 0;
-      }
-      return {
-        label: m.label,
-        modelId: m.modelId,
-        family: m.label.replace(/\s*\([^)]+\)\s*$/, '').trim(),
-        effort: effortMatch ? effortMatch[1].toLowerCase() : 'medium',
-        remainingPct,
-        resetTime: m.quotaInfo?.resetTime || null,
-        supportsImages: !!m.supportsImages
-      };
-    });
+    const models = (us.cascadeModelConfigData?.clientModelConfigs || [])
+      .filter((m) => !m.disabled && !String(m.modelId || '').endsWith('-disabled'))
+      .map((m) => {
+        const effortMatch = m.label.match(/\((Low|Medium|High|XHigh|Max)\)/i);
+        let remainingPct = 100;
+        if (m.quotaInfo?.remainingFraction != null) {
+          remainingPct = Math.round(m.quotaInfo.remainingFraction * 1000) / 10;
+        } else if (m.quotaInfo?.resetTime) {
+          const resetMs = new Date(m.quotaInfo.resetTime).getTime();
+          if (resetMs > Date.now()) remainingPct = 0;
+        }
+        return {
+          label: m.label,
+          modelId: m.modelId,
+          family: m.label.replace(/\s*\([^)]+\)\s*$/, '').trim(),
+          effort: effortMatch ? effortMatch[1].toLowerCase() : 'medium',
+          remainingPct,
+          resetTime: m.quotaInfo?.resetTime || null,
+          supportsImages: !!m.supportsImages
+        };
+      });
 
     const pools = new Map();
     for (const m of models) {
@@ -1806,6 +1808,7 @@ function getPublicActiveTurns() {
       userPrompt: turn.userPrompt,
       engine: turn.engine,
       model: turn.model,
+      effort: turn.effort || null,
       statusText: turn.statusText,
       accumulatedText: turn.accumulatedText,
       narratives: turn.narratives || [],
@@ -1837,17 +1840,22 @@ function cancelledError(partialText) {
   return e;
 }
 
-function alignAgyModelAndEffort(modelId, effort) {
-  const cleanEffort = ['low', 'medium', 'high'].includes(effort) ? effort : 'medium';
+function alignAgyModelAndEffort(modelId, effort, availableModels = []) {
+  const cleanEffort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : 'medium';
   if (!modelId) return { modelId: `gemini-4-argon-${cleanEffort}`, effort: cleanEffort };
-  const replaced = modelId.replace(/-(low|medium|high)$/i, `-${cleanEffort}`);
-  return { modelId: replaced, effort: cleanEffort };
+  const candidate = modelId.replace(/-(low|medium|high|xhigh|max)$/i, `-${cleanEffort}`);
+  if (availableModels.length > 0 && !availableModels.some((m) => m.modelId === candidate)) {
+    const existing = availableModels.find((m) => m.modelId === modelId);
+    if (existing) return { modelId: existing.modelId, effort: existing.effort || cleanEffort };
+  }
+  return { modelId: candidate, effort: cleanEffort };
 }
 
-function runAntigravityTurn({ thread, promptText, modelId, effort, mode, cwd, resumeSessionId, extraDirs = [], onEvent }) {
+function runAntigravityTurn({ thread, promptText, modelId, effort, availableModels = [], mode, cwd, resumeSessionId, extraDirs = [], onEvent }) {
   return new Promise((resolve, reject) => {
     cancelledThreads.delete(thread.id);
-    const aligned = alignAgyModelAndEffort(modelId, effort);
+    const aligned = alignAgyModelAndEffort(modelId, effort, availableModels);
+    let actualModel = aligned.modelId;
     const args = [
       '-p', promptText,
       '--output-format', 'stream-json',
@@ -1923,7 +1931,8 @@ function runAntigravityTurn({ thread, promptText, modelId, effort, mode, cwd, re
       }
       if (evt.event === 'init') {
         if (evt.conversation_id) conversationId = evt.conversation_id;
-        onEvent({ type: 'init', engine: 'antigravity', sessionId: conversationId });
+        if (evt.init?.model) actualModel = evt.init.model;
+        onEvent({ type: 'init', engine: 'antigravity', sessionId: conversationId, model: actualModel, effort: aligned.effort });
       } else if (evt.event === 'step_update' && evt.step_update) {
         const su = evt.step_update;
         if (su.conversation_id) conversationId = su.conversation_id;
@@ -2009,7 +2018,7 @@ function runAntigravityTurn({ thread, promptText, modelId, effort, mode, cwd, re
             const err = new Error(r.error || `Antigravity finished with status ${r.status}`);
             return reject(err);
           } else {
-            resolve({ text: fullText.trim() || '(Task completed with no text output)', conversationId, usage });
+            resolve({ text: fullText.trim() || '(Task completed with no text output)', conversationId, usage, model: actualModel, effort: aligned.effort });
           }
         });
         killTree(child);
@@ -2036,7 +2045,7 @@ function runAntigravityTurn({ thread, promptText, modelId, effort, mode, cwd, re
           err.isQuotaError = true;
           return reject(err);
         }
-        if (fullText.trim()) return resolve({ text: fullText.trim(), conversationId, usage });
+        if (fullText.trim()) return resolve({ text: fullText.trim(), conversationId, usage, model: actualModel, effort: aligned.effort });
         const err = new Error(truncate(stderrText.trim(), 600) || `Antigravity exited with code ${code}`);
         reject(err);
       });
@@ -2082,6 +2091,8 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
     let fullText = '';
     let lastCommentary = '';
     let sessionId = resumeSessionId || null;
+    let actualModel = modelSlug || '';
+    let actualEffort = effort || '';
     const estInput = Math.max(1, Math.round((promptText || '').length / 4));
     let usage = { input_tokens: estInput, output_tokens: 0, total_tokens: estInput, live: true };
     let gotRolloutUsage = false;
@@ -2131,14 +2142,25 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
         if (!rf || !fs.existsSync(rf)) return;
         let lastRec = null;
         let lastTot = null;
+        let lastTurnModel = null;
+        let lastTurnEffort = null;
         forEachJsonlLine(rf, (o) => {
-          if (o.type === 'token_usage_record') {
+          if (o.type === 'turn_context' && o.payload) {
+            if (o.payload.model) lastTurnModel = o.payload.model;
+            const eff = o.payload.effort || o.payload.collaboration_mode?.settings?.reasoning_effort;
+            if (eff) lastTurnEffort = eff;
+          } else if (o.type === 'token_usage_record') {
             lastRec = o.payload || o;
           } else if (o.type === 'event_msg' && o.payload?.type === 'token_count' && o.payload?.info) {
             if (o.payload.info.last_token_usage) lastRec = o.payload.info.last_token_usage;
             if (o.payload.info.total_token_usage) lastTot = o.payload.info.total_token_usage;
           }
         }, 64 * 1024);
+        if ((lastTurnModel && lastTurnModel !== actualModel) || (lastTurnEffort && lastTurnEffort !== actualEffort)) {
+          if (lastTurnModel) actualModel = lastTurnModel;
+          if (lastTurnEffort) actualEffort = lastTurnEffort;
+          onEvent({ type: 'model_update', engine: 'codex', model: actualModel, effort: actualEffort });
+        }
         if (lastRec && (lastRec.input_tokens || lastRec.total_tokens)) {
           const stepIn = Number(lastRec.input_tokens || 0);
           const stepOut = Number(lastRec.output_tokens || 0);
@@ -2193,7 +2215,7 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
       }
       if (evt.type === 'thread.started' && evt.thread_id) {
         sessionId = evt.thread_id;
-        onEvent({ type: 'init', engine: 'codex', sessionId });
+        onEvent({ type: 'init', engine: 'codex', sessionId, model: actualModel, effort: actualEffort });
         pollCodexRolloutTokens();
       } else if (evt.type === 'item.started' && evt.item) {
         if (evt.item.type === 'command_execution') {
@@ -2251,7 +2273,7 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
         }
         if (!fullText && lastCommentary) fullText = lastCommentary;
         settle(() => {
-          resolve({ text: fullText.trim() || '(Task completed)', sessionId, usage });
+          resolve({ text: fullText.trim() || '(Task completed)', sessionId, usage, model: actualModel, effort: actualEffort });
         });
         killTree(child);
       } else if (evt.type === 'error') {
@@ -2290,7 +2312,7 @@ function runCodexTurn({ thread, promptText, modelSlug, effort, mode, cwd, resume
           err.isQuotaError = true;
           return reject(err);
         }
-        if (fullText.trim() || code === 0) return resolve({ text: fullText.trim() || '(Task completed)', sessionId, usage });
+        if (fullText.trim() || code === 0) return resolve({ text: fullText.trim() || '(Task completed)', sessionId, usage, model: actualModel, effort: actualEffort });
         const errLine = stderrText.split('\n').find((l) => /^error[:\s]/i.test(l.trim()));
         const msg = lastError || (errLine ? errLine.trim() : '') || `Codex exited with code ${code}`;
         const err = new Error(msg);
@@ -2607,7 +2629,15 @@ async function handleChat(req, res, body) {
     else if (obj.type === 'thinking' && obj.delta && obj.delta.trim() && !liveTurn.thinkingSteps.includes(obj.delta.trim())) liveTurn.thinkingSteps.push(obj.delta.trim());
     else if (obj.type === 'switch_notice' && obj.message) liveTurn.switchNotices.push(obj.message);
     else if (obj.type === 'usage' && obj.usage) liveTurn.usage = obj.usage;
-    else if (obj.type === 'init' && obj.engine) liveTurn.engine = obj.engine;
+    else if (obj.type === 'init') {
+      if (obj.engine) liveTurn.engine = obj.engine;
+      if (obj.model) liveTurn.model = obj.model;
+      if (obj.effort) liveTurn.effort = obj.effort;
+    } else if (obj.type === 'model_update') {
+      if (obj.engine) liveTurn.engine = obj.engine;
+      if (obj.model) liveTurn.model = obj.model;
+      if (obj.effort) liveTurn.effort = obj.effort;
+    }
 
     const payload = `data: ${JSON.stringify(obj)}\n\n`;
     for (const sub of liveTurn.subscribers) {
@@ -2650,16 +2680,20 @@ async function handleChat(req, res, body) {
   let handoffReason = null;
 
   const promptIntent = classifyPromptIntent(prompt, attachments);
-  if (promptIntent.isLightweightQuestion) {
+  let smartRouted = false;
+  // Only downshift effort/model automatically in Auto-Pilot mode; never override the user's explicit model/effort choice in manual mode.
+  if (engineMode === 'auto' && promptIntent.isLightweightQuestion) {
     const targetEff = promptIntent.suggestedEffort || 'low';
     if (codexEffortToUse === 'high' || codexEffortToUse === 'xhigh' || (codexEffortToUse === 'medium' && targetEff === 'low')) {
       codexEffortToUse = targetEff;
+      smartRouted = true;
     }
-    if (agyEffortToUse === 'high' || (agyEffortToUse === 'medium' && targetEff === 'low')) {
+    if (agyEffortToUse === 'high' || agyEffortToUse === 'xhigh' || (agyEffortToUse === 'medium' && targetEff === 'low')) {
       agyEffortToUse = targetEff;
       const fam = agyFamily(agyModelToUse);
       const lighterModel = agyStatus.models.find((m) => m.family === fam && m.effort === targetEff && (m.remainingPct ?? 100) >= threshold);
       if (lighterModel) agyModelToUse = lighterModel.modelId;
+      smartRouted = true;
     }
   }
 
@@ -2714,8 +2748,15 @@ async function handleChat(req, res, body) {
     }
   }
 
+  if (engine === 'antigravity') {
+    const alignedAgy = alignAgyModelAndEffort(agyModelToUse, agyEffortToUse, agyStatus.models);
+    agyModelToUse = alignedAgy.modelId;
+    agyEffortToUse = alignedAgy.effort;
+  }
+
   liveTurn.engine = engine;
   liveTurn.model = engine === 'antigravity' ? agyModelToUse : codexModel;
+  liveTurn.effort = engine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
 
   const autopilotCfg = detectAutopilotLoop(prompt, Boolean(body.autopilot));
   let currentStepIdx = 1;
@@ -2738,12 +2779,13 @@ async function handleChat(req, res, body) {
   const execute = async (eng, model, effort, reason, promptOverride = null) => {
     liveTurn.engine = eng;
     liveTurn.model = model;
+    liveTurn.effort = effort;
     const decision = resumeDecision({ ...thread, messages: history }, eng);
     if (!promptOverride) {
-      if (promptIntent.isLightweightQuestion && !autopilotCfg.enabled) {
+      if (smartRouted && !autopilotCfg.enabled) {
         sendEvent({
           type: 'switch_notice',
-          message: `⚡ Smart Question Routing: Status/info question detected — scaled reasoning effort to ${String(effort || 'low').toUpperCase()} & skipped heavy test sweeps to save your quota.`
+          message: `⚡ Smart Question Routing (Auto-Pilot): Informational question detected — scaled reasoning effort to ${String(effort || 'low').toUpperCase()} (${model}) to save quota.`
         });
       }
       if (decision.compact) {
@@ -2763,7 +2805,7 @@ async function handleChat(req, res, body) {
       : null;
     const { prompt: promptText, usedBriefing } = promptOverride
       ? { prompt: promptOverride, usedBriefing: false }
-      : buildEnginePrompt({ thread, history, userPrompt: currentPromptText, attachments: currentAttachments, engine: eng, decision, handoffReason: reason, lightweightHint: promptIntent.isLightweightQuestion && !autopilotCfg.enabled, autopilotStep });
+      : buildEnginePrompt({ thread, history, userPrompt: currentPromptText, attachments: currentAttachments, engine: eng, decision, handoffReason: reason, lightweightHint: smartRouted && !autopilotCfg.enabled, autopilotStep });
     const actions = [];
     const narratives = [...(liveTurn.narratives || [])];
     const thinkingSteps = [...(liveTurn.thinkingSteps || [])];
@@ -2797,9 +2839,15 @@ async function handleChat(req, res, body) {
           currentAttachments.some((a) => isInside(a.path, ATTACH_DIR)) ||
           history.some((m) => (m.attachments || []).some((a) => isInside(a.path, ATTACH_DIR)));
         if (hasAttachDirFile) extraDirs.push(ATTACH_DIR);
-        const r = await runAntigravityTurn({ thread, promptText, modelId: model, effort, mode: executionMode, cwd: thread.projectPath, resumeSessionId: decision.resume ? decision.sessionId : null, extraDirs, onEvent });
+        const aligned = alignAgyModelAndEffort(model, effort, agyStatus.models);
+        const r = await runAntigravityTurn({ thread, promptText, modelId: aligned.modelId, effort: aligned.effort, availableModels: agyStatus.models, mode: executionMode, cwd: thread.projectPath, resumeSessionId: decision.resume ? decision.sessionId : null, extraDirs, onEvent });
         rememberSession(thread, 'antigravity', r.conversationId, history.length);
-        return { engine: eng, model: `${model} (${effort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
+        const usedModel = r.model || aligned.modelId;
+        const usedEffort = r.effort || aligned.effort;
+        if (r.model && aligned.modelId && r.model !== aligned.modelId) {
+          sendEvent({ type: 'switch_notice', message: `Antigravity CLI executed with ${r.model} (requested ${aligned.modelId}).` });
+        }
+        return { engine: eng, model: usedEffort ? `${usedModel} (${usedEffort})` : usedModel, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
       }
       const r = await runCodexTurn({
         thread,
@@ -2814,7 +2862,12 @@ async function handleChat(req, res, body) {
         onEvent
       });
       rememberSession(thread, 'codex', r.sessionId, history.length);
-      return { engine: eng, model: `${model} (${effort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
+      const usedModel = r.model || model;
+      const usedEffort = r.effort || effort;
+      if (r.model && model && r.model !== model) {
+        sendEvent({ type: 'switch_notice', message: `Codex CLI executed with ${r.model} (requested ${model}).` });
+      }
+      return { engine: eng, model: usedEffort ? `${usedModel} (${usedEffort})` : usedModel, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
     } catch (runErr) {
       runErr.hadStepProgress = hadStepProgress || Boolean(runErr.hadStepProgress);
       if (!runErr.partialText) {
@@ -3474,7 +3527,7 @@ const server = http.createServer(async (req, res) => {
       const writeOne = (obj) => {
         if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`);
       };
-      writeOne({ type: 'init', engine: liveTurn.engine });
+      writeOne({ type: 'init', engine: liveTurn.engine, model: liveTurn.model, effort: liveTurn.effort || null });
       for (const notice of liveTurn.switchNotices || []) {
         writeOne({ type: 'switch_notice', message: notice });
       }
@@ -3521,6 +3574,28 @@ const server = http.createServer(async (req, res) => {
       saveState(appState);
       codexStatusCache.at = 0;
       return sendJson(res, 200, { settings: appState.settings, codexBinaryInUse: getCodexBin() });
+    }
+
+    // --- POST /api/thread/settings (per-thread engine, model, effort persistence) ---
+    if (req.method === 'POST' && pathname === '/api/thread/settings') {
+      const body = await parseJsonBody(req);
+      const thread = appState.threads.find((t) => t.id === body.threadId);
+      if (!thread) return sendJson(res, 404, { error: 'Thread not found' });
+      if (['auto', 'antigravity', 'codex'].includes(body.engineMode)) thread.engineMode = body.engineMode;
+      if (typeof body.agyModel === 'string' && body.agyModel) thread.agyModel = body.agyModel;
+      if (typeof body.agyEffort === 'string' && body.agyEffort) thread.agyEffort = body.agyEffort;
+      if (typeof body.codexModel === 'string' && body.codexModel) thread.codexModel = body.codexModel;
+      if (typeof body.codexEffort === 'string' && body.codexEffort) thread.codexEffort = body.codexEffort;
+      saveState(appState);
+      return sendJson(res, 200, {
+        ok: true,
+        threadId: thread.id,
+        engineMode: thread.engineMode,
+        agyModel: thread.agyModel,
+        agyEffort: thread.agyEffort,
+        codexModel: thread.codexModel,
+        codexEffort: thread.codexEffort
+      });
     }
 
     // --- POST /api/projects ---
@@ -3583,6 +3658,11 @@ const server = http.createServer(async (req, res) => {
         agyConversationId: null,
         codexSessionId: null,
         hubSessionIds: [],
+        engineMode: ['auto', 'antigravity', 'codex'].includes(body.engineMode) ? body.engineMode : undefined,
+        agyModel: typeof body.agyModel === 'string' && body.agyModel ? body.agyModel : undefined,
+        agyEffort: typeof body.agyEffort === 'string' && body.agyEffort ? body.agyEffort : undefined,
+        codexModel: typeof body.codexModel === 'string' && body.codexModel ? body.codexModel : undefined,
+        codexEffort: typeof body.codexEffort === 'string' && body.codexEffort ? body.codexEffort : undefined,
         messagesLoaded: true,
         messages: []
       };
