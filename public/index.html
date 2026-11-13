@@ -2666,7 +2666,7 @@
   </div>
 
   <script>
-    const HUB_CLIENT_VERSION = '2026-11-12-model-sync-v1';
+    const HUB_CLIENT_VERSION = '2026-11-13-switch-fix-v2';
     let HUB_TOKEN = "__HUB_TOKEN__";
     if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
       HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
@@ -3880,21 +3880,25 @@
           ? `<span class="badge proj">📁 ${escapeHtml(t.projectName)}</span>`
           : '';
 
+        const safeThreadId = escapeHtml(t.id);
         return `
-          <div class="thread-item ${isAct}" onclick="selectThread('${t.id}')">
+          <div class="thread-item ${isAct}" onclick="selectThread('${safeThreadId}')">
             <div class="thread-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title || 'Untitled Session')}</div>
             <div class="thread-meta">
               ${metaBadges.join(' ')}
               ${projBadge}
               <span>${dateStr}</span>
             </div>
-            <button class="thread-del" onclick="deleteThread(event, '${t.id}')" title="Hide from Hub (keeps native history intact)">✕</button>
+            <button class="thread-del" onclick="deleteThread(event, '${safeThreadId}')" title="Hide from Hub (keeps native history intact)">✕</button>
           </div>
         `;
       }).join('');
     }
 
+    let threadSelectSeq = 0;
+
     async function selectThread(id) {
+      const mySeq = ++threadSelectSeq;
       activeThreadId = id;
       loadingThreadId = id;
       threadLoadError = null;
@@ -3921,7 +3925,7 @@
 
       let loadErrMsg = null;
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (activeThreadId !== id) return;
+        if (activeThreadId !== id || mySeq !== threadSelectSeq) return;
         let timer = null;
         try {
           document.getElementById('liveStatusText').textContent = attempt > 0
@@ -3931,7 +3935,7 @@
           if (ctrl) timer = setTimeout(() => ctrl.abort(), 15000);
           const res = await apiFetch(`/api/thread?id=${encodeURIComponent(id)}`, ctrl ? { signal: ctrl.signal } : {});
           if (timer) clearTimeout(timer);
-          if (activeThreadId !== id) return;
+          if (activeThreadId !== id || mySeq !== threadSelectSeq) return;
           if (res.status === 403) {
             const pinModal = document.getElementById('pinLockModal');
             if (pinModal) pinModal.style.display = 'flex';
@@ -3945,7 +3949,7 @@
             break;
           }
           const data = await res.json();
-          if (activeThreadId !== id) return;
+          if (activeThreadId !== id || mySeq !== threadSelectSeq) return;
           activeThreadOpenElsewhere = Boolean(data.openElsewhere);
           if (data.thread) {
             const idx = hubData.state.threads.findIndex(t => t.id === id);
@@ -3963,14 +3967,14 @@
           break;
         } catch (err) {
           if (timer) clearTimeout(timer);
-          if (activeThreadId !== id) return;
+          if (activeThreadId !== id || mySeq !== threadSelectSeq) return;
           loadErrMsg = err?.name === 'AbortError'
             ? 'Timed out waiting for conversation transcript (15s)'
             : (err?.message || 'Network error loading conversation');
           if (attempt === 0) { await new Promise(r => setTimeout(r, 400)); continue; }
         }
       }
-      if (activeThreadId !== id) return;
+      if (activeThreadId !== id || mySeq !== threadSelectSeq) return;
       if (loadingThreadId === id) loadingThreadId = null;
       threadLoadError = loadErrMsg ? { id, message: loadErrMsg } : null;
       const isRunning = isThreadRunning(id);
@@ -4081,6 +4085,7 @@
     function renderActiveChat(scrollToBottom = true) {
       const scrollEl = document.getElementById('chatScroll');
       const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
+      try {
 
       const brainBox = document.getElementById('brainSummaryBox');
       if (thread) {
@@ -4125,7 +4130,11 @@
       }
 
       if (!thread || ((!thread.messages || thread.messages.length === 0) && !threadStreams.has(thread.id))) {
-        const autoTargetText = escapeHtml(getPredictedAutoRoute().shortText);
+        const autoRoute = getPredictedAutoRoute();
+        const autoTargetText = escapeHtml(autoRoute.shortText);
+        const flashModel = (hubData.antigravity?.models || []).find(m => /flash/i.test(m.label || m.modelId || ''));
+        const flashPct = Math.round(flashModel?.remainingPct ?? autoRoute.agyPct ?? 100);
+        const codexPct = Math.round(hubData.codex?.fiveHourWindow?.remainingPct ?? autoRoute.codexPct ?? 100);
 
         scrollEl.innerHTML = `
           <div class="landing-hero">
@@ -4383,6 +4392,17 @@
       scrollEl.innerHTML = originHeader + loadOlderHtml + messagesHtml + streamCardHtml;
       if (scrollToBottom) {
         scrollEl.scrollTop = scrollEl.scrollHeight;
+      }
+      } catch (err) {
+        console.error('renderActiveChat failed:', err);
+        scrollEl.innerHTML = `
+          <div class="landing-hero">
+            <div class="hero-badge" style="border-color:var(--danger); color:#fca5a5;">⚠️ Could Not Render Conversation</div>
+            <h2 class="hero-title" style="font-size:20px;">${escapeHtml(thread?.title || 'Conversation')}</h2>
+            <p class="hero-subtitle">${escapeHtml(err?.message || 'Unexpected rendering error')}</p>
+            ${thread ? `<button type="button" class="btn btn-primary" onclick="selectThread('${escapeHtml(thread.id)}')">🔄 Retry</button>` : ''}
+          </div>
+        `;
       }
     }
 
