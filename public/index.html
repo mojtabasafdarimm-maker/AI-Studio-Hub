@@ -2734,6 +2734,8 @@
     let activeProjectId = 'ALL';
     let activeSourceFilter = 'all';
     let activeThreadId = null;
+    let loadingThreadId = null;
+    let threadLoadError = null;
     let activeThreadOpenElsewhere = false;
     let currentEngineMode = 'auto';
     const threadEngineChoices = new Map();
@@ -3894,6 +3896,8 @@
 
     async function selectThread(id) {
       activeThreadId = id;
+      loadingThreadId = id;
+      threadLoadError = null;
       loadPendingAttachments(id);
       renderPendingAttachments();
       try {
@@ -3915,10 +3919,31 @@
       // Immediately clear previous chat view and switch to the new active thread
       renderActiveChat(true);
 
-      try {
-        document.getElementById('liveStatusText').textContent = 'Syncing native transcript...';
-        const res = await apiFetch(`/api/thread?id=${encodeURIComponent(id)}`);
-        if (res.ok) {
+      let loadErrMsg = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (activeThreadId !== id) return;
+        let timer = null;
+        try {
+          document.getElementById('liveStatusText').textContent = attempt > 0
+            ? 'Retrying transcript sync...'
+            : 'Syncing native transcript...';
+          const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          if (ctrl) timer = setTimeout(() => ctrl.abort(), 15000);
+          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(id)}`, ctrl ? { signal: ctrl.signal } : {});
+          if (timer) clearTimeout(timer);
+          if (activeThreadId !== id) return;
+          if (res.status === 403) {
+            const pinModal = document.getElementById('pinLockModal');
+            if (pinModal) pinModal.style.display = 'flex';
+            loadErrMsg = 'Session authentication required (403). Please enter your PIN or reload.';
+            break;
+          }
+          if (!res.ok) {
+            loadErrMsg = `Server returned HTTP ${res.status}`;
+            if (res.status === 404) break;
+            if (attempt === 0) { await new Promise(r => setTimeout(r, 400)); continue; }
+            break;
+          }
           const data = await res.json();
           if (activeThreadId !== id) return;
           activeThreadOpenElsewhere = Boolean(data.openElsewhere);
@@ -3934,15 +3959,28 @@
               hubData.state.threads.unshift(data.thread);
             }
           }
+          loadErrMsg = null;
+          break;
+        } catch (err) {
+          if (timer) clearTimeout(timer);
+          if (activeThreadId !== id) return;
+          loadErrMsg = err?.name === 'AbortError'
+            ? 'Timed out waiting for conversation transcript (15s)'
+            : (err?.message || 'Network error loading conversation');
+          if (attempt === 0) { await new Promise(r => setTimeout(r, 400)); continue; }
         }
-      } catch {}
+      }
       if (activeThreadId !== id) return;
+      if (loadingThreadId === id) loadingThreadId = null;
+      threadLoadError = loadErrMsg ? { id, message: loadErrMsg } : null;
       const isRunning = isThreadRunning(id);
       document.getElementById('sendBtn').disabled = isRunning;
       document.getElementById('stopBtn').style.display = isRunning ? 'inline-flex' : 'none';
       restoreEngineMode();
       renderThreads();
-      document.getElementById('liveStatusText').textContent = isRunning ? 'Running agent turn…' : 'Ready • Shared context synced';
+      document.getElementById('liveStatusText').textContent = loadErrMsg
+        ? `⚠️ Failed to load conversation: ${loadErrMsg}`
+        : (isRunning ? 'Running agent turn…' : 'Ready • Shared context synced');
       renderActiveChat(true);
     }
 
@@ -4058,6 +4096,32 @@
         }, null, 2);
       } else {
         brainBox.textContent = 'No active session selected.';
+      }
+
+      if (thread && (!thread.messages || thread.messages.length === 0) && !threadStreams.has(thread.id)) {
+        if (threadLoadError && threadLoadError.id === thread.id) {
+          scrollEl.innerHTML = `
+            <div class="landing-hero">
+              <div class="hero-badge" style="border-color:var(--danger); color:#fca5a5;">⚠️ Could Not Load Conversation</div>
+              <h2 class="hero-title" style="font-size:20px;">${escapeHtml(thread.title || 'Conversation')}</h2>
+              <p class="hero-subtitle">${escapeHtml(threadLoadError.message)}</p>
+              <button type="button" class="btn btn-primary" onclick="selectThread('${escapeHtml(thread.id)}')">🔄 Retry Loading Conversation</button>
+            </div>
+          `;
+          return;
+        }
+        if (loadingThreadId === thread.id && !thread.messagesLoaded && (thread.messageCount > 0 || thread.origin !== 'hub')) {
+          scrollEl.innerHTML = `
+            <div class="landing-hero">
+              <div class="generating-pill-box">
+                <span class="generating-pill-dot"></span>
+                <span style="font-weight:600;">Loading conversation…</span>
+              </div>
+              <p class="hero-subtitle" style="margin-top:12px;">${escapeHtml(thread.title || '')}</p>
+            </div>
+          `;
+          return;
+        }
       }
 
       if (!thread || ((!thread.messages || thread.messages.length === 0) && !threadStreams.has(thread.id))) {
@@ -4196,6 +4260,7 @@
         : '';
 
       const messagesHtml = visibleMsgs.map(m => {
+        try {
         if (m.role === 'user') {
           const attHtml = (m.attachments && m.attachments.length)
             ? `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">` +
@@ -4255,6 +4320,9 @@
               <div class="msg-body">${formatMarkdown(bodyText)}</div>
             </div>
           `;
+        }
+        } catch (msgErr) {
+          return `<div class="msg-card"><div class="msg-body"><pre style="white-space:pre-wrap;">${escapeHtml(String(m?.content || ''))}</pre></div></div>`;
         }
       }).join('');
 
