@@ -2109,6 +2109,7 @@ function syncLocalAppMirror() {
 const activeProcesses = new Map(); // threadId -> child process
 const activeTurns = new Map(); // threadId -> { threadId, userPrompt, engine, model, statusText, accumulatedText, switchNotices, startedAt, subscribers: Set<res> }
 const cancelledThreads = new Set();
+const recentTurnOutcomes = new Map(); // threadId -> { outcome, errorMessage, completedAt, messageCount, hubRev }
 const QUOTA_RE = /RESOURCE_EXHAUSTED|\b429\b|rate[ _-]?limit|quota (exceeded|exhausted|reached)|usage[ _-]?limit|out of credits|insufficient credits/i;
 
 function getPublicActiveTurns() {
@@ -2864,7 +2865,14 @@ function sanitizeAttachments(list) {
 }
 
 function subscribeSseResponse(res, liveTurn) {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (res.socket && typeof res.socket.setTimeout === 'function') res.socket.setTimeout(0);
   liveTurn.subscribers.add(res);
   const hb = setInterval(() => {
     if (!res.writableEnded) {
@@ -3226,11 +3234,18 @@ async function handleChat(req, res, body) {
     };
     thread.messages.push(userMsg, assistantMsg);
     thread.updatedAt = assistantMsg.timestamp;
+    thread.hubRev = (thread.hubRev || 0) + 1;
     updateThreadContextStats(thread);
     saveState(appState);
     writeContextFile(thread, thread.messages);
     syncCrossAppMemory();
     invalidateQuotaCaches();
+    recentTurnOutcomes.set(thread.id, {
+      outcome: 'done',
+      completedAt: assistantMsg.timestamp,
+      messageCount: thread.messages.length,
+      hubRev: thread.hubRev
+    });
     return assistantMsg;
   };
 
@@ -3376,6 +3391,7 @@ async function handleChat(req, res, body) {
         finishWith({ engine, model: 'stopped', text: err.partialText.trim(), usage: liveTurn.usage || null, narratives: liveTurn.narratives || [], thinkingSteps: liveTurn.thinkingSteps || [], actions: err.actions || [] }, handoffReason, 'Stopped by user.');
       } else {
         saveState(appState);
+        recentTurnOutcomes.set(thread.id, { outcome: 'cancelled', completedAt: new Date().toISOString(), messageCount: thread.messages.length, hubRev: thread.hubRev || 0 });
         sendEvent({ type: 'cancelled', message: 'Stopped by user.', restorePrompt: prompt });
       }
     } else {
@@ -3397,6 +3413,7 @@ async function handleChat(req, res, body) {
         );
       } else {
         saveState(appState);
+        recentTurnOutcomes.set(thread.id, { outcome: 'error', errorMessage: err.message || 'Execution failed', completedAt: new Date().toISOString(), messageCount: thread.messages.length, hubRev: thread.hubRev || 0 });
         pushInfo = { engine, text: err.message || 'Execution failed', outcome: 'error' };
         sendEvent({ type: 'error', message: err.message || 'Execution failed', restorePrompt: prompt });
       }
@@ -3883,13 +3900,28 @@ const server = http.createServer(async (req, res) => {
       const thread = appState.threads.find((t) => t.id === parsedUrl.searchParams.get('id'));
       if (!thread) return sendJson(res, 404, { error: 'Thread not found' });
       const prevKey = thread.loadedKey || null;
+      const prevCount = (thread.messages || []).length;
+      const prevHubRev = thread.hubRev || 0;
       loadThreadHistory(thread, parsedUrl.searchParams.get('force') === '1');
-      const changed = thread.loadedKey !== prevKey;
+      const curCount = (thread.messages || []).length;
+      const curHubRev = thread.hubRev || 0;
+      const qMsgCount = parsedUrl.searchParams.has('msgCount') ? Number(parsedUrl.searchParams.get('msgCount')) : null;
+      const qHubRev = parsedUrl.searchParams.has('hubRev') ? Number(parsedUrl.searchParams.get('hubRev')) : null;
+      const qLoadedKey = parsedUrl.searchParams.get('loadedKey');
+      const changed =
+        thread.loadedKey !== prevKey ||
+        curCount !== prevCount ||
+        curHubRev !== prevHubRev ||
+        (qMsgCount !== null && qMsgCount !== curCount) ||
+        (qHubRev !== null && qHubRev !== curHubRev) ||
+        (qLoadedKey !== null && qLoadedKey !== String(thread.loadedKey || ''));
       const openElsewhere = isAgyConversationOpen(thread.agyConversationId) || isCodexSessionOpen(thread.codexSessionId);
+      const activeTurn = activeTurns.has(thread.id) ? getPublicActiveTurns()[thread.id] : null;
+      const lastTurnOutcome = recentTurnOutcomes.get(thread.id) || null;
       if (parsedUrl.searchParams.get('checkOnly') === '1' && !changed) {
-        return sendJson(res, 200, { changed: false, openElsewhere, loadedKey: thread.loadedKey });
+        return sendJson(res, 200, { changed: false, openElsewhere, loadedKey: thread.loadedKey, activeTurn, lastTurnOutcome });
       }
-      return sendJson(res, 200, { changed: true, thread, openElsewhere, loadedKey: thread.loadedKey });
+      return sendJson(res, 200, { changed: true, thread, openElsewhere, loadedKey: thread.loadedKey, activeTurn, lastTurnOutcome });
     }
 
     // --- POST /api/settings ---
@@ -4218,6 +4250,10 @@ const server = http.createServer(async (req, res) => {
     else res.end();
   }
 });
+
+// Prevent Node's 5-minute default requestTimeout from killing long-running SSE streams
+server.requestTimeout = 0;
+server.timeout = 0;
 
 process.on('uncaughtException', (err) => {
   console.error('[AI Hub] Uncaught Exception:', err?.stack || err);

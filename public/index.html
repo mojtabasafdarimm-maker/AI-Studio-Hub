@@ -2666,7 +2666,7 @@
   </div>
 
   <script>
-    const HUB_CLIENT_VERSION = '2026-11-13-switch-fix-v2';
+    const HUB_CLIENT_VERSION = '2026-11-13-stream-recovery-v3';
     let HUB_TOKEN = "__HUB_TOKEN__";
     if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
       HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
@@ -2925,32 +2925,60 @@
       } catch {}
     }
 
-    function startLiveWatchers() {
-      document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) checkClientUpdate();
-      });
-      // 1. Live tailing of the active chat (every 2s) so updates in VS Code / Codex / Antigravity stream in automatically
-      setInterval(async () => {
-        const watchedId = activeThreadId;
-        if (isThreadRunning(watchedId) || !watchedId || document.hidden) return;
-        try {
-          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(watchedId)}&checkOnly=1`);
-          if (!res.ok) return;
-          const data = await res.json();
-          if (isThreadRunning(watchedId) || activeThreadId !== watchedId) return;
-          const lockChanged = Boolean(data.openElsewhere) !== activeThreadOpenElsewhere;
-          activeThreadOpenElsewhere = Boolean(data.openElsewhere);
-          if (data.changed && data.thread) {
-            const idx = hubData.state.threads.findIndex(t => t.id === watchedId);
-            if (idx !== -1) hubData.state.threads[idx] = data.thread;
-            const scrollEl = document.getElementById('chatScroll');
-            const nearBottom = (scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight) < 180;
-            renderActiveChat(nearBottom);
-            document.getElementById('liveStatusText').textContent = '🟢 Live update received from native session';
-          } else if (lockChanged) {
-            renderActiveChat(false);
+    async function syncActiveThreadFromServer(force = false) {
+      const watchedId = activeThreadId;
+      if (isThreadRunning(watchedId) || !watchedId) return;
+      const curT = (hubData.state.threads || []).find(t => t.id === watchedId);
+      const qCount = Array.isArray(curT?.messages) ? curT.messages.length : '';
+      const qRev = curT?.hubRev ?? '';
+      const qKey = curT?.loadedKey ?? '';
+      try {
+        const qs = force
+          ? `id=${encodeURIComponent(watchedId)}&force=1`
+          : `id=${encodeURIComponent(watchedId)}&checkOnly=1&msgCount=${encodeURIComponent(qCount)}&hubRev=${encodeURIComponent(qRev)}&loadedKey=${encodeURIComponent(qKey)}`;
+        const res = await apiFetch(`/api/thread?${qs}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isThreadRunning(watchedId) || activeThreadId !== watchedId) return;
+        const lockChanged = Boolean(data.openElsewhere) !== activeThreadOpenElsewhere;
+        activeThreadOpenElsewhere = Boolean(data.openElsewhere);
+        if (data.activeTurn && !runningThreadIds.has(watchedId)) {
+          reattachTurnStream(data.activeTurn);
+          return;
+        }
+        if (data.changed && data.thread) {
+          const idx = hubData.state.threads.findIndex(t => t.id === watchedId);
+          if (idx !== -1) hubData.state.threads[idx] = data.thread;
+          const staleStream = threadStreams.get(watchedId);
+          if (staleStream?.failed) {
+            const newLen = (data.thread.messages || []).length;
+            if (newLen > (staleStream.baseMsgCount ?? 0) || (data.lastTurnOutcome?.outcome === 'done' && Date.parse(data.lastTurnOutcome.completedAt || '') >= (staleStream.startedAtMs || 0) - 2000)) {
+              threadStreams.delete(watchedId);
+            }
           }
-        } catch {}
+          const scrollEl = document.getElementById('chatScroll');
+          const nearBottom = (scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight) < 180;
+          renderActiveChat(nearBottom);
+          document.getElementById('liveStatusText').textContent = '🟢 Live update received from session';
+        } else if (lockChanged) {
+          renderActiveChat(false);
+        }
+      } catch {}
+    }
+
+    function startLiveWatchers() {
+      const onResumeVisible = () => {
+        if (!document.hidden) {
+          checkClientUpdate();
+          syncActiveThreadFromServer(false);
+          if (runningThreadIds.size === 0) refreshStatus(false);
+        }
+      };
+      document.addEventListener('visibilitychange', onResumeVisible);
+      window.addEventListener('pageshow', onResumeVisible);
+      // 1. Live tailing of the active chat (every 2s) so updates in VS Code / Codex / Antigravity / dropped streams sync automatically
+      setInterval(() => {
+        if (!document.hidden) syncActiveThreadFromServer(false);
       }, 2000);
 
       // 2. Background quota & new-thread sync every 12s
@@ -4480,20 +4508,17 @@
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = '';
+      streamInfo.receivedTerminalEvent = false;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        sseBuffer += decoder.decode(value, { stream: true });
-        const parts = sseBuffer.split('\n\n');
-        sseBuffer = parts.pop();
-
-        for (const part of parts) {
-          const line = part.trim();
+      const processPart = (part) => {
+        const lines = part.split(/\r?\n/);
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
           if (!line.startsWith('data:')) continue;
           const jsonStr = line.slice(5).trim();
           try {
             const evt = JSON.parse(jsonStr);
+            streamInfo.lastEventAt = Date.now();
             if (evt.type === 'status') {
               streamInfo.statusText = '● ' + evt.message.replace(/^Starting\s+/i, 'Connecting to ');
               if (activeThreadId === targetThreadId) {
@@ -4589,6 +4614,7 @@
                 scrollEl.scrollTop = scrollEl.scrollHeight;
               }
             } else if (evt.type === 'cancelled') {
+              streamInfo.receivedTerminalEvent = true;
               streamInfo.statusText = 'Stopped';
               if (evt.restorePrompt && activeThreadId === targetThreadId) {
                 const inputEl = document.getElementById('promptInput');
@@ -4601,11 +4627,14 @@
             } else if (evt.type === 'step_done') {
               const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
               if (idx !== -1) hubData.state.threads[idx] = evt.thread;
+              streamInfo.baseMsgCount = (evt.thread?.messages || []).length;
+              streamInfo.baseHubRev = evt.thread?.hubRev || 0;
               streamInfo.userPrompt = evt.nextPrompt || '';
               streamInfo.accumulatedText = '';
               streamInfo.narratives = [];
               streamInfo.thinkingSteps = [];
               streamInfo.startedAt = new Date().toISOString();
+              streamInfo.startedAtMs = Date.now();
               streamInfo.statusText = `● Running Autopilot Step ${evt.stepIndex || ''} (${evt.usedPct || 0}% quota used)…`;
               renderThreads();
               if (activeThreadId === targetThreadId) {
@@ -4613,6 +4642,7 @@
               }
               refreshStatus(false);
             } else if (evt.type === 'done') {
+              streamInfo.receivedTerminalEvent = true;
               const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
               if (idx !== -1) hubData.state.threads[idx] = evt.thread;
               runningThreadIds.delete(targetThreadId);
@@ -4626,6 +4656,7 @@
               }
               refreshStatus(false);
             } else if (evt.type === 'error') {
+              streamInfo.receivedTerminalEvent = true;
               streamInfo.statusText = 'Error';
               streamInfo.failed = true;
               streamInfo.accumulatedText = (streamInfo.accumulatedText ? streamInfo.accumulatedText + '\n\n' : '') + '⚠️ ' + evt.message;
@@ -4642,15 +4673,75 @@
             }
           } catch {}
         }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) sseBuffer += decoder.decode(value, { stream: !done });
+        const parts = sseBuffer.split(/\r?\n\r?\n/);
+        sseBuffer = done ? '' : parts.pop();
+        for (const part of parts) processPart(part);
+        if (done) break;
+      }
+
+      if (!streamInfo.receivedTerminalEvent) {
+        throw new Error('Connection dropped before response finished');
       }
     }
 
-    async function reattachTurnStream(turn) {
+    async function recoverDroppedTurn(targetThreadId, streamInfo, errMsg = '') {
+      // Wait briefly and check up to 3 times if the turn is still running on the server OR already completed & saved
+      const baseCount = streamInfo?.baseMsgCount ?? -1;
+      const baseHubRev = streamInfo?.baseHubRev ?? 0;
+      const startedMs = streamInfo?.startedAtMs || Date.now();
+      for (let probe = 0; probe < 3; probe++) {
+        await new Promise(r => setTimeout(r, probe === 0 ? 700 : 1200));
+        try {
+          const res = await apiFetch(`/api/thread?id=${encodeURIComponent(targetThreadId)}&force=1`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (data.activeTurn) {
+            return { action: 'reattach', turn: data.activeTurn };
+          }
+          const serverMsgs = data.thread?.messages || [];
+          const serverHubRev = data.thread?.hubRev || 0;
+          const outcome = data.lastTurnOutcome;
+          const outcomeIsCurrent = outcome && Date.parse(outcome.completedAt || '') >= (startedMs - 2000);
+          if (
+            data.thread &&
+            (
+              (baseCount >= 0 && serverMsgs.length > baseCount) ||
+              serverHubRev > baseHubRev ||
+              (outcomeIsCurrent && outcome.outcome === 'done')
+            )
+          ) {
+            const idx = hubData.state.threads.findIndex(t => t.id === targetThreadId);
+            if (idx !== -1) hubData.state.threads[idx] = data.thread;
+            else hubData.state.threads.unshift(data.thread);
+            return { action: 'synced', thread: data.thread };
+          }
+          if (outcomeIsCurrent && outcome.outcome === 'cancelled') {
+            if (data.thread) {
+              const idx = hubData.state.threads.findIndex(t => t.id === targetThreadId);
+              if (idx !== -1) hubData.state.threads[idx] = data.thread;
+            }
+            return { action: 'cancelled' };
+          }
+          if (outcomeIsCurrent && outcome.outcome === 'error') {
+            return { action: 'server_error', message: outcome.errorMessage || errMsg || 'Execution failed' };
+          }
+        } catch {}
+      }
+      return { action: 'failed', message: errMsg || 'Connection dropped' };
+    }
+
+    async function reattachTurnStream(turn, existingStreamInfo = null) {
       const targetThreadId = turn.threadId;
       if (!targetThreadId || runningThreadIds.has(targetThreadId)) return;
       runningThreadIds.add(targetThreadId);
+      const curT = (hubData.state.threads || []).find(t => t.id === targetThreadId);
       const isCodex = turn.engine === 'codex';
-      const streamInfo = {
+      const streamInfo = existingStreamInfo || {
         userPrompt: turn.userPrompt || '',
         accumulatedText: turn.accumulatedText || '',
         statusText: '● ' + (turn.statusText || 'Responding…'),
@@ -4662,8 +4753,12 @@
         thinkingSteps: Array.isArray(turn.thinkingSteps) ? [...turn.thinkingSteps] : [],
         switchNotices: Array.isArray(turn.switchNotices) ? [...turn.switchNotices] : [],
         usage: turn.usage || null,
-        startedAt: turn.startedAt || new Date().toISOString()
+        startedAt: turn.startedAt || new Date().toISOString(),
+        startedAtMs: turn.startedAt ? (Date.parse(turn.startedAt) || Date.now()) : Date.now(),
+        baseMsgCount: Array.isArray(curT?.messages) ? curT.messages.length : -1,
+        baseHubRev: curT?.hubRev || 0
       };
+      streamInfo.failed = false;
       threadStreams.set(targetThreadId, streamInfo);
       renderThreads();
       if (activeThreadId === targetThreadId) {
@@ -4673,18 +4768,54 @@
         renderActiveChat(true);
       }
 
+      let syncedStatusText = 'Ready • Shared context synced';
       try {
-        const res = await apiFetch(`/api/turn-stream?threadId=${encodeURIComponent(targetThreadId)}`);
-        if (!res.ok) return;
-        await consumeSseResponse(res, targetThreadId, streamInfo);
-      } catch {} finally {
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try {
+            const res = await apiFetch(`/api/turn-stream?threadId=${encodeURIComponent(targetThreadId)}`);
+            if (res.ok) {
+              await consumeSseResponse(res, targetThreadId, streamInfo);
+              break;
+            }
+            const rec = await recoverDroppedTurn(targetThreadId, streamInfo, `HTTP ${res.status}`);
+            if (rec.action === 'reattach') {
+              if (activeThreadId === targetThreadId) {
+                document.getElementById('liveStatusText').textContent = '↻ Reconnected to live agent turn…';
+              }
+              continue;
+            }
+            if (rec.action === 'synced') {
+              syncedStatusText = '✅ Synced completed response';
+            } else if (rec.action === 'server_error') {
+              streamInfo.failed = true;
+              streamInfo.statusText = 'Error';
+              streamInfo.accumulatedText = '⚠️ ' + rec.message;
+            }
+            break;
+          } catch (err) {
+            if (activeThreadId === targetThreadId) {
+              document.getElementById('liveStatusText').textContent = '↻ Connection hiccup — re-syncing turn…';
+            }
+            const rec = await recoverDroppedTurn(targetThreadId, streamInfo, err?.message || 'Connection dropped');
+            if (rec.action === 'reattach') continue;
+            if (rec.action === 'synced') {
+              syncedStatusText = '✅ Synced completed response';
+            } else if (rec.action === 'server_error' || rec.action === 'failed') {
+              streamInfo.failed = true;
+              streamInfo.statusText = 'Error';
+              streamInfo.accumulatedText = '⚠️ ' + rec.message;
+            }
+            break;
+          }
+        }
+      } finally {
         runningThreadIds.delete(targetThreadId);
         if (!streamInfo.failed) threadStreams.delete(targetThreadId);
         renderThreads();
         if (activeThreadId === targetThreadId) {
           document.getElementById('sendBtn').disabled = false;
           document.getElementById('stopBtn').style.display = 'none';
-          document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+          document.getElementById('liveStatusText').textContent = streamInfo.failed ? 'Failed — prompt restored in input box' : syncedStatusText;
           renderActiveChat(true);
         }
       }
@@ -4759,6 +4890,7 @@
       const initialEngine = currentEngineMode === 'auto' ? route.engine : (currentEngineMode === 'codex' ? 'codex' : 'antigravity');
       const initialModel = currentEngineMode === 'auto' ? route.label : (initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel);
       const initialEffort = currentEngineMode === 'auto' ? route.effort : (initialEngine === 'codex' ? selectedCodexEffort : selectedAgyEffort);
+      const curT = (hubData.state.threads || []).find(t => t.id === targetThreadId);
       const streamInfo = {
         userPrompt: prompt,
         accumulatedText: '',
@@ -4771,7 +4903,10 @@
         thinkingSteps: [],
         switchNotices: [],
         usage: { input_tokens: Math.max(1, Math.round(prompt.length / 4)), output_tokens: 0, total_tokens: Math.max(1, Math.round(prompt.length / 4)) },
-        startedAt: new Date().toISOString()
+        startedAt: new Date().toISOString(),
+        startedAtMs: Date.now(),
+        baseMsgCount: Array.isArray(curT?.messages) ? curT.messages.length : -1,
+        baseHubRev: curT?.hubRev || 0
       };
       threadStreams.set(targetThreadId, streamInfo);
 
@@ -4779,6 +4914,8 @@
         renderActiveChat(true);
       }
 
+      let handedOff = false;
+      let statusSummary = 'Ready • Shared context synced';
       try {
         const res = await apiFetch('/api/chat', {
           method: 'POST',
@@ -4812,49 +4949,57 @@
 
         await consumeSseResponse(res, targetThreadId, streamInfo);
       } catch (err) {
-        // If the browser's SSE connection dropped while the turn is still running on the server, automatically re-attach!
-        try {
-          await new Promise(r => setTimeout(r, 1200));
-          const stRes = await apiFetch('/api/status');
-          if (stRes.ok) {
-            const stData = await stRes.json();
-            const live = stData.activeTurns && stData.activeTurns[targetThreadId];
-            if (live) {
-              runningThreadIds.delete(targetThreadId);
-              await reattachTurnStream(live);
-              return;
+        if (activeThreadId === targetThreadId) {
+          document.getElementById('liveStatusText').textContent = '↻ Connection dropped — checking server turn status…';
+        }
+        const rec = await recoverDroppedTurn(targetThreadId, streamInfo, err?.message || 'Connection dropped');
+        if (rec.action === 'reattach') {
+          handedOff = true;
+          runningThreadIds.delete(targetThreadId);
+          await reattachTurnStream(rec.turn, streamInfo);
+          return;
+        }
+        if (rec.action === 'synced') {
+          streamInfo.failed = false;
+          statusSummary = '✅ Synced completed response';
+        } else if (rec.action === 'cancelled') {
+          streamInfo.failed = false;
+          statusSummary = 'Stopped';
+        } else {
+          const finalErrMsg = rec.message || err?.message || 'Execution failed';
+          streamInfo.failed = true;
+          streamInfo.statusText = 'Error';
+          streamInfo.accumulatedText = '⚠️ ' + finalErrMsg;
+          if (attachmentsToSend.length) {
+            if (activeThreadId === targetThreadId) {
+              pendingAttachments = [...attachmentsToSend, ...pendingAttachments];
+              savePendingAttachments(targetThreadId);
+              renderPendingAttachments();
+            } else {
+              savePendingAttachments(targetThreadId, attachmentsToSend);
             }
           }
-        } catch {}
-        streamInfo.failed = true;
-        streamInfo.statusText = 'Error';
-        streamInfo.accumulatedText = '⚠️ ' + err.message;
-        if (attachmentsToSend.length) {
           if (activeThreadId === targetThreadId) {
-            pendingAttachments = [...attachmentsToSend, ...pendingAttachments];
-            savePendingAttachments(targetThreadId);
-            renderPendingAttachments();
-          } else {
-            savePendingAttachments(targetThreadId, attachmentsToSend);
+            if (!inputEl.value.trim()) inputEl.value = prompt;
+            const sEl = document.getElementById('streamStatus');
+            const bEl = document.getElementById('streamBody');
+            if (sEl) sEl.textContent = 'Error';
+            if (bEl) bEl.innerHTML = `<span style="color:var(--danger)">⚠️ ${escapeHtml(finalErrMsg)}</span>`;
           }
         }
-        if (activeThreadId === targetThreadId) {
-          if (!inputEl.value.trim()) inputEl.value = prompt;
-          const sEl = document.getElementById('streamStatus');
-          const bEl = document.getElementById('streamBody');
-          if (sEl) sEl.textContent = 'Error';
-          if (bEl) bEl.innerHTML = `<span style="color:var(--danger)">⚠️ ${escapeHtml(err.message)}</span>`;
-        }
       } finally {
-        runningThreadIds.delete(targetThreadId);
-        // Keep failed turns on screen (prompt + error) so the chat doesn't look like it reset
-        if (!streamInfo.failed) threadStreams.delete(targetThreadId);
-        else streamInfo.statusText = 'Failed — prompt restored in input box';
-        renderThreads();
-        if (activeThreadId === targetThreadId) {
-          document.getElementById('sendBtn').disabled = false;
-          document.getElementById('stopBtn').style.display = 'none';
-          document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+        if (!handedOff) {
+          runningThreadIds.delete(targetThreadId);
+          // Keep failed turns on screen (prompt + error) so the chat doesn't look like it reset
+          if (!streamInfo.failed) threadStreams.delete(targetThreadId);
+          else streamInfo.statusText = 'Failed — prompt restored in input box';
+          renderThreads();
+          if (activeThreadId === targetThreadId) {
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('stopBtn').style.display = 'none';
+            document.getElementById('liveStatusText').textContent = streamInfo.failed ? 'Failed — prompt restored in input box' : statusSummary;
+            if (!streamInfo.failed) renderActiveChat(true);
+          }
         }
       }
     }
