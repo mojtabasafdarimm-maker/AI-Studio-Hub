@@ -1565,8 +1565,12 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
     fs.writeFileSync(f, userPrompt, 'utf8');
     userText = `${userPrompt.slice(0, 3000)}\n…\n[The full message is saved at: ${f}. Read that file first.]`;
   }
+  const hasImgAtt = attachments.some((a) => /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(a.path || a.name || ''));
+  const attachmentInstruction = hasImgAtt
+    ? 'IMPORTANT: The user attached the image(s)/file(s) above. Use your file-reading tool (read_file) to inspect every attached image/file path before answering.'
+    : 'Read these attached files directly using your file-reading tool before answering if needed.';
   const attachmentBlock = attachments.length
-    ? `\n\n[Attached files]:\n${attachments.map((a) => `- ${a.path} (${a.name})`).join('\n')}\nRead these files directly if needed.`
+    ? `\n\n[Attached files]:\n${attachments.map((a) => `- ${a.path} (${a.name})`).join('\n')}\n${attachmentInstruction}`
     : '';
   const queryHintBlock = lightweightHint
     ? `\n\n<lightweight_query_hint>Note: This is a status or informational question. Answer concisely using existing context/checkpoint files without running heavy test suites or modifying files.</lightweight_query_hint>`
@@ -1619,7 +1623,10 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
     ].filter(Boolean).join('\n');
     const recentHist = relevantHistory
       .slice(-4)
-      .map((m) => `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1200)}`)
+      .map((m) => {
+        const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1200)}${att}`;
+      })
       .join('\n\n');
     return {
       prompt: `${compactHeader}\n\n<conversation_history>\n${recentHist}\n</conversation_history>\n\n${request}`,
@@ -1639,7 +1646,10 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
   for (const turns of [12, 8, 6, 4, 2]) {
     const hist = relevantHistory
       .slice(-turns)
-      .map((m) => `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 2000)}`)
+      .map((m) => {
+        const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 2000)}${att}`;
+      })
       .join('\n\n');
     const prompt = `${header}\n\n<conversation_history>\n${hist}\n</conversation_history>\n\n${request}`;
     if (prompt.length <= MAX_PROMPT_CHARS) return { prompt, usedBriefing: true };
@@ -2783,7 +2793,10 @@ async function handleChat(req, res, body) {
       if (eng === 'antigravity') {
         const extraDirs = [];
         if (usedBriefing) extraDirs.push(CONTEXT_DIR);
-        if (currentAttachments.some((a) => isInside(a.path, ATTACH_DIR))) extraDirs.push(ATTACH_DIR);
+        const hasAttachDirFile =
+          currentAttachments.some((a) => isInside(a.path, ATTACH_DIR)) ||
+          history.some((m) => (m.attachments || []).some((a) => isInside(a.path, ATTACH_DIR)));
+        if (hasAttachDirFile) extraDirs.push(ATTACH_DIR);
         const r = await runAntigravityTurn({ thread, promptText, modelId: model, effort, mode: executionMode, cwd: thread.projectPath, resumeSessionId: decision.resume ? decision.sessionId : null, extraDirs, onEvent });
         rememberSession(thread, 'antigravity', r.conversationId, history.length);
         return { engine: eng, model: `${model} (${effort})`, text: r.text, usage: r.usage, actions: actions.slice(-25), narratives, thinkingSteps: thinkingSteps.slice(-15) };
@@ -3102,6 +3115,7 @@ async function sendPushToAll(payload, onlyEndpoint = null) {
   const json = JSON.stringify(payload);
   let sent = 0;
   let failed = 0;
+  let lastError = '';
   const dead = new Set();
   await Promise.all(
     targets.map(async (sub) => {
@@ -3120,23 +3134,26 @@ async function sendPushToAll(payload, onlyEndpoint = null) {
         });
         if (res.status === 404 || res.status === 410) {
           dead.add(sub.endpoint);
+          lastError = `Push endpoint expired (${res.status})`;
         } else if (res.ok) {
           sent++;
           sub.lastOkAt = new Date().toISOString();
         } else {
           failed++;
           const detail = await res.text().catch(() => '');
+          lastError = `HTTP ${res.status} from ${new URL(sub.endpoint).host}${detail ? `: ${truncate(detail, 120)}` : ''}`;
           console.error(`[AI Hub] Push rejected (${res.status}) by ${new URL(sub.endpoint).host}: ${truncate(detail, 200)}`);
         }
       } catch (e) {
         failed++;
+        lastError = e.message;
         console.error('[AI Hub] Push send error:', e.message);
       }
     })
   );
   if (dead.size) pushSubs = pushSubs.filter((s) => !dead.has(s.endpoint));
   savePushSubs();
-  return { sent, failed, removed: dead.size, devices: pushSubs.length };
+  return { sent, failed, removed: dead.size, devices: pushSubs.length, ...(lastError ? { error: lastError } : {}) };
 }
 
 function plainPreview(text, max = 170) {
@@ -3307,6 +3324,31 @@ function checkNativeCompletions() {
 // ---------------------------------------------------------------------------
 // 12. HTTP Server (Host/Origin/token checks on every API call)
 // ---------------------------------------------------------------------------
+function parseRawBody(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        aborted = true;
+        reject(new Error('Payload too large (max 50 MB)'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (!aborted) resolve(Buffer.concat(chunks));
+    });
+    req.on('error', (e) => {
+      if (!aborted) reject(e);
+    });
+  });
+}
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -3360,7 +3402,7 @@ const server = http.createServer(async (req, res) => {
       const cookieToken = (req.headers.cookie || '').match(/ai_hub_token=([a-f0-9]+)/i)?.[1] || null;
       const reqToken = req.headers['x-hub-token'] || parsedUrl.searchParams.get('token') || cookieToken;
       if (reqToken !== HUB_TOKEN) return sendJson(res, 403, { error: 'Missing or invalid hub token' });
-      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.headers['content-length'] && req.headers['content-length'] !== '0' && !String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
+      if (pathname !== '/api/upload' && ['POST', 'PUT', 'PATCH'].includes(req.method) && req.headers['content-length'] && req.headers['content-length'] !== '0' && !String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
         return sendJson(res, 415, { error: 'Content-Type must be application/json' });
       }
     }
@@ -3567,13 +3609,29 @@ const server = http.createServer(async (req, res) => {
 
     // --- POST /api/upload (stored in the hub data folder, never inside your projects) ---
     if (req.method === 'POST' && pathname === '/api/upload') {
-      const body = await parseJsonBody(req);
-      const { name, dataBase64, projectId } = body;
-      if (!name || !dataBase64) return sendJson(res, 400, { error: 'Missing file data' });
+      const ctype = String(req.headers['content-type'] || '').toLowerCase();
+      let name = '';
+      let projectId = 'general';
+      let buf = null;
+
+      if (ctype.includes('application/json') || !ctype) {
+        const body = await parseJsonBody(req);
+        name = String(body.name || '').trim();
+        projectId = String(body.projectId || 'general').trim() || 'general';
+        if (!name || !body.dataBase64) return sendJson(res, 400, { error: 'Missing file data' });
+        buf = Buffer.from(body.dataBase64, 'base64');
+      } else {
+        const qName = parsedUrl.searchParams.get('name') || req.headers['x-file-name'] || '';
+        const qProj = parsedUrl.searchParams.get('projectId') || req.headers['x-project-id'] || 'general';
+        name = String(qName || `upload-${Date.now()}`).trim();
+        projectId = String(qProj || 'general').trim() || 'general';
+        buf = await parseRawBody(req);
+        if (!buf || buf.length === 0) return sendJson(res, 400, { error: 'Empty file upload' });
+      }
+
       const targetDir = path.join(ATTACH_DIR, safeFileName(projectId || 'general'));
       fs.mkdirSync(targetDir, { recursive: true });
       const filePath = path.join(targetDir, `${Date.now()}-${safeFileName(name)}`);
-      const buf = Buffer.from(dataBase64, 'base64');
       fs.writeFileSync(filePath, buf);
       return sendJson(res, 200, { attachment: { name, path: filePath, size: buf.length } });
     }
