@@ -547,7 +547,7 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      padding-right: 20px;
+      padding-right: 44px;
     }
 
     .thread-meta {
@@ -676,12 +676,82 @@
       opacity: 0;
     }
 
-    .thread-item:hover .thread-del {
+    .thread-move {
+      position: absolute;
+      right: 26px;
+      top: 8px;
+      background: none;
+      border: none;
+      color: #10b981;
+      cursor: pointer;
+      font-size: 12.5px;
+      opacity: 0;
+      padding: 1px 4px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .thread-item:hover .thread-del,
+    .thread-item:hover .thread-move {
       opacity: 1;
+    }
+
+    .thread-move:hover {
+      background: rgba(16, 185, 129, 0.16);
+      transform: scale(1.08);
     }
 
     .thread-del:hover {
       color: var(--danger);
+    }
+
+    .badge.tokenwise {
+      background: rgba(16, 185, 129, 0.15);
+      color: #059669;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+
+    body.dark-theme .badge.tokenwise {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.42);
+    }
+
+    .msg-card.token-wise-handoff {
+      border-left: 4px solid #10b981;
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(56, 189, 248, 0.05));
+    }
+
+    .msg-card.token-wise-notice {
+      border-left: 4px solid #38bdf8;
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(16, 185, 129, 0.05));
+    }
+
+    .token-wise-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(16, 185, 129, 0.14);
+      color: #059669;
+      border: 1px solid rgba(16, 185, 129, 0.38);
+      border-radius: 6px;
+      padding: 3.5px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    body.dark-theme .token-wise-btn {
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.42);
+    }
+
+    .token-wise-btn:hover {
+      background: #10b981;
+      color: #090d16;
+      border-color: #10b981;
     }
 
     /* --- CENTER CHAT & ENGINE BAR --- */
@@ -1872,8 +1942,13 @@
       .topbar-actions .selector-group,
       .topbar-actions #themeToggleBtn,
       .topbar-actions #mobileModalBtn,
-      .topbar-actions button:not(#mobileNewChatBtn):not(#mobileReloadBtn):not(#pushBellBtn) {
+      .topbar-actions button:not(#mobileNewChatBtn):not(#mobileReloadBtn):not(#pushBellBtn):not(#deckToggleBtn) {
         display: none !important;
+      }
+      #deckToggleBtn {
+        padding: 4px 9px !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
       }
       #pushBellBtn {
         padding: 4px 9px;
@@ -2207,6 +2282,329 @@
         display: none;
       }
     }
+
+    /* --- MULTI-PROJECT WIDGET DECK VIEW --- */
+    #deckToggleBtn.active-deck {
+      background: linear-gradient(135deg, #4f46e5, #0284c7);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 2px 10px rgba(79, 70, 229, 0.35);
+    }
+    .deck-running-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: #f59e0b;
+      color: #090d16;
+      font-size: 10.5px;
+      font-weight: 800;
+      margin-left: 4px;
+      animation: pulse 1.2s infinite;
+    }
+    .deck-view {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+    .deck-view.open {
+      display: flex;
+    }
+    .deck-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    .deck-mode-pills {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .deck-pill {
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .deck-pill.active {
+      background: rgba(79, 70, 229, 0.14);
+      border-color: var(--agy-accent);
+      color: var(--agy-accent);
+    }
+    body.dark-theme .deck-pill.active {
+      color: #a5b4fc;
+      background: rgba(99, 102, 241, 0.22);
+    }
+    .deck-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 12px 14px 90px 14px;
+    }
+    .deck-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(390px, 1fr));
+      gap: 14px;
+      align-items: stretch;
+    }
+    .deck-tile {
+      background: var(--bg-panel);
+      border: 1.5px solid var(--border);
+      border-radius: 16px;
+      padding: 12px 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      position: relative;
+      min-width: 0;
+    }
+    body.dark-theme .deck-tile {
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    }
+    .deck-tile.running {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18), 0 8px 24px rgba(2, 132, 199, 0.15);
+    }
+    .deck-tile.pinned {
+      border-color: rgba(99, 102, 241, 0.55);
+    }
+    .deck-tile-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .deck-proj-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      font-size: 13.5px;
+      color: var(--text-main);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .deck-proj-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      background: rgba(79, 70, 229, 0.12);
+      color: var(--agy-accent);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .deck-tile-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .deck-icon-btn {
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      border-radius: 8px;
+      padding: 3px 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .deck-icon-btn:hover {
+      border-color: var(--agy-accent);
+      color: var(--text-main);
+    }
+    .deck-icon-btn.pinned {
+      background: rgba(245, 158, 11, 0.15);
+      border-color: rgba(245, 158, 11, 0.45);
+      color: #f59e0b;
+    }
+    .deck-thread-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .deck-thread-select {
+      flex: 1;
+      min-width: 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      outline: none;
+      text-overflow: ellipsis;
+    }
+    .deck-last-user {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 6px 9px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      overflow: hidden;
+    }
+    .deck-last-user-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .deck-response-box {
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 9px 11px;
+      max-height: 195px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-main);
+      position: relative;
+      flex: 1;
+    }
+    .deck-response-box.expanded {
+      max-height: 440px;
+    }
+    .deck-response-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 6px;
+      padding-bottom: 5px;
+      border-bottom: 1px dashed var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+    .deck-quick-chips {
+      display: flex;
+      gap: 5px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      scrollbar-width: none;
+    }
+    .deck-quick-chips::-webkit-scrollbar {
+      display: none;
+    }
+    .deck-chip {
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .deck-chip:hover {
+      border-color: var(--agy-accent);
+      color: var(--text-main);
+    }
+    .deck-composer {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 7px 9px;
+    }
+    .deck-composer:focus-within {
+      border-color: var(--agy-accent);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.14);
+    }
+    .deck-textarea {
+      width: 100%;
+      border: none;
+      background: transparent;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.4;
+      resize: none;
+      min-height: 34px;
+      max-height: 96px;
+      outline: none;
+      padding: 2px 0;
+    }
+    .deck-composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    @media (max-width: 768px) {
+      .deck-toolbar {
+        padding: 8px 10px;
+      }
+      .deck-scroll {
+        padding: 10px 10px 90px 10px;
+      }
+      .deck-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .deck-grid.carousel-mode {
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        gap: 12px;
+        padding-bottom: 10px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .deck-grid.carousel-mode .deck-tile {
+        flex: 0 0 calc(100vw - 26px);
+        scroll-snap-align: center;
+        max-height: calc(var(--vvh, 100dvh) - 125px);
+      }
+      .deck-textarea {
+        font-size: 16px !important; /* Prevents iOS Safari zoom on tap */
+      }
+    }
   </style>
 </head>
 <body>
@@ -2379,7 +2777,8 @@
       </div>
 
       <div id="mAutoDetails" style="background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px; color:var(--text-muted); line-height:1.5;">
-        ⚡ <strong>Auto-Pilot (Smart Task Routing)</strong> automatically routes simple tasks to extra models (Claude Sonnet 5.5, Claude Opus 5.5, Gemini 3.8 Flash) to preserve frontier quota, and reserves Gemini 4 Argon & Codex Sol for complex reasoning tasks.
+        <div id="mAutoRoutePreview" style="font-weight:700; color:var(--text-main); margin-bottom:4px; font-size:12.5px;">⚡ Next turn → Loading...</div>
+        ⚡ <strong>Auto-Pilot (Smart Task Routing)</strong> routes simple tasks to efficient models to preserve frontier quota, and reserves frontier models for complex reasoning tasks.
       </div>
 
       <div id="mAgyDetails" style="display:none; margin-bottom:12px;">
@@ -2416,12 +2815,42 @@
         </div>
       </div>
 
-      <div class="form-row" style="margin-bottom:16px;">
+      <div class="form-row" style="margin-bottom:12px;">
         <label style="font-size:12px; font-weight:600;">Execution Mode</label>
         <select id="mExecModeSelect" onchange="document.getElementById('execModeSelect').value=this.value; updateSettings();">
           <option value="agent" selected>🛠️ Agent (Edit & Run)</option>
           <option value="plan">📐 Plan (Read-Only)</option>
         </select>
+      </div>
+
+      <!-- LIVE QUOTAS & LIMITS ON MOBILE -->
+      <div id="mQuotaOverview" style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:11.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">⚡ Live Model Limits & Quotas</span>
+          <button type="button" class="btn" onclick="refreshStatus(true)" style="padding:2px 8px; font-size:11px;">🔄 Refresh</button>
+        </div>
+        <div class="popover-section-title" style="margin-bottom:6px;">
+          <span>🌌 Antigravity Pools</span>
+          <span id="mAgyStatusBadge" style="font-size:10px; color:#10b981;">● Connected</span>
+        </div>
+        <div id="mAgyQuotaPills" class="popover-pills-list" style="margin-bottom:10px;"></div>
+
+        <div class="popover-section-title" style="margin-bottom:6px;">
+          <span>🟢 OpenAI Codex</span>
+          <span id="mCodexPlanBadge" class="badge codex">PLUS</span>
+        </div>
+        <div class="popover-codex-grid">
+          <div class="popover-quota-item" id="mCodex5hWrap">
+            <div class="quota-item-header"><span>5-Hour Limit</span><span id="mCodex5hPct">--%</span></div>
+            <div class="quota-bar"><div id="mCodex5hBar" class="quota-fill" style="width:50%; background:var(--codex-accent);"></div></div>
+            <div id="mCodex5hReset" style="font-size:10px; color:var(--text-muted); margin-top:2px;"></div>
+          </div>
+          <div class="popover-quota-item" id="mCodex7dWrap">
+            <div class="quota-item-header"><span>7-Day Weekly</span><span id="mCodex7dPct">--%</span></div>
+            <div class="quota-bar"><div id="mCodex7dBar" class="quota-fill" style="width:50%; background:var(--codex-accent);"></div></div>
+            <div id="mCodex7dReset" style="font-size:10px; color:var(--text-muted); margin-top:2px;"></div>
+          </div>
+        </div>
       </div>
 
       <button class="btn btn-primary" style="width:100%; padding:12px; font-weight:700; font-size:14px; border-radius:10px;" onclick="closeMobileEngineSheet()">Done</button>
@@ -2483,6 +2912,7 @@
     </div>
 
     <div class="topbar-actions">
+      <button id="deckToggleBtn" class="btn" onclick="toggleDeckView()" title="Toggle Multi-Project Widget Deck (view all projects & send prompts directly from tiles)">🎛️ Deck</button>
       <button id="mobileReloadBtn" class="btn mobile-only-btn" onclick="reloadHubApp()" style="display:none; padding:4px 8px; font-size:13px;" title="Reload latest app UI">↻</button>
       <button id="mobileNewChatBtn" class="btn btn-primary mobile-only-btn" onclick="createNewThread()" style="display:none; padding:4px 10px; font-size:13px; font-weight:700;" title="New Chat">＋ New</button>
       <div class="selector-group" title="When in Auto-Pilot mode, automatically switch models/engines if remaining quota falls below this percentage">
@@ -2492,6 +2922,16 @@
           <option value="12" selected>12%</option>
           <option value="20">20%</option>
           <option value="30">30%</option>
+        </select>
+      </div>
+      <div class="selector-group" title="Automatically roll over heavy conversations into a new token-wise continuation chat with all active context & tasks moved over when context tokens reach this threshold">
+        <span class="selector-label">🌱 Auto New-Chat</span>
+        <select id="autoNewChatSelect" onchange="updateSettings()">
+          <option value="60000">60k ctx</option>
+          <option value="90000">90k ctx</option>
+          <option value="110000" selected>110k ctx</option>
+          <option value="150000">150k ctx</option>
+          <option value="0">Off</option>
         </select>
       </div>
       <button id="pushBellBtn" class="btn" onclick="openPushModal()" title="Get a notification on this device when an agent task finishes">🔔<span class="bell-label"> Alerts</span></button>
@@ -2556,6 +2996,25 @@
 
     <!-- CENTER CHAT AREA -->
     <main class="main-area">
+      <!-- MULTI-PROJECT WIDGET DECK VIEW -->
+      <div id="deckViewContainer" class="deck-view">
+        <div class="deck-toolbar">
+          <div class="deck-mode-pills">
+            <button id="deckModeProjects" class="deck-pill active" onclick="setDeckMode('projects')" title="One widget tile per active project">📁 Projects</button>
+            <button id="deckModePinned" class="deck-pill" onclick="setDeckMode('pinned')" title="Pinned project tiles & conversations">📌 Pinned <span id="deckPinnedCount" style="opacity:0.8;"></span></button>
+            <button id="deckModeRecent" class="deck-pill" onclick="setDeckMode('recent')" title="Most recent active conversations across all projects">⚡ Recent Chats</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button id="deckLayoutBtn" class="deck-pill mobile-only-btn" onclick="toggleDeckMobileLayout()" style="display:none;" title="Switch between Vertical Feed and Swipeable Cards">↕️ Stack</button>
+            <button class="deck-pill" onclick="refreshStatus(true)" title="Sync all project tiles">🔄 Sync</button>
+            <button class="deck-pill" onclick="toggleDeckView(false)" title="Return to single full-screen chat">💬 Single Chat</button>
+          </div>
+        </div>
+        <div class="deck-scroll">
+          <div id="deckGrid" class="deck-grid"></div>
+        </div>
+      </div>
+
       <!-- Engine, Model, Effort & Mode Ribbon -->
       <div class="engine-ribbon">
         <div class="engine-tabs">
@@ -2666,7 +3125,7 @@
   </div>
 
   <script>
-    const HUB_CLIENT_VERSION = '2026-11-13-pareto-router-v4';
+    const HUB_CLIENT_VERSION = '2026-11-14-project-widget-deck-v1';
     let HUB_TOKEN = "__HUB_TOKEN__";
     if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
       HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
@@ -2867,6 +3326,7 @@
     async function initHub() {
       initTheme();
       initMobileViewportGuard();
+      initDeckViewState();
       registerHubServiceWorker();
       await refreshStatus(false);
       setupDragAndDrop();
@@ -2880,6 +3340,7 @@
         params.delete('thread');
         const qs = params.toString();
         history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : ''));
+        toggleDeckView(false);
         await openThreadFromNotification(linkedThreadId);
         if (activeThreadId === linkedThreadId) return;
       }
@@ -2893,6 +3354,9 @@
         await selectThread(savedThreadId);
       } else if (threads.length > 0 && !activeThreadId) {
         await selectThread(threads[0].id);
+      }
+      if (isDeckViewOpen) {
+        renderDeckView(false);
       }
     }
 
@@ -3011,6 +3475,9 @@
               if (existing.nativeActions && !newT.nativeActions) {
                 newT.nativeActions = existing.nativeActions;
               }
+              if (existing.deckPreview && !newT.deckPreview) {
+                newT.deckPreview = existing.deckPreview;
+              }
             }
           }
           if (activeThreadId && !incoming.state.threads.some(t => t.id === activeThreadId)) {
@@ -3018,10 +3485,23 @@
             if (activeObj) incoming.state.threads.unshift(activeObj);
           }
         }
+        if (!incoming.antigravity?.connected || !incoming.antigravity?.pools?.length) {
+          try {
+            const snapRes = await fetch('/agy-live-quotas.json?_t=' + Date.now(), { cache: 'no-store' });
+            if (snapRes.ok) {
+              const snap = await snapRes.json();
+              if (snap && Array.isArray(snap.pools) && snap.pools.length > 0) {
+                incoming.antigravity = snap;
+              }
+            }
+          } catch {}
+        }
         hubData = incoming;
 
         const s = hubData.state.settings || {};
         document.getElementById('thresholdSelect').value = String(s.autoSwitchThresholdPct || 12);
+        const autoNewChatEl = document.getElementById('autoNewChatSelect');
+        if (autoNewChatEl) autoNewChatEl.value = String(s.autoNewChatThresholdTokens ?? 110000);
         document.getElementById('execModeSelect').value = s.executionMode || 'agent';
 
         const activeSelId = document.activeElement?.id || '';
@@ -3045,6 +3525,10 @@
         }
 
         renderThreads();
+        updateDeckToggleBtn();
+        if (isDeckViewOpen) {
+          renderDeckView(true);
+        }
       } catch (e) {
         console.error('Status error:', e);
       }
@@ -3278,12 +3762,12 @@
         };
       }
 
-      const ARCH_CRITIQUE_SIGNALS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed|consensus|raft|paxos|pareto|trade[- ]?offs?|benchmark(s|ing)?|model rout(er|ing)|auto[- ]?rout(er|ing)|auto mode|holistic review|critique|critical(ly)?|evaluate|comparison|compare|what do (you|u) think|give your opinion|is there a better|how should we|design decision|from scratch|comprehensive review|thoroughly analyze|deep dive|multi-tenant|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|zero[- ]downtime|high[- ]throughput)\b/i;
-      const DEBUG_ROOT_CAUSE_SIGNALS = /\b(race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|load failed|missing answer|dropped stream|root cause|why (does|did|is) (it|this)|sometime(s)? it|intermittent|flaky|hang(s|ing)?|freez(e|es|ing)|crash(es|ed|ing)?|exception|stack ?trace|typeerror|referenceerror|syntaxerror|not working|doesn't work|dont work|broken|bug(s|gy)?|fail(s|ed|ing|ure))\b/i;
-      const MATH_LOGIC_SIGNALS = /\b(formal verification|mathematical proof|theorem|lemma|derivation|eigenvalue|lagrangian|stochastic|differential equation|convex optimization|markov|bayesian|probability distribution|matrix factorization|elo rating|utility function|neowave|wave[- ]count|fibonacci|retracement)\b/i;
+      const ARCH_CRITIQUE_SIGNALS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed|consensus|raft|paxos|pareto|trade[- ]?offs?|benchmark(s|ing)?|model rout(er|ing)|model chooser|auto[- ]?rout(er|ing)|auto mode|holistic review|critique|critical(ly)?|evaluate|comparison|compare|what do (you|u) think|give your opinion|is there a better|any(thing)? better|any repo|open[- ]source|state[- ]of[- ]the[- ]art|sota|literature|paper(s)?|framework(s)?|how should we|design decision|from scratch|comprehensive review|thoroughly analyze|deep dive|multi-tenant|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|zero[- ]downtime|high[- ]throughput)\b/i;
+      const DEBUG_ROOT_CAUSE_SIGNALS = /\b(race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|load failed|missing answer|dropped stream|root cause|why (does|did|is|it's|its) (it|this)|can't see|cannot see|dont see|don't see|not showing|doesn't show|doesnt show|disappeared|missing|sometime(s)? it|intermittent|flaky|hang(s|ing)?|freez(e|es|ing)|crash(es|ed|ing)?|exception|stack ?trace|typeerror|referenceerror|syntaxerror|not working|doesn't work|dont work|broken|bug(s|gy)?|fail(s|ed|ing|ure))\b/i;
+      const MATH_LOGIC_SIGNALS = /\b(formal verification|mathematical proof|theorem|lemma|derivation|eigenvalue|lagrangian|stochastic|differential equation|convex optimization|markov|bayesian|probability distribution|matrix factorization|bradley[- ]terry|elo rating|utility function|neowave|wave[- ]count|fibonacci|retracement)\b/i;
       const CODING_ENG_SIGNALS = /\b(implement(ation)?|refactor(ing)?|migrate|rewrite|build|integrate|wire up|endpoint|route|component|service|module|schema|database|sqlite|sql|regex|parser|compiler|ast|middle-?ware|unit test|test suite|dockerfile|deployment|worker|pwa|service[- ]worker)\b/i;
       const MICRO_EDIT_SIGNALS = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|one[- ]liner|1[- ]liner|bash alias|git status|git push|git commit|rephrase|proofread)\b/i;
-      const ESCALATION_SIGNALS = /\b(too weak|not careful|still (broken|failing|wrong|not)|didn't work|didnt work|wrong answer|bad model|smarter model|more careful|missed the|you broke|try again|be thorough)\b/i;
+      const ESCALATION_SIGNALS = /\b(too weak|not careful|not good enough|still (is )?(broken|failing|wrong|not|bad|weak)|didn't work|didnt work|wrong answer|bad model|smarter model|more careful|missed the|you broke|try again|be thorough)\b/i;
       const CONTINUATION_ACTION = /^(do it|go ahead|yes|proceed|implement (it|this|that)|build (it|this|that)|apply (it|this|that)|upgrade (it|this)|fix (it|this|that)|please do|let's do it|lets do it|sounds good,? do it)\b/i;
 
       const bulletStepCount = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length;
@@ -3464,15 +3948,16 @@
         const scarcityMult = remPct < 35 ? 1 + (35 - remPct) / 25 : 1.0;
         const costPenalty = baseLambda * profile.costWeight * scarcityMult;
 
+        const winProb = 1 / (1 + Math.exp(-(effectiveCap - task.requiredScore) / 3.2));
         const surplus = capability - task.requiredScore;
         const qualityValue = task.requiredScore >= 87
-          ? capability * 1.35
-          : task.requiredScore + (surplus >= 0 ? 6.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
+          ? capability * 1.35 + winProb * 12
+          : task.requiredScore + winProb * 10 + (surplus >= 0 ? 5.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
 
         const quotaBonus = (remPct / 100) * 2.5;
         const utility = Math.round((qualityValue + effortFit + quotaBonus - costPenalty) * 100) / 100;
 
-        return { model: m, profile, capability, clearsBar, utility };
+        return { model: m, profile, capability, winProb: Math.round(winProb * 100), clearsBar, utility };
       });
 
       const qualified = candidates.filter(c => c.clearsBar);
@@ -3486,9 +3971,10 @@
         model: winner.model,
         profile: winner.profile,
         capability: winner.capability,
+        winProb: winner.winProb,
         clearsBar: winner.clearsBar,
         utility: winner.utility,
-        reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${task.suggestedEffort.toUpperCase()} effort] → Bench ${winner.capability} (Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
+        reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${task.suggestedEffort.toUpperCase()} effort] → Bench ${winner.capability} (WinProb ${winner.winProb}%, Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
       };
     }
 
@@ -3699,28 +4185,33 @@
       if (autoRouteTargetText) {
         autoRouteTargetText.textContent = route.fullText;
       }
+      const mAutoRoutePreview = document.getElementById('mAutoRoutePreview');
+      if (mAutoRoutePreview) {
+        mAutoRoutePreview.textContent = `⚡ Next turn → ${route.fullText}`;
+      }
     }
 
     function renderTopQuotas() {
       const agy = hubData.antigravity || {};
       const agyContainer = document.getElementById('agyQuotaPills');
+      const mAgyContainer = document.getElementById('mAgyQuotaPills');
       const liveDot = document.getElementById('agyLiveDot');
       if (liveDot) {
         liveDot.style.color = agy.connected ? '#10b981' : '#f59e0b';
       }
 
-      const statusBadge = document.getElementById('agyStatusBadge');
-      if (statusBadge) {
-        statusBadge.textContent = agy.connected ? '● Connected' : '● CLI Fallback';
-        statusBadge.style.color = agy.connected ? '#10b981' : '#f59e0b';
+      for (const id of ['agyStatusBadge', 'mAgyStatusBadge']) {
+        const badge = document.getElementById(id);
+        if (badge) {
+          badge.textContent = agy.connected ? '● Connected' : '● CLI Fallback';
+          badge.style.color = agy.connected ? '#10b981' : '#f59e0b';
+        }
       }
 
       const pools = agy.pools || [];
-      if (agyContainer) {
-        if (pools.length === 0) {
-          agyContainer.innerHTML = `<span style="color:var(--text-muted); font-size:12px;">CLI Fallback Ready</span>`;
-        } else {
-          agyContainer.innerHTML = pools.map(p => {
+      const pillsHtml = pools.length === 0
+        ? `<span style="color:var(--text-muted); font-size:12px;">CLI Fallback Ready</span>`
+        : pools.map(p => {
             const pct = p.remainingPct != null ? p.remainingPct : 0;
             const rst = formatResetTime(p.resetTime);
             const isEmpty = pct === 0;
@@ -3737,42 +4228,63 @@
               </div>
             `;
           }).join('');
-        }
-      }
+
+      if (agyContainer) agyContainer.innerHTML = pillsHtml;
+      if (mAgyContainer) mAgyContainer.innerHTML = pillsHtml;
 
       const cx = hubData.codex || {};
       const w5 = cx.fiveHourWindow || { remainingPct: 100 };
       const w7 = cx.weeklyWindow || { remainingPct: 100 };
 
-      const codexPlan = document.getElementById('codexPlanBadge');
-      if (codexPlan) codexPlan.textContent = (cx.planType || 'PLUS').toUpperCase();
+      for (const id of ['codexPlanBadge', 'mCodexPlanBadge']) {
+        const codexPlan = document.getElementById(id);
+        if (codexPlan) codexPlan.textContent = (cx.planType || 'PLUS').toUpperCase();
+      }
 
-      const c5Pct = document.getElementById('codex5hPct');
-      if (c5Pct) c5Pct.textContent = `${w5.remainingPct}%${w5.estimated ? '*' : ''}`;
-      const c5Bar = document.getElementById('codex5hBar');
-      if (c5Bar) {
-        c5Bar.style.width = `${w5.remainingPct}%`;
-        c5Bar.style.background = colorForPct(w5.remainingPct);
+      for (const id of ['codex5hPct', 'mCodex5hPct']) {
+        const c5Pct = document.getElementById(id);
+        if (c5Pct) c5Pct.textContent = `${w5.remainingPct}%${w5.estimated ? '*' : ''}`;
+      }
+      for (const id of ['codex5hBar', 'mCodex5hBar']) {
+        const c5Bar = document.getElementById(id);
+        if (c5Bar) {
+          c5Bar.style.width = `${w5.remainingPct}%`;
+          c5Bar.style.background = colorForPct(w5.remainingPct);
+        }
+      }
+      const c5Rst = formatResetTime(w5.resetsAt);
+      const mC5Reset = document.getElementById('mCodex5hReset');
+      if (mC5Reset) {
+        mC5Reset.textContent = w5.estimated ? 'Estimated at 100%' : (c5Rst ? `Resets in ${c5Rst}` : '');
       }
       const c5Wrap = document.getElementById('codex5hWrap');
       if (c5Wrap) {
         c5Wrap.title = w5.estimated
           ? `5-Hour Window: Estimated at 100% until next Codex turn`
-          : `5-Hour Window: ${w5.remainingPct}% remaining (Resets in ${formatResetTime(w5.resetsAt)})`;
+          : `5-Hour Window: ${w5.remainingPct}% remaining (Resets in ${c5Rst})`;
       }
 
-      const c7Pct = document.getElementById('codex7dPct');
-      if (c7Pct) c7Pct.textContent = `${w7.remainingPct}%${w7.estimated ? '*' : ''}`;
-      const c7Bar = document.getElementById('codex7dBar');
-      if (c7Bar) {
-        c7Bar.style.width = `${w7.remainingPct}%`;
-        c7Bar.style.background = colorForPct(w7.remainingPct);
+      for (const id of ['codex7dPct', 'mCodex7dPct']) {
+        const c7Pct = document.getElementById(id);
+        if (c7Pct) c7Pct.textContent = `${w7.remainingPct}%${w7.estimated ? '*' : ''}`;
+      }
+      for (const id of ['codex7dBar', 'mCodex7dBar']) {
+        const c7Bar = document.getElementById(id);
+        if (c7Bar) {
+          c7Bar.style.width = `${w7.remainingPct}%`;
+          c7Bar.style.background = colorForPct(w7.remainingPct);
+        }
+      }
+      const c7Rst = formatResetTime(w7.resetsAt);
+      const mC7Reset = document.getElementById('mCodex7dReset');
+      if (mC7Reset) {
+        mC7Reset.textContent = w7.estimated ? 'Estimated at 100%' : (c7Rst ? `Resets in ${c7Rst}` : '');
       }
       const c7Wrap = document.getElementById('codex7dWrap');
       if (c7Wrap) {
         c7Wrap.title = w7.estimated
           ? `7-Day Weekly Window: Estimated at 100%`
-          : `7-Day Weekly Window: ${w7.remainingPct}% remaining (Resets in ${formatResetTime(w7.resetsAt)})`;
+          : `7-Day Weekly Window: ${w7.remainingPct}% remaining (Resets in ${c7Rst})`;
       }
 
       // Compact summary pill text
@@ -3813,10 +4325,15 @@
 
       const codexSelect = document.getElementById('codexModelSelect');
       const codexModels = hubData.codex?.models || [];
+      const cx5 = hubData.codex?.fiveHourWindow?.remainingPct;
+      const cx7 = hubData.codex?.weeklyWindow?.remainingPct;
+      const cxQuotaSuffix = (cx5 != null && cx7 != null) ? ` [5h: ${cx5}% • 7d: ${cx7}%]` : '';
       codexSelect.innerHTML = codexModels.map(m => {
         const sel = m.slug === preferredCodexModel ? 'selected' : '';
-        return `<option value="${m.slug}" ${sel}>${m.name}</option>`;
+        return `<option value="${m.slug}" ${sel}>${m.name}${cxQuotaSuffix}</option>`;
       }).join('');
+
+      syncMobileSheet();
     }
 
     function renderCodexBinarySelector() {
@@ -4051,6 +4568,7 @@
     async function updateSettings() {
       const payload = {
         autoSwitchThresholdPct: Number(document.getElementById('thresholdSelect').value),
+        autoNewChatThresholdTokens: Number(document.getElementById('autoNewChatSelect')?.value ?? 110000),
         agyModel: document.getElementById('agyModelSelect').value,
         agyEffort: document.getElementById('agyEffortSelect').value,
         codexModel: document.getElementById('codexModelSelect').value,
@@ -4058,6 +4576,9 @@
         executionMode: document.getElementById('execModeSelect').value,
         codexBinary: document.getElementById('codexBinSelect')?.value || null
       };
+      if (hubData?.state?.settings) {
+        Object.assign(hubData.state.settings, payload);
+      }
       if (!activeThreadId) payload.defaultEngine = currentEngineMode;
       updateComposerEngineUI(currentEngineMode);
       await apiFetch('/api/settings', {
@@ -4213,9 +4734,13 @@
         if (runningThreadIds.has(t.id)) {
           metaBadges.push(`<span class="badge warn" style="animation: pulse 1.2s infinite; font-weight:700;">⚡ Working…</span>`);
         }
+        if (t.movedFrom) {
+          const savedPct = t.movedFrom.savedPct || 85;
+          metaBadges.push(`<span class="badge tokenwise" title="Token-Wise Continuation from '${escapeHtml(t.movedFrom.parentTitle || 'parent chat')}' (~${savedPct}% fewer tokens/step)">🌱 Token-Wise</span>`);
+        }
         if (t.origin === 'vscode') {
           metaBadges.push(`<span class="badge vscode" title="Original Session: VS Code">💠 VS Code</span>`);
-        } else if (t.origin === 'hub') {
+        } else if (t.origin === 'hub' && !t.movedFrom) {
           metaBadges.push(`<span class="badge proj" title="Unified AI Studio Hub Session">⚡ Hub</span>`);
         }
 
@@ -4241,6 +4766,7 @@
               ${projBadge}
               <span>${dateStr}</span>
             </div>
+            <button class="thread-move" onclick="moveThreadToNewConversation(event, '${safeThreadId}')" title="🌱 Move to a new token-wise conversation with all active context & open tasks transferred">🌱</button>
             <button class="thread-del" onclick="deleteThread(event, '${safeThreadId}')" title="Hide from Hub (keeps native history intact)">✕</button>
           </div>
         `;
@@ -4367,6 +4893,75 @@
         }
       } catch (e) {
         alert('Could not compact thread: ' + e.message);
+      }
+    }
+
+    async function moveThreadToNewConversation(e, threadId, options = {}) {
+      if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+      const targetId = threadId || activeThreadId;
+      if (!targetId) return;
+      if (isThreadRunning(targetId)) {
+        alert('A turn is currently running in this conversation. Please wait for it to finish or stop it before moving.');
+        return;
+      }
+      const pInput = document.getElementById('promptInput');
+      const draftNote = (targetId === activeThreadId && pInput && pInput.value.trim()) ? pInput.value.trim() : '';
+      const statusEl = document.getElementById('liveStatusText');
+      if (statusEl) statusEl.textContent = '🌱 Creating token-wise continuation conversation & moving active context…';
+      try {
+        setSourceFilter('all');
+        const sInput = document.getElementById('threadSearchInput');
+        if (sInput && sInput.value) sInput.value = '';
+
+        const res = await apiFetch('/api/threads/move-token-wise', {
+          method: 'POST',
+          body: JSON.stringify({
+            threadId: targetId,
+            reason: options.reason || 'manual',
+            customNote: options.customNote || draftNote || '',
+            movedItems: options.movedItems || '',
+            upToMessageId: options.upToMessageId || null,
+            attachments: targetId === activeThreadId ? pendingAttachments : []
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data.newThread) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        if (Array.isArray(data.threads)) {
+          const existingMsgMap = new Map((hubData.state.threads || []).map(t => [t.id, t.messages]));
+          hubData.state.threads = data.threads.map(t => {
+            if (t.id === data.newThread.id) return data.newThread;
+            if (t.id === data.sourceThread?.id) return data.sourceThread;
+            if (existingMsgMap.has(t.id) && !Array.isArray(t.messages)) {
+              return Object.assign({}, t, { messages: existingMsgMap.get(t.id) });
+            }
+            return t;
+          });
+        }
+        const exNew = hubData.state.threads.findIndex(t => t.id === data.newThread.id);
+        if (exNew !== -1) hubData.state.threads[exNew] = data.newThread;
+        else hubData.state.threads.unshift(data.newThread);
+
+        if (data.sourceThread) {
+          const exSrc = hubData.state.threads.findIndex(t => t.id === data.sourceThread.id);
+          if (exSrc !== -1) hubData.state.threads[exSrc] = data.sourceThread;
+        }
+
+        if (targetId === activeThreadId && pendingAttachments.length > 0) {
+          savePendingAttachments(data.newThread.id, pendingAttachments);
+          pendingAttachments = [];
+          savePendingAttachments(targetId, []);
+        }
+
+        await selectThread(data.newThread.id);
+        if (statusEl) {
+          statusEl.textContent = data.noticeBannerText || `🌱 Moved to new token-wise conversation (~${data.savedPct || 85}% fewer tokens/step)`;
+        }
+        if (pInput) pInput.focus();
+      } catch (err) {
+        if (statusEl) statusEl.textContent = '⚠️ Could not move conversation: ' + (err?.message || err);
+        alert('Could not move conversation to new token-wise chat: ' + (err?.message || err));
       }
     }
 
@@ -4597,6 +5192,20 @@
         `;
       }
 
+      const safeActiveThreadId = escapeHtml(thread.id);
+      const ctxKForMove = ctxTok > 0 ? `${Math.max(1, Math.round(ctxTok / 1000))}k` : 'active';
+      const moveToNewChatBtnHtml = `
+        <button class="token-wise-btn" onclick="moveThreadToNewConversation(event, '${safeActiveThreadId}')" title="Create a new token-wise conversation with all active context, open tasks, modified files, and attachments moved over (${ctxKForMove} → ~1.5k tokens/step)">
+          🌱 Move to New Chat ${ctxTok >= 4000 ? `(${ctxKForMove} → ~1.5k)` : '(Token-Wise)'}
+        </button>
+      `;
+      const parentLinkHtml = thread.movedFrom?.parentThreadId
+        ? `<button class="btn" style="padding:3px 8px; font-size:11px;" onclick="selectThread('${escapeHtml(thread.movedFrom.parentThreadId)}')" title="Open parent conversation: ${escapeHtml(thread.movedFrom.parentTitle || '')} (saved ~${thread.movedFrom.savedPct || 85}% tokens/step)">⬅️ Parent Chat (~${thread.movedFrom.savedPct || 85}% saved)</button>`
+        : '';
+      const childLinkHtml = thread.movedTo?.childThreadId
+        ? `<button class="token-wise-btn" onclick="selectThread('${escapeHtml(thread.movedTo.childThreadId)}')" title="Open token-wise continuation conversation: ${escapeHtml(thread.movedTo.childTitle || '')}">🚀 Open Token-Wise Continuation →</button>`
+        : '';
+
       const originHeader = `
         <div class="session-origin-bar">
           <div>
@@ -4604,6 +5213,10 @@
             <div style="font-size:11px; margin-top:2px;">📁 Working Directory: <code>${escapeHtml(thread.projectPath)}</code></div>
           </div>
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <button class="btn" style="padding:3px 9px; font-size:11px; font-weight:700;" onclick="toggleDeckView(true)" title="Open Multi-Project Widget Deck">🎛️ Project Deck</button>
+            ${parentLinkHtml}
+            ${childLinkHtml}
+            ${moveToNewChatBtnHtml}
             ${ctxBadgeHtml}
             ${lockBadge}
             ${thread.origin === 'vscode' ? '<span class="badge vscode">💠 Imported from VS Code</span>' : ''}
@@ -4642,6 +5255,46 @@
             </div>
           `;
         } else {
+          if (m.isTokenWiseHandoff) {
+            const mf = m.tokenWiseMeta || thread.movedFrom || {};
+            const pId = mf.parentThreadId ? escapeHtml(mf.parentThreadId) : '';
+            const savedPct = mf.savedPct || 85;
+            const prevK = mf.prevTokens ? `${Math.max(1, Math.round(mf.prevTokens / 1000))}k` : 'heavy';
+            const newK = mf.estimatedNewTokens ? `~${Math.max(1, Math.round(mf.estimatedNewTokens / 1000 * 10) / 10)}k` : '~1.5k';
+            return `
+              <div class="msg-card assistant token-wise-handoff">
+                <div class="msg-header">
+                  <div class="msg-author">
+                    <span class="badge tokenwise">🌱 Token-Wise Continuation Handoff • ${prevK} → ${newK} tokens/turn (~${savedPct}% saved)</span>
+                  </div>
+                  <span style="display:flex; align-items:center; gap:8px;">
+                    ${pId ? `<button class="btn" style="padding:2px 8px; font-size:11px;" onclick="selectThread('${pId}')">⬅️ View Parent Conversation</button>` : ''}
+                    <span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span>
+                  </span>
+                </div>
+                <div class="msg-body">${formatMarkdown(m.content || '')}</div>
+              </div>
+            `;
+          }
+          if (m.isTokenWiseMoveNotice) {
+            const mt = m.tokenWiseMoveMeta || thread.movedTo || {};
+            const cId = mt.childThreadId ? escapeHtml(mt.childThreadId) : '';
+            const savedPct = mt.savedPct || 85;
+            return `
+              <div class="msg-card assistant token-wise-notice">
+                <div class="msg-header">
+                  <div class="msg-author">
+                    <span class="badge tokenwise">↗️ Moved to New Token-Wise Conversation (~${savedPct}% token reduction)</span>
+                  </div>
+                  <span style="display:flex; align-items:center; gap:8px;">
+                    ${cId ? `<button class="token-wise-btn" onclick="selectThread('${cId}')">🚀 Open New Token-Wise Conversation →</button>` : ''}
+                    <span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span>
+                  </span>
+                </div>
+                <div class="msg-body">${formatMarkdown(m.content || '')}</div>
+              </div>
+            `;
+          }
           const isAgy = m.engine === 'antigravity';
           const modelText = humanizeModelName(m.engine, m.model);
           const badge = isAgy
@@ -4663,6 +5316,8 @@
             ? `Context window: ${(m.usage.input_tokens || 0).toLocaleString()} input tokens${mCachePct > 0 ? ` (${mCacheTok.toLocaleString()} cached — ${mCachePct}%)` : ''} • Generated: ${(m.usage.output_tokens || 0).toLocaleString()} output tokens`
             : `Estimated response tokens: ${tok.toLocaleString()}`;
           const tokPill = `<span class="token-pill" title="${escapeHtml(tokTitle)}">🪙 ${rawTok > 0 ? '' : '~'}${tok.toLocaleString()} tokens${mCachePct > 0 ? ` (${mCachePct}% cached)` : ''}</span>`;
+          const safeMsgId = m.id ? escapeHtml(m.id) : '';
+          const branchBtn = `<button class="token-wise-btn" style="padding:2px 7px; font-size:10.5px;" onclick="moveThreadToNewConversation(event, '${safeActiveThreadId}', { upToMessageId: '${safeMsgId}', reason: 'branch-from-turn' })" title="Spawn a new token-wise conversation moving context & open tasks up to this turn">🌱 Move to New Chat</button>`;
           const thoughtHtml = thoughts.length > 0
             ? `<details class="thinking-details"><summary>💭 Agent Reasoning & Thought Process (${thoughts.length} step${thoughts.length > 1 ? 's' : ''})</summary><div style="margin-top:8px; white-space:pre-wrap; line-height:1.5;">${escapeHtml(thoughts.join('\n\n'))}</div></details>`
             : '';
@@ -4674,7 +5329,7 @@
             <div class="msg-card assistant ${isAgy ? 'antigravity' : 'codex'}">
               <div class="msg-header">
                 <div class="msg-author">${badge}</div>
-                <span style="display:flex; align-items:center; gap:8px;">${tokPill}<span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span></span>
+                <span style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">${branchBtn}${tokPill}<span>${m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span></span>
               </div>
               ${thoughtHtml}
               ${narHtml}
@@ -4807,6 +5462,7 @@
     setInterval(() => {
       if (runningThreadIds.size > 0) {
         updateLiveStreamTokenDOM();
+        if (typeof updateDeckLiveTimers === 'function') updateDeckLiveTimers();
       }
     }, 1000);
 
@@ -4948,6 +5604,34 @@
                 const sEl = document.getElementById('streamStatus');
                 if (sEl) sEl.textContent = 'Stopped';
               }
+            } else if (evt.type === 'thread_moved' && evt.newThread) {
+              const oldId = evt.oldThreadId || targetThreadId;
+              const newId = evt.newThread.id;
+              if (evt.sourceThread) {
+                const sIdx = hubData.state.threads.findIndex(t => t.id === evt.sourceThread.id);
+                if (sIdx !== -1) hubData.state.threads[sIdx] = evt.sourceThread;
+              }
+              const nIdx = hubData.state.threads.findIndex(t => t.id === newId);
+              if (nIdx !== -1) hubData.state.threads[nIdx] = evt.newThread;
+              else hubData.state.threads.unshift(evt.newThread);
+
+              runningThreadIds.delete(oldId);
+              runningThreadIds.add(newId);
+              threadStreams.delete(oldId);
+              threadStreams.set(newId, streamInfo);
+              streamInfo.effectiveThreadId = newId;
+              streamInfo.baseMsgCount = (evt.newThread?.messages || []).length;
+              streamInfo.baseHubRev = evt.newThread?.hubRev || 0;
+              if (activeThreadId === oldId) {
+                activeThreadId = newId;
+                try { localStorage.setItem('hub_active_thread_id', newId); } catch {}
+              }
+              targetThreadId = newId;
+              renderThreads();
+              if (activeThreadId === newId) {
+                renderActiveChat(true);
+                if (evt.message) document.getElementById('liveStatusText').textContent = evt.message;
+              }
             } else if (evt.type === 'step_done') {
               const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
               if (idx !== -1) hubData.state.threads[idx] = evt.thread;
@@ -4969,14 +5653,28 @@
               streamInfo.receivedTerminalEvent = true;
               const idx = hubData.state.threads.findIndex(t => t.id === evt.thread.id);
               if (idx !== -1) hubData.state.threads[idx] = evt.thread;
+              else if (evt.thread) hubData.state.threads.unshift(evt.thread);
               runningThreadIds.delete(targetThreadId);
               threadStreams.delete(targetThreadId);
+              if (evt.movedToThread) {
+                const mIdx = hubData.state.threads.findIndex(t => t.id === evt.movedToThread.id);
+                if (mIdx !== -1) hubData.state.threads[mIdx] = evt.movedToThread;
+                else hubData.state.threads.unshift(evt.movedToThread);
+                if (activeThreadId === targetThreadId || activeThreadId === evt.thread?.id) {
+                  activeThreadId = evt.movedToThread.id;
+                  targetThreadId = evt.movedToThread.id;
+                  streamInfo.effectiveThreadId = evt.movedToThread.id;
+                  try { localStorage.setItem('hub_active_thread_id', evt.movedToThread.id); } catch {}
+                }
+              }
               renderThreads();
               if (activeThreadId === targetThreadId) {
                 renderActiveChat(true);
                 document.getElementById('sendBtn').disabled = false;
                 document.getElementById('stopBtn').style.display = 'none';
-                document.getElementById('liveStatusText').textContent = 'Ready • Shared context synced';
+                document.getElementById('liveStatusText').textContent = evt.movedToThread
+                  ? `🌱 Moved to new token-wise continuation chat (~${evt.movedToThread.movedFrom?.savedPct || 85}% fewer tokens/step)`
+                  : 'Ready • Shared context synced';
               }
               refreshStatus(false);
             } else if (evt.type === 'error') {
@@ -4994,6 +5692,9 @@
                 if (sEl) sEl.textContent = 'Failed — prompt restored in input box';
                 if (bEl) bEl.innerHTML = formatMarkdown(streamInfo.accumulatedText);
               }
+            }
+            if (typeof syncDeckOnSseEvent === 'function') {
+              syncDeckOnSseEvent(targetThreadId, evt);
             }
           } catch {}
         }
@@ -5273,13 +5974,15 @@
 
         await consumeSseResponse(res, targetThreadId, streamInfo);
       } catch (err) {
-        if (activeThreadId === targetThreadId) {
+        const effTid = streamInfo.effectiveThreadId || targetThreadId;
+        if (activeThreadId === effTid) {
           document.getElementById('liveStatusText').textContent = '↻ Connection dropped — checking server turn status…';
         }
-        const rec = await recoverDroppedTurn(targetThreadId, streamInfo, err?.message || 'Connection dropped');
+        const rec = await recoverDroppedTurn(effTid, streamInfo, err?.message || 'Connection dropped');
         if (rec.action === 'reattach') {
           handedOff = true;
           runningThreadIds.delete(targetThreadId);
+          runningThreadIds.delete(effTid);
           await reattachTurnStream(rec.turn, streamInfo);
           return;
         }
@@ -5295,15 +5998,15 @@
           streamInfo.statusText = 'Error';
           streamInfo.accumulatedText = '⚠️ ' + finalErrMsg;
           if (attachmentsToSend.length) {
-            if (activeThreadId === targetThreadId) {
+            if (activeThreadId === effTid) {
               pendingAttachments = [...attachmentsToSend, ...pendingAttachments];
-              savePendingAttachments(targetThreadId);
+              savePendingAttachments(effTid);
               renderPendingAttachments();
             } else {
-              savePendingAttachments(targetThreadId, attachmentsToSend);
+              savePendingAttachments(effTid, attachmentsToSend);
             }
           }
-          if (activeThreadId === targetThreadId) {
+          if (activeThreadId === effTid) {
             if (!inputEl.value.trim()) inputEl.value = prompt;
             const sEl = document.getElementById('streamStatus');
             const bEl = document.getElementById('streamBody');
@@ -5313,12 +6016,18 @@
         }
       } finally {
         if (!handedOff) {
+          const effTid = streamInfo.effectiveThreadId || targetThreadId;
           runningThreadIds.delete(targetThreadId);
+          runningThreadIds.delete(effTid);
           // Keep failed turns on screen (prompt + error) so the chat doesn't look like it reset
-          if (!streamInfo.failed) threadStreams.delete(targetThreadId);
-          else streamInfo.statusText = 'Failed — prompt restored in input box';
+          if (!streamInfo.failed) {
+            threadStreams.delete(targetThreadId);
+            threadStreams.delete(effTid);
+          } else {
+            streamInfo.statusText = 'Failed — prompt restored in input box';
+          }
           renderThreads();
-          if (activeThreadId === targetThreadId) {
+          if (activeThreadId === effTid || activeThreadId === targetThreadId) {
             document.getElementById('sendBtn').disabled = false;
             document.getElementById('stopBtn').style.display = 'none';
             document.getElementById('liveStatusText').textContent = streamInfo.failed ? 'Failed — prompt restored in input box' : statusSummary;
@@ -6346,6 +7055,801 @@
         btn.textContent = '✓ Copied!';
         setTimeout(() => { btn.textContent = orig; }, 2000);
       });
+    }
+
+    // =====================================================================
+    // MULTI-PROJECT WIDGET DECK ("Deck View")
+    // =====================================================================
+    let isDeckViewOpen = false;
+    let deckMode = 'projects'; // 'projects' | 'pinned' | 'recent'
+    let deckMobileLayout = 'stack'; // 'stack' | 'carousel'
+    const pinnedDeckIds = new Set();
+    const projectSelectedThreadMap = new Map();
+    const deckExpandedTiles = new Set();
+    const deckDraftPrompts = new Map();
+    const deckTileAutopilot = new Set();
+    const deckLoadingHistoryIds = new Set();
+
+    function initDeckViewState() {
+      try {
+        const savedOpen = localStorage.getItem('hub_deck_view_open');
+        const params = new URLSearchParams(location.search);
+        if (params.get('view') === 'deck') {
+          isDeckViewOpen = true;
+        } else if (savedOpen === '1') {
+          isDeckViewOpen = true;
+        }
+        const savedMode = localStorage.getItem('hub_deck_mode');
+        if (savedMode && ['projects', 'pinned', 'recent'].includes(savedMode)) {
+          deckMode = savedMode;
+        }
+        const savedLayout = localStorage.getItem('hub_deck_mobile_layout');
+        if (savedLayout && ['stack', 'carousel'].includes(savedLayout)) {
+          deckMobileLayout = savedLayout;
+        }
+        const rawPinned = localStorage.getItem('hub_deck_pinned_ids');
+        if (rawPinned) {
+          for (const id of JSON.parse(rawPinned)) {
+            if (id) pinnedDeckIds.add(id);
+          }
+        }
+        const rawProjThreads = localStorage.getItem('hub_deck_proj_threads');
+        if (rawProjThreads) {
+          const obj = JSON.parse(rawProjThreads);
+          for (const [k, v] of Object.entries(obj || {})) {
+            if (k && v) projectSelectedThreadMap.set(k, v);
+          }
+        }
+      } catch {}
+      applyDeckViewVisibility();
+    }
+
+    function saveDeckPrefs() {
+      try {
+        localStorage.setItem('hub_deck_view_open', isDeckViewOpen ? '1' : '0');
+        localStorage.setItem('hub_deck_mode', deckMode);
+        localStorage.setItem('hub_deck_mobile_layout', deckMobileLayout);
+        localStorage.setItem('hub_deck_pinned_ids', JSON.stringify([...pinnedDeckIds]));
+        const ptObj = {};
+        for (const [k, v] of projectSelectedThreadMap.entries()) ptObj[k] = v;
+        localStorage.setItem('hub_deck_proj_threads', JSON.stringify(ptObj));
+      } catch {}
+    }
+
+    function updateDeckToggleBtn() {
+      const btn = document.getElementById('deckToggleBtn');
+      if (!btn) return;
+      const runningCount = runningThreadIds.size;
+      const runBadge = runningCount > 0 ? `<span class="deck-running-pill">${runningCount}</span>` : '';
+      if (isDeckViewOpen) {
+        btn.classList.add('active-deck');
+        btn.innerHTML = `💬 Chat${runBadge}`;
+        btn.title = 'Return to Single Chat View';
+      } else {
+        btn.classList.remove('active-deck');
+        btn.innerHTML = `🎛️ Deck${runBadge}`;
+        btn.title = 'Open Multi-Project Widget Deck (see all projects & prompt in place)';
+      }
+      const pinnedCountEl = document.getElementById('deckPinnedCount');
+      if (pinnedCountEl) {
+        pinnedCountEl.textContent = pinnedDeckIds.size > 0 ? `(${pinnedDeckIds.size})` : '';
+      }
+    }
+
+    function applyDeckViewVisibility() {
+      const deckEl = document.getElementById('deckViewContainer');
+      const ribbonEl = document.querySelector('.engine-ribbon');
+      const chatScrollEl = document.getElementById('chatScroll');
+      const composerEl = document.querySelector('.composer-wrap');
+      if (!deckEl) return;
+
+      if (isDeckViewOpen) {
+        deckEl.classList.add('open');
+        if (ribbonEl) ribbonEl.style.display = 'none';
+        if (chatScrollEl) chatScrollEl.style.display = 'none';
+        if (composerEl) composerEl.style.display = 'none';
+      } else {
+        deckEl.classList.remove('open');
+        if (ribbonEl) ribbonEl.style.display = '';
+        if (chatScrollEl) chatScrollEl.style.display = '';
+        if (composerEl) composerEl.style.display = '';
+      }
+      updateDeckToggleBtn();
+    }
+
+    function toggleDeckView(forceState) {
+      isDeckViewOpen = typeof forceState === 'boolean' ? forceState : !isDeckViewOpen;
+      saveDeckPrefs();
+      applyDeckViewVisibility();
+      if (isDeckViewOpen) {
+        renderDeckView(false);
+      } else {
+        renderActiveChat(true);
+      }
+    }
+
+    function setDeckMode(mode) {
+      deckMode = mode;
+      saveDeckPrefs();
+      document.getElementById('deckModeProjects')?.classList.toggle('active', mode === 'projects');
+      document.getElementById('deckModePinned')?.classList.toggle('active', mode === 'pinned');
+      document.getElementById('deckModeRecent')?.classList.toggle('active', mode === 'recent');
+      renderDeckView(false);
+    }
+
+    function toggleDeckMobileLayout() {
+      deckMobileLayout = deckMobileLayout === 'carousel' ? 'stack' : 'carousel';
+      saveDeckPrefs();
+      const btn = document.getElementById('deckLayoutBtn');
+      if (btn) {
+        btn.innerHTML = deckMobileLayout === 'carousel' ? '↔️ Swipe' : '↕️ Stack';
+      }
+      const grid = document.getElementById('deckGrid');
+      if (grid) {
+        grid.classList.toggle('carousel-mode', deckMobileLayout === 'carousel');
+      }
+    }
+
+    function domSafeId(threadId) {
+      return String(threadId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    function extractThreadPreview(thread) {
+      if (!thread) return { lastUserText: '', lastAssistantText: '', lastAssistantEngine: null, lastAssistantModel: null, lastAssistantAt: null, lastNarrative: null };
+      if (Array.isArray(thread.messages) && thread.messages.length > 0) {
+        let lastUser = null;
+        let lastAssistant = null;
+        for (let i = thread.messages.length - 1; i >= 0; i--) {
+          const m = thread.messages[i];
+          if (!m) continue;
+          if (!lastAssistant && m.role === 'assistant' && !m.isTokenWiseMoveNotice) lastAssistant = m;
+          if (!lastUser && m.role === 'user') lastUser = m;
+          if (lastUser && lastAssistant) break;
+        }
+        if (!lastAssistant) {
+          lastAssistant = [...thread.messages].reverse().find(m => m && m.role === 'assistant') || null;
+        }
+        const nars = Array.isArray(lastAssistant?.narratives) ? lastAssistant.narratives.filter(Boolean) : [];
+        return {
+          lastUserText: lastUser?.content || '',
+          lastUserAt: lastUser?.timestamp || null,
+          lastAssistantText: lastAssistant?.content || '',
+          lastAssistantEngine: lastAssistant?.engine || null,
+          lastAssistantModel: lastAssistant?.model || null,
+          lastAssistantAt: lastAssistant?.timestamp || null,
+          lastNarrative: nars.length > 0 ? nars[nars.length - 1] : null
+        };
+      }
+      if (thread.deckPreview) {
+        return thread.deckPreview;
+      }
+      return { lastUserText: '', lastAssistantText: '', lastAssistantEngine: null, lastAssistantModel: null, lastAssistantAt: null, lastNarrative: null };
+    }
+
+    async function ensureDeckTileHistory(threadId) {
+      if (!threadId || deckLoadingHistoryIds.has(threadId)) return;
+      const thread = (hubData.state.threads || []).find(t => t.id === threadId);
+      if (!thread) return;
+      if ((Array.isArray(thread.messages) && thread.messages.length > 0) || thread.deckPreview) return;
+      deckLoadingHistoryIds.add(threadId);
+      try {
+        const res = await apiFetch(`/api/thread?id=${encodeURIComponent(threadId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.thread) {
+          const idx = (hubData.state.threads || []).findIndex(t => t.id === threadId);
+          if (idx !== -1) hubData.state.threads[idx] = data.thread;
+          if (isDeckViewOpen) syncDeckTileLive(threadId);
+        }
+      } catch {} finally {
+        deckLoadingHistoryIds.delete(threadId);
+      }
+    }
+
+    function getDeckTilesList() {
+      const allThreads = hubData.state.threads || [];
+      const projects = hubData.state.projects || [];
+      const tiles = [];
+      const usedThreadIds = new Set();
+
+      if (deckMode === 'pinned') {
+        for (const t of allThreads) {
+          if (pinnedDeckIds.has(t.id)) {
+            const pThreads = allThreads.filter(x => (x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath));
+            tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: t.projectId || t.projectPath || t.id });
+            usedThreadIds.add(t.id);
+          }
+        }
+        return tiles;
+      }
+
+      if (deckMode === 'recent') {
+        for (const t of allThreads.slice(0, 12)) {
+          const pThreads = allThreads.filter(x => (x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath));
+          tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: t.projectId || t.projectPath || t.id });
+        }
+        return tiles;
+      }
+
+      // Default: 'projects' mode — 1 tile per active project (sorted by most recent activity or running status), plus any extra pinned threads
+      const projectGroups = new Map();
+      for (const t of allThreads) {
+        const pKey = t.projectId || (t.projectPath ? t.projectPath.toLowerCase() : 'default');
+        if (!projectGroups.has(pKey)) {
+          projectGroups.set(pKey, []);
+        }
+        projectGroups.get(pKey).push(t);
+      }
+
+      for (const [pKey, pThreads] of projectGroups.entries()) {
+        // Prefer a currently running thread in this project, or the user's selected thread for this project, or the most recent thread
+        const runningT = pThreads.find(t => runningThreadIds.has(t.id));
+        const preferredId = projectSelectedThreadMap.get(pKey);
+        const preferredT = preferredId ? pThreads.find(t => t.id === preferredId) : null;
+        const chosen = runningT || preferredT || pThreads[0];
+        if (chosen) {
+          tiles.push({ thread: chosen, projectThreads: pThreads, projectKey: pKey });
+          usedThreadIds.add(chosen.id);
+        }
+      }
+
+      // Also include any pinned threads that weren't the primary thread of their project
+      for (const t of allThreads) {
+        if (pinnedDeckIds.has(t.id) && !usedThreadIds.has(t.id)) {
+          const pKey = t.projectId || (t.projectPath ? t.projectPath.toLowerCase() : 'default');
+          const pThreads = projectGroups.get(pKey) || [t];
+          tiles.push({ thread: t, projectThreads: pThreads, projectKey: pKey });
+          usedThreadIds.add(t.id);
+        }
+      }
+
+      // Sort: running tiles first, then pinned tiles, then by updatedAt desc
+      tiles.sort((a, b) => {
+        const aRun = runningThreadIds.has(a.thread.id) ? 1 : 0;
+        const bRun = runningThreadIds.has(b.thread.id) ? 1 : 0;
+        if (aRun !== bRun) return bRun - aRun;
+        const aPin = pinnedDeckIds.has(a.thread.id) ? 1 : 0;
+        const bPin = pinnedDeckIds.has(b.thread.id) ? 1 : 0;
+        if (aPin !== bPin) return bPin - aPin;
+        return (Date.parse(b.thread.updatedAt || '') || 0) - (Date.parse(a.thread.updatedAt || '') || 0);
+      });
+
+      return tiles;
+    }
+
+    function renderDeckTileBodyInnerHtml(thread) {
+      const streamInfo = threadStreams.get(thread.id);
+      if (streamInfo) {
+        const liveTok = computeLiveStreamTokens(streamInfo);
+        const elapsedStr = formatElapsedSince(streamInfo.startedAt);
+        const sNars = streamInfo.narratives || [];
+        const latestNar = sNars.length > 0 ? sNars[sNars.length - 1] : '';
+        const narBar = latestNar
+          ? `<div style="font-size:11.5px; color:var(--text-muted); background:var(--bg-card); border-left:3px solid var(--agy-accent); padding:4px 8px; border-radius:4px; margin-bottom:6px;">🛠️ ${formatMarkdown(latestNar)}</div>`
+          : '';
+        const bodyHtml = streamInfo.accumulatedText
+          ? formatMarkdown(streamInfo.accumulatedText)
+          : `<div style="font-size:12.5px; color:var(--text-muted); padding:6px 0;">⏳ ${escapeHtml((streamInfo.statusText || 'Working on your task…').replace(/^[●⏳]\s*/, ''))}</div>`;
+        return `
+          <div class="deck-response-meta">
+            <span>${streamInfo.badgeHtml || '⚡ Running…'}</span>
+            <span style="display:inline-flex; align-items:center; gap:6px;">
+              <span id="deckTok_${domSafeId(thread.id)}" class="token-pill live">🪙 ${liveTok.toLocaleString()} ↑</span>
+              <span id="deckEl_${domSafeId(thread.id)}" style="font-variant-numeric:tabular-nums;">⏱️ ${elapsedStr}</span>
+            </span>
+          </div>
+          ${narBar}
+          <div class="msg-body" style="font-size:13px;">${bodyHtml}</div>
+        `;
+      }
+
+      const prev = extractThreadPreview(thread);
+      if (!prev.lastAssistantText && !prev.lastUserText) {
+        ensureDeckTileHistory(thread.id);
+        return `<div style="color:var(--text-muted); font-size:12.5px; padding:8px 0;">No messages yet in this session — send a command below to start.</div>`;
+      }
+
+      const isAgy = (prev.lastAssistantEngine || getThreadEngine(thread)) !== 'codex';
+      const modelLabel = humanizeModelName(prev.lastAssistantEngine || (isAgy ? 'antigravity' : 'codex'), prev.lastAssistantModel || '');
+      const badgeHtml = prev.lastAssistantEngine
+        ? (isAgy
+            ? `<span class="badge agy">🌌 ${escapeHtml(modelLabel || 'Antigravity')}</span>`
+            : `<span class="badge codex">🟢 ${escapeHtml(modelLabel || 'Codex')}</span>`)
+        : `<span class="badge auto">🤖 Last Response</span>`;
+      const timeStr = prev.lastAssistantAt
+        ? new Date(prev.lastAssistantAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+
+      return `
+        <div class="deck-response-meta">
+          <span>${badgeHtml}</span>
+          <span>${escapeHtml(timeStr)}</span>
+        </div>
+        <div class="msg-body" style="font-size:13px;">${prev.lastAssistantText ? formatMarkdown(prev.lastAssistantText) : '<em style="color:var(--text-muted);">Waiting for response…</em>'}</div>
+      `;
+    }
+
+    function renderDeckView(preserveActiveInput = false) {
+      if (!isDeckViewOpen) return;
+      const grid = document.getElementById('deckGrid');
+      if (!grid) return;
+
+      // If the user is actively typing inside a deck textarea during background status poll, only update live badges/streams without replacing DOM
+      const activeEl = document.activeElement;
+      if (preserveActiveInput && activeEl && activeEl.classList && activeEl.classList.contains('deck-textarea')) {
+        for (const t of (hubData.state.threads || [])) {
+          syncDeckTileLive(t.id);
+        }
+        return;
+      }
+
+      document.getElementById('deckModeProjects')?.classList.toggle('active', deckMode === 'projects');
+      document.getElementById('deckModePinned')?.classList.toggle('active', deckMode === 'pinned');
+      document.getElementById('deckModeRecent')?.classList.toggle('active', deckMode === 'recent');
+      const layoutBtn = document.getElementById('deckLayoutBtn');
+      if (layoutBtn) layoutBtn.innerHTML = deckMobileLayout === 'carousel' ? '↔️ Swipe' : '↕️ Stack';
+      grid.classList.toggle('carousel-mode', deckMobileLayout === 'carousel');
+      updateDeckToggleBtn();
+
+      const tiles = getDeckTilesList();
+      if (tiles.length === 0) {
+        grid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align:center; padding:40px 20px; background:var(--bg-panel); border:1px dashed var(--border); border-radius:16px;">
+            <div style="font-size:28px; margin-bottom:8px;">🎛️</div>
+            <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${deckMode === 'pinned' ? 'No Pinned Project Tiles Yet' : 'No Active Project Conversations Found'}</div>
+            <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:14px;">
+              ${deckMode === 'pinned' ? 'Tap 📌 on any project tile in the "📁 Projects" tab to pin it to your custom widget board.' : 'Start a new conversation or switch filter tabs above.'}
+            </div>
+            ${deckMode === 'pinned' ? `<button class="btn btn-primary" onclick="setDeckMode('projects')">📁 View All Projects</button>` : `<button class="btn btn-primary" onclick="createNewThread()">＋ New Chat</button>`}
+          </div>
+        `;
+        return;
+      }
+
+      grid.innerHTML = tiles.map(({ thread, projectThreads, projectKey }) => {
+        const tid = thread.id;
+        const safeId = domSafeId(tid);
+        const escTid = escapeHtml(tid);
+        const escProjKey = escapeHtml(projectKey);
+        const isRunning = runningThreadIds.has(tid);
+        const isPinned = pinnedDeckIds.has(tid);
+        const isExpanded = deckExpandedTiles.has(tid);
+        const isAutoLoop = deckTileAutopilot.has(tid);
+        const engMode = getThreadEngine(thread);
+        const engLabel = engMode === 'antigravity' ? '🌌 AGY' : (engMode === 'codex' ? '🟢 Codex' : '⚡ Auto');
+        const projName = thread.projectName || (thread.projectPath ? thread.projectPath.split(/[\\/]/).pop() : 'Workspace');
+        const prev = extractThreadPreview(thread);
+        const streamInfo = threadStreams.get(tid);
+        const lastPromptText = streamInfo?.userPrompt || prev.lastUserText || 'No prompt sent yet';
+        const draftVal = deckDraftPrompts.get(tid) || '';
+        const ctxTok = thread.contextTokens || 0;
+        const ctxK = ctxTok > 0 ? `${Math.max(1, Math.round(ctxTok / 1000))}k` : '';
+
+        const threadOptionsHtml = projectThreads.slice(0, 15).map(pt => {
+          const sel = pt.id === tid ? 'selected' : '';
+          const runPrefix = runningThreadIds.has(pt.id) ? '⚡ ' : '';
+          const dStr = pt.updatedAt ? new Date(pt.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+          return `<option value="${escapeHtml(pt.id)}" ${sel}>${runPrefix}${escapeHtml(pt.title || 'Untitled')} ${dStr ? `(${dStr})` : ''}</option>`;
+        }).join('');
+
+        return `
+          <div id="deckTile_${safeId}" class="deck-tile ${isRunning ? 'running' : ''} ${isPinned ? 'pinned' : ''}" data-thread-id="${escTid}">
+            <div class="deck-tile-top">
+              <div class="deck-proj-badge" onclick="openFullChatFromDeck('${escTid}')" style="cursor:pointer;" title="Tap to open full chat view for ${escapeHtml(projName)}">
+                <span class="deck-proj-icon">📁</span>
+                <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(projName)}</span>
+                <span id="deckStatusPill_${safeId}">
+                  ${isRunning
+                    ? `<span class="badge warn" style="animation:pulse 1.2s infinite; font-weight:700;">⚡ Working…</span>`
+                    : `<span class="badge codex" style="font-size:10px; padding:1px 6px;">● Ready</span>`}
+                </span>
+              </div>
+              <div class="deck-tile-actions">
+                <button type="button" class="deck-icon-btn" onclick="cycleTileEngine('${escTid}')" title="Switch engine for this project tile (Auto / AGY / Codex)">${engLabel}</button>
+                <button type="button" class="deck-icon-btn ${isPinned ? 'pinned' : ''}" onclick="toggleTilePin('${escTid}')" title="${isPinned ? 'Unpin tile' : 'Pin tile to top of Deck'}">📌</button>
+                <button type="button" class="deck-icon-btn" onclick="toggleTileExpand('${escTid}')" title="Expand / collapse response box">${isExpanded ? '▴ Less' : '▾ More'}</button>
+                <button type="button" class="deck-icon-btn" onclick="openFullChatFromDeck('${escTid}')" title="Open full conversation screen">⤢ Chat</button>
+              </div>
+            </div>
+
+            <div class="deck-thread-row">
+              <select class="deck-thread-select" onchange="switchProjectTileThread('${escProjKey}', this.value)" title="Switch active conversation for ${escapeHtml(projName)}">
+                ${threadOptionsHtml}
+              </select>
+              ${ctxK ? `<span class="badge" style="font-size:10px; flex-shrink:0;" title="Active context tokens">${ctxK} ctx</span>` : ''}
+              <button type="button" class="deck-icon-btn" onclick="createNewProjectTileChat('${ escapeHtml(thread.projectId || '') }', '${escProjKey}')" title="Start a new conversation in ${escapeHtml(projName)}">＋ New</button>
+            </div>
+
+            <div class="deck-last-user" title="${escapeHtml(lastPromptText)}">
+              <div class="deck-last-user-text"><b>👤 Last:</b> <span id="deckLastUser_${safeId}">${escapeHtml(lastPromptText)}</span></div>
+              ${ctxTok >= 45000 && !isRunning ? `<button type="button" class="token-wise-btn" style="padding:1px 6px; font-size:10px; flex-shrink:0;" onclick="moveThreadToNewConversation(event, '${escTid}')">🌱 Move</button>` : ''}
+            </div>
+
+            <div id="deckRespBox_${safeId}" class="deck-response-box ${isExpanded ? 'expanded' : ''}">
+              ${renderDeckTileBodyInnerHtml(thread)}
+            </div>
+
+            <div class="deck-quick-chips">
+              <button type="button" class="deck-chip" onclick="fillOrSendTileQuickPrompt('${escTid}', 'Continue with the next part and verify everything works.', false)">▶️ Next part</button>
+              <button type="button" class="deck-chip" onclick="fillOrSendTileQuickPrompt('${escTid}', 'Give me a concise status summary of what is done and what is left.', false)">📊 Status</button>
+              <button type="button" class="deck-chip" onclick="fillOrSendTileQuickPrompt('${escTid}', 'Run tests / verify the changes and fix any issues.', false)">🧪 Test & Fix</button>
+              <button type="button" class="deck-chip" onclick="fillOrSendTileQuickPrompt('${escTid}', 'Commit and push the latest changes.', false)">🚀 Commit & Push</button>
+            </div>
+
+            <div class="deck-composer">
+              <textarea
+                id="deckInput_${safeId}"
+                class="deck-textarea"
+                rows="1"
+                placeholder="Next prompt for ${escapeHtml(projName)}..."
+                oninput="onDeckInput(this, '${escTid}')"
+                onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendDeckTilePrompt('${escTid}'); }"
+              >${escapeHtml(draftVal)}</textarea>
+              <div class="deck-composer-footer">
+                <div style="display:flex; align-items:center; gap:5px;">
+                  <button type="button" id="deckMic_${safeId}" class="deck-icon-btn" onclick="toggleTileVoiceInput('${escTid}')" title="Voice dictation into this tile">🎤 Voice</button>
+                  <button type="button" id="deckAutoBtn_${safeId}" class="deck-icon-btn ${isAutoLoop ? 'pinned' : ''}" onclick="toggleTileAutopilot('${escTid}')" title="Run multi-step Autopilot Loop for this project">🔁 ${isAutoLoop ? 'Autopilot: ON' : 'Autopilot'}</button>
+                </div>
+                <div id="deckActionWrap_${safeId}" style="display:flex; align-items:center; gap:6px;">
+                  ${isRunning
+                    ? `<button type="button" class="btn" style="padding:5px 11px; font-size:12px; border-color:var(--danger); color:#fca5a5;" onclick="stopDeckTileTurn('${escTid}')">⏹ Stop</button>`
+                    : `<button type="button" class="btn btn-primary" style="padding:5px 13px; font-size:12px; font-weight:700;" onclick="sendDeckTilePrompt('${escTid}')">Send ↵</button>`}
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function onDeckInput(el, threadId) {
+      if (!el) return;
+      deckDraftPrompts.set(threadId, el.value);
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 96) + 'px';
+    }
+
+    function fillOrSendTileQuickPrompt(threadId, text, sendImmediately = false) {
+      const safeId = domSafeId(threadId);
+      const inputEl = document.getElementById(`deckInput_${safeId}`);
+      deckDraftPrompts.set(threadId, text);
+      if (inputEl) {
+        inputEl.value = text;
+        inputEl.focus();
+        onDeckInput(inputEl, threadId);
+      }
+      if (sendImmediately) {
+        sendDeckTilePrompt(threadId);
+      }
+    }
+
+    function toggleTilePin(threadId) {
+      if (pinnedDeckIds.has(threadId)) pinnedDeckIds.delete(threadId);
+      else pinnedDeckIds.add(threadId);
+      saveDeckPrefs();
+      renderDeckView(false);
+    }
+
+    function toggleTileExpand(threadId) {
+      if (deckExpandedTiles.has(threadId)) deckExpandedTiles.delete(threadId);
+      else deckExpandedTiles.add(threadId);
+      const safeId = domSafeId(threadId);
+      const box = document.getElementById(`deckRespBox_${safeId}`);
+      if (box) box.classList.toggle('expanded', deckExpandedTiles.has(threadId));
+      renderDeckView(true);
+    }
+
+    function toggleTileAutopilot(threadId) {
+      if (deckTileAutopilot.has(threadId)) deckTileAutopilot.delete(threadId);
+      else deckTileAutopilot.add(threadId);
+      const safeId = domSafeId(threadId);
+      const btn = document.getElementById(`deckAutoBtn_${safeId}`);
+      if (btn) {
+        const on = deckTileAutopilot.has(threadId);
+        btn.classList.toggle('pinned', on);
+        btn.innerHTML = `🔁 ${on ? 'Autopilot: ON' : 'Autopilot'}`;
+      }
+    }
+
+    function cycleTileEngine(threadId) {
+      const thread = (hubData.state.threads || []).find(t => t.id === threadId);
+      if (!thread) return;
+      const cur = getThreadEngine(thread);
+      const next = cur === 'auto' ? 'antigravity' : (cur === 'antigravity' ? 'codex' : 'auto');
+      thread.engineMode = next;
+      threadEngineChoices.set(threadId, { mode: next });
+      try { localStorage.setItem(`thread_engine_${threadId}`, next); } catch {}
+      apiFetch('/api/thread/settings', {
+        method: 'POST',
+        body: JSON.stringify({ threadId, engineMode: next })
+      }).catch(() => {});
+      if (activeThreadId === threadId) {
+        currentEngineMode = next;
+        setEngineModeUI(next);
+      }
+      renderThreads();
+      renderDeckView(false);
+    }
+
+    async function switchProjectTileThread(projectKey, newThreadId) {
+      projectSelectedThreadMap.set(projectKey, newThreadId);
+      saveDeckPrefs();
+      ensureDeckTileHistory(newThreadId);
+      renderDeckView(false);
+    }
+
+    async function createNewProjectTileChat(projectId, projectKey) {
+      const targetProjId = projectId || (hubData.state.projects[0]?.id || 'default');
+      const res = await apiFetch('/api/threads', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId: targetProjId,
+          engineMode: currentEngineMode,
+          agyModel: document.getElementById('agyModelSelect')?.value,
+          agyEffort: document.getElementById('agyEffortSelect')?.value,
+          codexModel: document.getElementById('codexModelSelect')?.value,
+          codexEffort: document.getElementById('codexEffortSelect')?.value
+        })
+      });
+      const data = await res.json();
+      if (!data || !data.thread) return;
+      hubData.state.threads = data.threads || [];
+      const exIdx = hubData.state.threads.findIndex(t => t.id === data.thread.id);
+      if (exIdx !== -1) hubData.state.threads[exIdx] = data.thread;
+      else hubData.state.threads.unshift(data.thread);
+      projectSelectedThreadMap.set(projectKey, data.thread.id);
+      saveDeckPrefs();
+      renderThreads();
+      renderDeckView(false);
+      setTimeout(() => {
+        const inp = document.getElementById(`deckInput_${domSafeId(data.thread.id)}`);
+        if (inp) inp.focus();
+      }, 60);
+    }
+
+    async function openFullChatFromDeck(threadId) {
+      toggleDeckView(false);
+      await selectThread(threadId);
+    }
+
+    function syncDeckTileLive(threadId) {
+      updateDeckToggleBtn();
+      if (!isDeckViewOpen || !threadId) return;
+      const safeId = domSafeId(threadId);
+      const tileEl = document.getElementById(`deckTile_${safeId}`);
+      if (!tileEl) return;
+
+      const thread = (hubData.state.threads || []).find(t => t.id === threadId);
+      if (!thread) return;
+      const isRunning = runningThreadIds.has(threadId);
+      tileEl.classList.toggle('running', isRunning);
+
+      const statusPillEl = document.getElementById(`deckStatusPill_${safeId}`);
+      if (statusPillEl) {
+        statusPillEl.innerHTML = isRunning
+          ? `<span class="badge warn" style="animation:pulse 1.2s infinite; font-weight:700;">⚡ Working…</span>`
+          : `<span class="badge codex" style="font-size:10px; padding:1px 6px;">● Ready</span>`;
+      }
+
+      const streamInfo = threadStreams.get(threadId);
+      const prev = extractThreadPreview(thread);
+      const lastUserEl = document.getElementById(`deckLastUser_${safeId}`);
+      if (lastUserEl) {
+        lastUserEl.textContent = streamInfo?.userPrompt || prev.lastUserText || 'No prompt sent yet';
+      }
+
+      const respBoxEl = document.getElementById(`deckRespBox_${safeId}`);
+      if (respBoxEl) {
+        const wasNearBottom = (respBoxEl.scrollHeight - respBoxEl.scrollTop - respBoxEl.clientHeight) < 80;
+        respBoxEl.innerHTML = renderDeckTileBodyInnerHtml(thread);
+        if (isRunning && wasNearBottom) {
+          respBoxEl.scrollTop = respBoxEl.scrollHeight;
+        }
+      }
+
+      const actionWrapEl = document.getElementById(`deckActionWrap_${safeId}`);
+      if (actionWrapEl) {
+        const escTid = escapeHtml(threadId);
+        actionWrapEl.innerHTML = isRunning
+          ? `<button type="button" class="btn" style="padding:5px 11px; font-size:12px; border-color:var(--danger); color:#fca5a5;" onclick="stopDeckTileTurn('${escTid}')">⏹ Stop</button>`
+          : `<button type="button" class="btn btn-primary" style="padding:5px 13px; font-size:12px; font-weight:700;" onclick="sendDeckTilePrompt('${escTid}')">Send ↵</button>`;
+      }
+    }
+
+    function syncDeckOnSseEvent(threadId, evt) {
+      updateDeckToggleBtn();
+      if (!isDeckViewOpen) return;
+      if (evt && (evt.type === 'thread_moved' || evt.type === 'done')) {
+        if (evt.newThread && evt.oldThreadId) {
+          for (const [k, v] of projectSelectedThreadMap.entries()) {
+            if (v === evt.oldThreadId) projectSelectedThreadMap.set(k, evt.newThread.id);
+          }
+          if (pinnedDeckIds.has(evt.oldThreadId)) {
+            pinnedDeckIds.delete(evt.oldThreadId);
+            pinnedDeckIds.add(evt.newThread.id);
+          }
+          saveDeckPrefs();
+        }
+        renderDeckView(true);
+        syncDeckTileLive(threadId);
+      } else {
+        syncDeckTileLive(threadId);
+      }
+    }
+
+    function updateDeckLiveTimers() {
+      if (!isDeckViewOpen) return;
+      for (const tid of runningThreadIds) {
+        const streamInfo = threadStreams.get(tid);
+        if (!streamInfo) continue;
+        const safeId = domSafeId(tid);
+        const tokEl = document.getElementById(`deckTok_${safeId}`);
+        const elEl = document.getElementById(`deckEl_${safeId}`);
+        if (tokEl) tokEl.textContent = `🪙 ${computeLiveStreamTokens(streamInfo).toLocaleString()} ↑`;
+        if (elEl && !streamInfo.failed) elEl.textContent = `⏱️ ${formatElapsedSince(streamInfo.startedAt)}`;
+      }
+    }
+
+    async function stopDeckTileTurn(threadId) {
+      if (!threadId) return;
+      await apiFetch('/api/stop', {
+        method: 'POST',
+        body: JSON.stringify({ threadId })
+      });
+    }
+
+    async function sendDeckTilePrompt(threadId, overridePrompt) {
+      if (!threadId || isThreadRunning(threadId)) return;
+      const safeId = domSafeId(threadId);
+      const inputEl = document.getElementById(`deckInput_${safeId}`);
+      const prompt = typeof overridePrompt === 'string'
+        ? overridePrompt.trim()
+        : (inputEl ? inputEl.value.trim() : (deckDraftPrompts.get(threadId) || '').trim());
+      if (!prompt) return;
+
+      deckDraftPrompts.delete(threadId);
+      if (inputEl) {
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+      }
+
+      const curT = (hubData.state.threads || []).find(t => t.id === threadId);
+      const tileEngineMode = getThreadEngine(curT);
+      const selectedAgyModel = curT?.agyModel || document.getElementById('agyModelSelect')?.value;
+      const selectedAgyEffort = curT?.agyEffort || document.getElementById('agyEffortSelect')?.value;
+      const selectedCodexModel = curT?.codexModel || document.getElementById('codexModelSelect')?.value;
+      const selectedCodexEffort = curT?.codexEffort || document.getElementById('codexEffortSelect')?.value;
+      const route = getPredictedAutoRoute(prompt);
+      const initialEngine = tileEngineMode === 'auto' ? route.engine : (tileEngineMode === 'codex' ? 'codex' : 'antigravity');
+      const initialModel = tileEngineMode === 'auto' ? route.label : (initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel);
+      const initialEffort = tileEngineMode === 'auto' ? route.effort : (initialEngine === 'codex' ? selectedCodexEffort : selectedAgyEffort);
+
+      runningThreadIds.add(threadId);
+      const streamInfo = {
+        userPrompt: prompt,
+        accumulatedText: '',
+        statusText: '● Starting…',
+        badgeHtml: formatStreamBadgeHtml(initialEngine, initialModel, initialEffort),
+        engine: initialEngine,
+        model: initialModel,
+        effort: initialEffort,
+        narratives: [],
+        thinkingSteps: [],
+        switchNotices: [],
+        usage: { input_tokens: Math.max(1, Math.round(prompt.length / 4)), output_tokens: 0, total_tokens: Math.max(1, Math.round(prompt.length / 4)) },
+        startedAt: new Date().toISOString(),
+        startedAtMs: Date.now(),
+        baseMsgCount: Array.isArray(curT?.messages) ? curT.messages.length : -1,
+        baseHubRev: curT?.hubRev || 0
+      };
+      threadStreams.set(threadId, streamInfo);
+      renderThreads();
+      syncDeckTileLive(threadId);
+
+      let handedOff = false;
+      try {
+        const res = await apiFetch('/api/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            threadId,
+            prompt,
+            engineMode: tileEngineMode,
+            agyModel: selectedAgyModel,
+            agyEffort: selectedAgyEffort,
+            codexModel: selectedCodexModel,
+            codexEffort: selectedCodexEffort,
+            executionMode: document.getElementById('execModeSelect')?.value || 'agent',
+            attachments: [],
+            autopilot: deckTileAutopilot.has(threadId) || autopilotLoopEnabled
+          })
+        });
+        if (!res.ok) {
+          let errMsg = `HTTP ${res.status}`;
+          try {
+            const ej = await res.json();
+            if (ej.error) errMsg = ej.error;
+          } catch {}
+          throw new Error(errMsg);
+        }
+        await consumeSseResponse(res, threadId, streamInfo);
+      } catch (err) {
+        const effTid = streamInfo.effectiveThreadId || threadId;
+        const rec = await recoverDroppedTurn(effTid, streamInfo, err?.message || 'Connection dropped');
+        if (rec.action === 'reattach') {
+          handedOff = true;
+          runningThreadIds.delete(threadId);
+          runningThreadIds.delete(effTid);
+          await reattachTurnStream(rec.turn, streamInfo);
+          return;
+        }
+        if (rec.action === 'synced' || rec.action === 'cancelled') {
+          streamInfo.failed = false;
+        } else {
+          streamInfo.failed = true;
+          streamInfo.statusText = 'Error';
+          streamInfo.accumulatedText = '⚠️ ' + (rec.message || err?.message || 'Execution failed');
+          deckDraftPrompts.set(effTid, prompt);
+          const inp = document.getElementById(`deckInput_${domSafeId(effTid)}`);
+          if (inp && !inp.value.trim()) inp.value = prompt;
+        }
+      } finally {
+        if (!handedOff) {
+          const effTid = streamInfo.effectiveThreadId || threadId;
+          runningThreadIds.delete(threadId);
+          runningThreadIds.delete(effTid);
+          if (!streamInfo.failed) {
+            threadStreams.delete(threadId);
+            threadStreams.delete(effTid);
+          }
+          renderThreads();
+          syncDeckTileLive(effTid);
+        }
+      }
+    }
+
+    function toggleTileVoiceInput(threadId) {
+      const safeId = domSafeId(threadId);
+      const btn = document.getElementById(`deckMic_${safeId}`);
+      const ta = document.getElementById(`deckInput_${safeId}`);
+      if (!ta || !btn) return;
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        alert('Voice input is not supported in this browser. Use Safari, Chrome, or Edge.');
+        return;
+      }
+      if (_voiceActive) {
+        if (_voiceRec) _voiceRec.stop();
+        return;
+      }
+      _voiceRec = new SR();
+      _voiceRec.lang = navigator.language || 'en-US';
+      _voiceRec.continuous = true;
+      _voiceRec.interimResults = true;
+      const baseText = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+      let finalText = '';
+      _voiceRec.onstart = () => {
+        _voiceActive = true;
+        btn.textContent = '⏹ Stop';
+        btn.style.borderColor = 'var(--danger)';
+      };
+      _voiceRec.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) finalText += r[0].transcript;
+          else interim += r[0].transcript;
+        }
+        ta.value = baseText + finalText + interim;
+        onDeckInput(ta, threadId);
+      };
+      _voiceRec.onerror = () => {};
+      _voiceRec.onend = () => {
+        _voiceActive = false;
+        btn.textContent = '🎤 Voice';
+        btn.style.borderColor = '';
+        ta.focus();
+      };
+      try { _voiceRec.start(); } catch {}
     }
 
     initHub();

@@ -676,9 +676,10 @@ function readAgyNative(convId, file, thread) {
         const cleaned = step.content
           .replace(/<USER_REQUEST>\s*/g, '')
           .replace(/\s*<\/USER_REQUEST>[\s\S]*$/g, '')
-          .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
+          .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session|Token-Wise Continuation Session)[\s\S]*?<\/conversation_history>\s*/g, '')
           .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
           .replace(/<autopilot_step_instruction>[\s\S]*?<\/autopilot_step_instruction>/gi, '')
+          .replace(/<token_wise_capability>[\s\S]*?<\/token_wise_capability>/gi, '')
           .trim();
         if (cleaned) {
           currentTurn = null;
@@ -808,9 +809,10 @@ function stripInternalCodexTags(text) {
     .replace(/<model_switch>[\s\S]*?<\/model_switch>/gi, '')
     .replace(/<permissions[\s\S]*?<\/permissions>/gi, '')
     .replace(/<collaboration_mode>[\s\S]*?<\/collaboration_mode>/gi, '')
-    .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session)[\s\S]*?<\/conversation_history>\s*/g, '')
+    .replace(/\[(Cross-Engine Context Sync|Compacted Checkpoint Session|Token-Wise Continuation Session)[\s\S]*?<\/conversation_history>\s*/g, '')
     .replace(/<lightweight_query_hint>[\s\S]*?<\/lightweight_query_hint>/gi, '')
     .replace(/<autopilot_step_instruction>[\s\S]*?<\/autopilot_step_instruction>/gi, '')
+    .replace(/<token_wise_capability>[\s\S]*?<\/token_wise_capability>/gi, '')
     .trim();
 }
 
@@ -1007,6 +1009,17 @@ function sameContent(a, b) {
   return longer.includes(shorter.slice(0, 120));
 }
 
+function estimateMessagesTokens(msgs = []) {
+  let chars = 0;
+  for (const m of msgs) {
+    chars += String(m.content || '').length;
+    if (Array.isArray(m.narratives)) chars += m.narratives.join(' ').length;
+    if (Array.isArray(m.thinkingSteps)) chars += m.thinkingSteps.join(' ').length;
+    if (Array.isArray(m.actions)) chars += m.actions.join(' ').length * 2;
+  }
+  return Math.max(0, Math.round(chars / 4));
+}
+
 function updateThreadContextStats(thread) {
   if (!thread) return;
   if (thread.pendingCompact) {
@@ -1016,13 +1029,20 @@ function updateThreadContextStats(thread) {
   const msgs = thread.messages || [];
   const startIdx = Number(thread.compactedAtMsgCount || 0);
   const activeSlice = startIdx > 0 && startIdx <= msgs.length ? msgs.slice(startIdx) : msgs;
-  const lastAsst = [...activeSlice].reverse().find((m) => m.role === 'assistant' && m.usage && (m.usage.input_tokens || m.usage.total_tokens));
+  const realTurns = activeSlice.filter((m) => !m.isTokenWiseMoveNotice && !m.isTokenWiseHandoff);
+  const lastAsst = [...realTurns].reverse().find((m) => m.role === 'assistant' && m.usage && (m.usage.input_tokens || m.usage.total_tokens));
   if (lastAsst && lastAsst.usage) {
     const u = lastAsst.usage;
-    const ctxTok = Number(u.input_tokens || 0);
+    const ctxTok = Number(u.input_tokens || u.total_tokens || 0);
     const cachedTok = Number(u.cached_input_tokens || u.cache_read_tokens || 0);
     thread.contextTokens = ctxTok;
     thread.cachePct = ctxTok > 0 ? Math.min(100, Math.round((cachedTok / ctxTok) * 100)) : 0;
+  } else if (realTurns.length > 0) {
+    thread.contextTokens = Math.max(800, estimateMessagesTokens(realTurns));
+    thread.cachePct = 0;
+  } else if (thread.movedFrom && thread.movedFrom.estimatedNewTokens) {
+    thread.contextTokens = Number(thread.movedFrom.estimatedNewTokens);
+    thread.cachePct = 0;
   } else if (startIdx > 0 && activeSlice.length === 0) {
     thread.contextTokens = 0;
     thread.cachePct = 0;
@@ -1048,6 +1068,326 @@ function compactThreadSession(thread, reason = 'manual') {
   thread.contextTokens = 0;
   writeContextFile(thread, thread.messages || []);
   return { prevTokens, reason };
+}
+
+function extractOpenItemsFromMessages(msgs = []) {
+  const realAsst = [...msgs].reverse().find((m) => m.role === 'assistant' && m.content && !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice);
+  if (!realAsst || !realAsst.content) return '';
+  const text = String(realAsst.content);
+  const sectionMatch = text.match(/(?:^|\n)#{1,4}\s*(?:next\s+steps?|open\s+(?:items?|questions?|tasks?)|remaining\s+(?:tasks?|work)|todo|action\s+items?|what'?s\s+next)[^\n]*\n([\s\S]{15,900})/i);
+  if (sectionMatch && sectionMatch[1]) {
+    const lines = sectionMatch[1]
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^([-*•]|\d+[.)])\s+/.test(l))
+      .slice(0, 6);
+    if (lines.length > 0) return lines.join('\n');
+  }
+  const tailLines = text
+    .slice(-1200)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^([-*•]|\d+[.)])\s+/.test(l))
+    .slice(-5);
+  return tailLines.length > 0 ? tailLines.join('\n') : '';
+}
+
+function parseAgentMoveDirective(text) {
+  const raw = String(text || '');
+  const m = raw.match(/<move_to_new_conversation(?:\s+title="([^"]*)")?\s*>([\s\S]*?)<\/move_to_new_conversation>/i);
+  if (!m) return { matched: false, cleanText: raw };
+  const title = (m[1] || '').trim();
+  const movedItems = (m[2] || '').trim();
+  const cleanText = raw.replace(m[0], '').trim();
+  return { matched: true, title, movedItems, cleanText };
+}
+
+function detectUserMoveToNewChatIntent(prompt) {
+  const clean = String(prompt || '').trim();
+  if (!clean) return { matched: false };
+
+  const slashMatch = clean.match(/^\/(move|newchat|branch|handover|tokenwise)(?:\s+([\s\S]*))?$/i);
+  if (slashMatch) {
+    const rest = (slashMatch[2] || '').trim();
+    return {
+      matched: true,
+      reason: 'slash-command',
+      movedItems: rest || null,
+      followUpPrompt: rest || null
+    };
+  }
+
+  const naturalMove = clean.match(/^(?:please\s+|now\s+|let'?s\s+|can\s+you\s+)?(?:move|transfer|branch|carry\s+over|hand\s*off)\s+(?:this(?:\s+conversation|\s+chat|\s+session)?|everything(?:\s+needed)?|what\s+needs\s+to\s+be\s+moved|the\s+context)\s+(?:to|into)\s+a?\s*new\s+(?:token[- ]?wise\s+)?(?:conversation|chat|thread|session)(?:[\s,.:;-]+([\s\S]*))?$/i);
+  if (naturalMove) {
+    const rest = (naturalMove[1] || '').trim();
+    return {
+      matched: true,
+      reason: 'user-request',
+      movedItems: rest || null,
+      followUpPrompt: rest || null
+    };
+  }
+
+  return { matched: false };
+}
+
+function createTokenWiseContinuationThread(sourceThread, options = {}) {
+  if (!sourceThread) return null;
+  loadThreadHistory(sourceThread);
+  updateThreadContextStats(sourceThread);
+
+  const allSourceMsgs = (sourceThread.messages || []).filter((m) => !m.isTokenWiseMoveNotice);
+  let sourceMsgs = allSourceMsgs;
+  if (options.upToMessageId) {
+    const idx = allSourceMsgs.findIndex((m) => m.id === options.upToMessageId);
+    if (idx !== -1) sourceMsgs = allSourceMsgs.slice(0, idx + 1);
+  }
+
+  const realMsgs = sourceMsgs.filter((m) => !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice);
+  const prevTokens = Math.max(
+    Number(sourceThread.contextTokens || 0),
+    Number(sourceThread.compactedFromTokens || 0),
+    Math.max(1200, estimateMessagesTokens(realMsgs))
+  );
+
+  const transcriptFile = writeContextFile(sourceThread, sourceMsgs);
+  const recentActions = collectRecentActions(sourceThread, sourceMsgs).slice(-8);
+  const gitSummary = getGitSummary(sourceThread.projectPath);
+  const cpPath = sourceThread.projectPath ? path.join(sourceThread.projectPath, 'CHECKPOINT.md') : null;
+  const checkpointFile = cpPath && fs.existsSync(cpPath) ? cpPath : null;
+
+  const firstUserMsg = realMsgs.find((m) => m.role === 'user' && m.content && m.content.trim());
+  const initialGoal = firstUserMsg
+    ? truncate(firstUserMsg.content.replace(/\s+/g, ' ').trim(), 360)
+    : (sourceThread.movedFrom?.initialGoal || '');
+
+  const recentTurns = realMsgs.slice(-4);
+  const recentDigestBullets = recentTurns
+    .map((m) => {
+      const who = m.role === 'user' ? '👤 **User**' : `🤖 **Assistant (${m.engine === 'codex' ? 'Codex' : 'Antigravity'})**`;
+      const summary = truncate(String(m.content || '').replace(/\s+/g, ' ').trim(), 420);
+      return `- ${who}: ${summary}`;
+    })
+    .join('\n');
+
+  const promptHistoryText = recentTurns
+    .map((m) => {
+      const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
+      return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1100)}${att}`;
+    })
+    .join('\n\n');
+
+  const autoOpenItems = extractOpenItemsFromMessages(realMsgs);
+  const movedItems = String(options.movedItems || options.customNote || autoOpenItems || '').trim();
+
+  // Carry over attachments from explicit options plus recent turns
+  const attMap = new Map();
+  for (const a of sanitizeAttachments(options.attachments || [])) {
+    if (a.path) attMap.set(a.path, a);
+  }
+  for (const m of recentTurns) {
+    for (const a of sanitizeAttachments(m.attachments || [])) {
+      if (a.path && !attMap.has(a.path)) attMap.set(a.path, a);
+    }
+  }
+  const carriedAttachments = Array.from(attMap.values()).slice(-8);
+
+  const baseTitle = String(sourceThread.title || 'Session')
+    .replace(/\s*(?:\(Token-Wise\s*#\d+\)|\[Token-Wise\s*#\d+\]|\(Cont\.\s*#\d+\))\s*$/i, '')
+    .trim() || 'Session';
+  const siblingCount = (appState.threads || []).filter(
+    (t) => t.parentThreadId === sourceThread.id || (t.title && t.title.startsWith(`${baseTitle.slice(0, 40)} (Token-Wise #`))
+  ).length;
+  const newTitle = options.newTitle
+    ? String(options.newTitle).trim().slice(0, 80)
+    : `${baseTitle.slice(0, 62)} (Token-Wise #${siblingCount + 1})`;
+
+  const estimatedBriefingChars =
+    (initialGoal.length || 0) +
+    (movedItems.length || 0) +
+    (promptHistoryText.length || 0) +
+    recentActions.join('\n').length +
+    Math.min(700, (gitSummary || '').length) +
+    450;
+  const estimatedNewTokens = Math.max(900, Math.min(2600, Math.round(estimatedBriefingChars / 4)));
+  const savedTokens = Math.max(0, prevTokens - estimatedNewTokens);
+  const savedPct = prevTokens > estimatedNewTokens
+    ? Math.min(99, Math.max(15, Math.round((savedTokens / prevTokens) * 100)))
+    : 80;
+
+  const reason = options.reason || 'manual';
+  const reasonLabel =
+    reason === 'auto-token-threshold'
+      ? `Automatic token-wise rollover (active context reached ${Math.round(prevTokens / 1000)}k tokens)`
+      : reason === 'agent-directive'
+      ? 'Agent-initiated token-wise continuation'
+      : reason === 'slash-command'
+      ? 'Token-wise handoff command (/move)'
+      : reason === 'user-request'
+      ? 'User-requested token-wise conversation move'
+      : 'Moved to fresh token-wise conversation';
+
+  const lastAsst = [...realMsgs].reverse().find((m) => m.role === 'assistant');
+  const nativeEngine = sourceThread.origin === 'vscode' || sourceThread.origin === 'codex' ? 'codex' : 'antigravity';
+  const defaultEngine = lastAsst?.engine || nativeEngine;
+  const nowIso = new Date().toISOString();
+
+  const handoffContentLines = [
+    `🌱 **Token-Wise Continuation Conversation** *(Branched from **${sourceThread.title}**)*`,
+    `> **Why this new conversation was created:** ${reasonLabel}.`,
+    `> **Token-Wise Savings:** Active context reduced from **${prevTokens.toLocaleString()} tokens/turn** → **~${estimatedNewTokens.toLocaleString()} tokens/turn** (**~${savedPct}% fewer tokens** billed per step).`,
+    '',
+    '### 📦 Everything Moved to This Conversation',
+    `- **Working Directory:** \`${sourceThread.projectPath || DEFAULT_PROJECT_PATH}\``,
+    initialGoal ? `- **Original Conversation Goal:** ${initialGoal}` : '',
+    checkpointFile ? `- **Project Checkpoint File:** \`${checkpointFile}\`` : '',
+    `- **Full Archived Parent Transcript (0-token on-demand lookup):** \`${transcriptFile}\``,
+    carriedAttachments.length
+      ? `- **Carried-Over Attachments (${carriedAttachments.length}):** ${carriedAttachments.map((a) => `\`${a.name}\``).join(', ')}`
+      : '',
+    movedItems ? `\n#### 🎯 Moved Items & Open Tasks\n${movedItems}` : '',
+    recentActions.length
+      ? `\n#### 🛠️ Recent Tool & File Actions Moved Over\n${recentActions.slice(-6).map((a) => `- \`${a}\``).join('\n')}`
+      : '',
+    gitSummary && gitSummary !== 'Git working tree is clean.'
+      ? `\n#### 🌿 Active Git Working Tree\n\`\`\`text\n${truncate(gitSummary, 700)}\n\`\`\``
+      : '',
+    recentDigestBullets
+      ? `\n#### 💬 Distilled Context from Previous Conversation\n${recentDigestBullets}`
+      : ''
+  ].filter(Boolean);
+
+  const handoffMessage = {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    engine: defaultEngine,
+    model: 'Token-Wise Handoff',
+    content: handoffContentLines.join('\n'),
+    attachments: carriedAttachments,
+    narratives: [],
+    thinkingSteps: [],
+    actions: recentActions.slice(-6),
+    usage: { input_tokens: estimatedNewTokens, output_tokens: 0, total_tokens: estimatedNewTokens },
+    fromHub: true,
+    isTokenWiseHandoff: true,
+    parentThreadId: sourceThread.id,
+    parentThreadTitle: sourceThread.title,
+    prevTokens,
+    estimatedNewTokens,
+    savedPct,
+    timestamp: nowIso
+  };
+
+  // Preserve conversational complexity momentum across the rollover
+  const recentTaskAnalysis = classifyTaskComplexity('', carriedAttachments, sourceThread);
+
+  const movedFrom = {
+    threadId: sourceThread.id,
+    title: sourceThread.title,
+    prevTokens,
+    estimatedNewTokens,
+    savedTokens,
+    savedPct,
+    reason,
+    reasonLabel,
+    initialGoal,
+    movedItems,
+    transcriptFile,
+    checkpointFile,
+    recentActions,
+    gitSummary,
+    carriedAttachments,
+    digestText: recentDigestBullets,
+    promptHistoryText,
+    priorComplexityScore: recentTaskAnalysis?.requiredScore || 84,
+    priorDomain: recentTaskAnalysis?.domain || 'coding',
+    movedAt: nowIso
+  };
+
+  const newThread = {
+    id: crypto.randomUUID(),
+    origin: 'hub',
+    originatorLabel: 'AI Studio Hub (Token-Wise)',
+    projectId: sourceThread.projectId || 'default',
+    projectName: sourceThread.projectName || 'Workspace',
+    projectPath: sourceThread.projectPath || DEFAULT_PROJECT_PATH,
+    title: newTitle,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    agyConversationId: null,
+    codexSessionId: null,
+    hubSessionIds: [],
+    engineMode: sourceThread.engineMode,
+    agyModel: sourceThread.agyModel,
+    agyEffort: sourceThread.agyEffort,
+    codexModel: sourceThread.codexModel,
+    codexEffort: sourceThread.codexEffort,
+    parentThreadId: sourceThread.id,
+    parentThreadTitle: sourceThread.title,
+    movedFrom,
+    contextTokens: estimatedNewTokens,
+    cachePct: 0,
+    messagesLoaded: true,
+    messages: [handoffMessage],
+    hubRev: 1
+  };
+
+  sourceThread.movedTo = {
+    threadId: newThread.id,
+    title: newThread.title,
+    prevTokens,
+    estimatedNewTokens,
+    savedPct,
+    reason,
+    movedAt: nowIso
+  };
+
+  if (!options.suppressSourceNotice) {
+    const moveNoticeMsg = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      engine: defaultEngine,
+      model: 'Token-Wise Handoff',
+      content:
+        `↗️ **Moved to New Token-Wise Conversation:** **${newThread.title}**\n\n` +
+        `To stay token-wise (**${prevTokens.toLocaleString()} → ~${estimatedNewTokens.toLocaleString()} tokens/turn**, saving **~${savedPct}%** per step), all essential context, open tasks, active workspace files, git state, and attachments were moved to a fresh conversation.`,
+      narratives: [],
+      thinkingSteps: [],
+      actions: [],
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      fromHub: true,
+      isTokenWiseMoveNotice: true,
+      childThreadId: newThread.id,
+      childThreadTitle: newThread.title,
+      prevTokens,
+      estimatedNewTokens,
+      savedPct,
+      timestamp: nowIso
+    };
+    sourceThread.messages = sourceThread.messages || [];
+    sourceThread.messages.push(moveNoticeMsg);
+    sourceThread.updatedAt = nowIso;
+    sourceThread.hubRev = (sourceThread.hubRev || 0) + 1;
+  }
+
+  appState.threads = (appState.threads || []).filter((t) => t.id !== newThread.id);
+  appState.threads.unshift(newThread);
+  saveState(appState);
+  writeContextFile(newThread, newThread.messages);
+  syncCrossAppMemory();
+
+  const noticeBannerText = `🌱 Token-Wise New Conversation created from "${sourceThread.title}" (${Math.round(prevTokens / 1000)}k → ~${(estimatedNewTokens / 1000).toFixed(1)}k tokens/turn • ~${savedPct}% saved). All essential context, files & attachments moved automatically.`;
+
+  return {
+    newThread,
+    sourceThread,
+    handoffMessage,
+    prevTokens,
+    estimatedNewTokens,
+    savedTokens,
+    savedPct,
+    noticeBannerText
+  };
 }
 
 function loadThreadHistory(thread, force = false) {
@@ -1109,6 +1449,8 @@ function loadThreadHistory(thread, force = false) {
 const DEFAULT_SETTINGS = {
   defaultEngine: 'auto',
   autoSwitchThresholdPct: 12,
+  autoNewChatThresholdTokens: 110000,
+  autoCompactThresholdTokens: 150000,
   agyModel: 'gemini-4-argon-medium',
   agyEffort: 'medium',
   codexModel: 'gpt-6.1-sol',
@@ -1202,12 +1544,75 @@ function syncDiscovery(force = false) {
   lastDiscoveryAt = Date.now();
 }
 
+function buildDeckPreview(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  let lastUser = null;
+  let lastAssistant = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (!lastAssistant && m.role === 'assistant' && !m.isTokenWiseMoveNotice) {
+      lastAssistant = m;
+    }
+    if (!lastUser && m.role === 'user') {
+      lastUser = m;
+    }
+    if (lastUser && lastAssistant) break;
+  }
+  if (!lastAssistant) {
+    lastAssistant = [...messages].reverse().find((m) => m && m.role === 'assistant') || null;
+  }
+  if (!lastUser && !lastAssistant) return null;
+  const nars = Array.isArray(lastAssistant?.narratives) ? lastAssistant.narratives.filter(Boolean) : [];
+  return {
+    lastUserText: lastUser?.content ? truncate(String(lastUser.content).trim(), 400) : '',
+    lastUserAt: lastUser?.timestamp || null,
+    lastAssistantText: lastAssistant?.content ? truncate(String(lastAssistant.content).trim(), 2400) : '',
+    lastAssistantEngine: lastAssistant?.engine || null,
+    lastAssistantModel: lastAssistant?.model || null,
+    lastAssistantAt: lastAssistant?.timestamp || null,
+    narrativesCount: nars.length,
+    lastNarrative: nars.length > 0 ? truncate(String(nars[nars.length - 1]).trim(), 220) : null
+  };
+}
+
+function warmDeckPreviews() {
+  try {
+    const threads = appState.threads || [];
+    const candidates = new Set();
+    // 1. Most recent thread per project
+    const seenProjects = new Set();
+    for (const t of threads) {
+      const pKey = t.projectId || t.projectPath || 'default';
+      if (!seenProjects.has(pKey)) {
+        seenProjects.add(pKey);
+        candidates.add(t);
+      }
+      if (candidates.size >= 14) break;
+    }
+    // 2. Top 8 most recent threads overall
+    for (let i = 0; i < Math.min(8, threads.length); i++) {
+      candidates.add(threads[i]);
+    }
+    for (const t of candidates) {
+      if (!t.messagesLoaded) {
+        try {
+          loadThreadHistory(t, false);
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 function summarizeThread(t) {
   const { messages, nativeActions, loadedKey, ...rest } = t;
-  return { ...rest, messageCount: (messages || []).length };
+  const deckPreview = buildDeckPreview(messages) || t.deckPreview || null;
+  if (deckPreview) t.deckPreview = deckPreview;
+  return { ...rest, messageCount: (messages || []).length, deckPreview };
 }
 
 function publicState() {
+  warmDeckPreviews();
   return { projects: appState.projects, threads: appState.threads.map(summarizeThread), settings: appState.settings };
 }
 
@@ -1237,19 +1642,27 @@ function isAllowedWorkspacePath(p) {
 // ---------------------------------------------------------------------------
 // 7. Live Quota & Model Telemetry
 // ---------------------------------------------------------------------------
+const AGY_HUB_CACHE_FILE = path.join(DATA_DIR, 'agy_hub_cache.json');
 let cachedAgyHubInfo = null;
+try {
+  if (fs.existsSync(AGY_HUB_CACHE_FILE)) {
+    const parsed = JSON.parse(fs.readFileSync(AGY_HUB_CACHE_FILE, 'utf8'));
+    if (parsed && parsed.port && parsed.csrf) cachedAgyHubInfo = parsed;
+  }
+} catch {}
 let agyStatusCache = { at: 0, value: null };
 let codexStatusCache = { at: 0, value: null };
 
 const DEFAULT_AGY_MODELS = [
   ['Gemini 4 Argon', ['high', 'medium', 'low'], 'gemini-4-argon'],
+  ['Gemini 4 Hydrogen', ['xhigh', 'high', 'medium', 'low'], 'gemini-4-hydrogen'],
   ['Gemini 3.8 Flash', ['high', 'medium', 'low'], 'gemini-3.8-flash'],
   ['Claude Opus 5.5', ['high', 'medium', 'low'], 'claude-opus-5-5'],
   ['Claude Sonnet 5.5', ['high', 'medium', 'low'], 'claude-sonnet-5-5'],
   ['GPT-OSS 120B', ['medium'], 'gpt-oss-120b']
 ].flatMap(([family, efforts, slug]) =>
   efforts.map((e) => ({
-    label: `${family} (${e[0].toUpperCase()}${e.slice(1)})`,
+    label: `${family} (${e === 'xhigh' ? 'XHigh' : e[0].toUpperCase() + e.slice(1)})`,
     modelId: `${slug}-${e}`,
     family,
     effort: e,
@@ -1259,23 +1672,35 @@ const DEFAULT_AGY_MODELS = [
 );
 
 let lastHubCheckTime = 0;
-async function discoverAgyHubProcess() {
-  if (cachedAgyHubInfo) return cachedAgyHubInfo;
-  if (Date.now() - lastHubCheckTime < 25000) return null;
+let hubDiscoveryPromise = null;
+async function discoverAgyHubProcess(force = false) {
+  if (cachedAgyHubInfo && !force) return cachedAgyHubInfo;
+  if (hubDiscoveryPromise) return hubDiscoveryPromise;
+  if (!force && Date.now() - lastHubCheckTime < 10000) return null;
   lastHubCheckTime = Date.now();
   // Unofficial: the Antigravity app runs `agy --hub` with a port and CSRF token on its command line.
-  try {
-    const out = await runPowerShell(
-      `Get-CimInstance Win32_Process -Filter "Name = 'agy.exe' AND CommandLine LIKE '%--hub-port=%'" | Select-Object -First 1 -ExpandProperty CommandLine`,
-      { timeoutMs: 3000 }
-    );
-    const portMatch = out && out.match(/--hub-port=(\d+)/);
-    const csrfMatch = out && out.match(/--csrf_token=([^\s"]+)/);
-    cachedAgyHubInfo = portMatch && csrfMatch ? { port: portMatch[1], csrf: csrfMatch[1] } : null;
-    return cachedAgyHubInfo;
-  } catch {
-    return null;
-  }
+  hubDiscoveryPromise = (async () => {
+    try {
+      const out = await runPowerShell(
+        `Get-CimInstance Win32_Process -Filter "Name = 'agy.exe' AND CommandLine LIKE '%--hub-port=%'" | Select-Object -First 1 -ExpandProperty CommandLine`,
+        { timeoutMs: 12000 }
+      );
+      const portMatch = out && out.match(/--hub-port=(\d+)/);
+      const csrfMatch = out && out.match(/--csrf_token=([^\s"]+)/);
+      cachedAgyHubInfo = portMatch && csrfMatch ? { port: portMatch[1], csrf: csrfMatch[1] } : null;
+      if (cachedAgyHubInfo) {
+        try {
+          fs.writeFileSync(AGY_HUB_CACHE_FILE, JSON.stringify(cachedAgyHubInfo), 'utf8');
+        } catch {}
+      }
+      return cachedAgyHubInfo;
+    } catch {
+      return null;
+    } finally {
+      hubDiscoveryPromise = null;
+    }
+  })();
+  return hubDiscoveryPromise;
 }
 
 async function queryAgyHub(h) {
@@ -1290,61 +1715,84 @@ async function queryAgyHub(h) {
 }
 
 async function getAgyStatus(force = false) {
-  if (!force && agyStatusCache.value && Date.now() - agyStatusCache.at < 20000) return agyStatusCache.value;
+  if (!force && agyStatusCache.value && agyStatusCache.value.connected && Date.now() - agyStatusCache.at < 20000) {
+    return agyStatusCache.value;
+  }
 
   let value = { connected: false, source: 'unofficial-local-api', models: DEFAULT_AGY_MODELS, pools: [], user: null };
   try {
-    let hub = cachedAgyHubInfo || (await discoverAgyHubProcess());
-    if (!hub) {
-      agyStatusCache = { at: Date.now(), value };
-      return value;
-    }
-    let data;
-    try {
-      data = await queryAgyHub(hub);
-    } catch {
-      cachedAgyHubInfo = null;
-      agyStatusCache = { at: Date.now(), value };
-      return value;
-    }
-
-    const us = data.userStatus || {};
-    const models = (us.cascadeModelConfigData?.clientModelConfigs || [])
-      .filter((m) => !m.disabled && !String(m.modelId || '').endsWith('-disabled'))
-      .map((m) => {
-        const effortMatch = m.label.match(/\((Low|Medium|High|XHigh|Max)\)/i);
-        let remainingPct = 100;
-        if (m.quotaInfo?.remainingFraction != null) {
-          remainingPct = Math.round(m.quotaInfo.remainingFraction * 1000) / 10;
-        } else if (m.quotaInfo?.resetTime) {
-          const resetMs = new Date(m.quotaInfo.resetTime).getTime();
-          if (resetMs > Date.now()) remainingPct = 0;
+    let hub = cachedAgyHubInfo || (await discoverAgyHubProcess(force));
+    let data = null;
+    if (hub) {
+      try {
+        data = await queryAgyHub(hub);
+      } catch {
+        cachedAgyHubInfo = null;
+        const rediscovered = await discoverAgyHubProcess(true);
+        if (rediscovered) {
+          try {
+            data = await queryAgyHub(rediscovered);
+          } catch {
+            cachedAgyHubInfo = null;
+          }
         }
-        return {
-          label: m.label,
-          modelId: m.modelId,
-          family: m.label.replace(/\s*\([^)]+\)\s*$/, '').trim(),
-          effort: effortMatch ? effortMatch[1].toLowerCase() : 'medium',
-          remainingPct,
-          resetTime: m.quotaInfo?.resetTime || null,
-          supportsImages: !!m.supportsImages
-        };
-      });
-
-    const pools = new Map();
-    for (const m of models) {
-      if (!pools.has(m.family)) pools.set(m.family, { family: m.family, remainingPct: m.remainingPct, resetTime: m.resetTime });
+      }
     }
 
-    value = {
-      connected: true,
-      source: 'unofficial-local-api',
-      user: { name: us.name, email: us.email, tier: us.userTier?.name || us.planStatus?.planInfo?.planName || 'Pro' },
-      models: models.length ? models : DEFAULT_AGY_MODELS,
-      pools: Array.from(pools.values())
-    };
+    if (data) {
+      const us = data.userStatus || {};
+      const models = (us.cascadeModelConfigData?.clientModelConfigs || [])
+        .filter((m) => !m.disabled && !String(m.modelId || '').endsWith('-disabled'))
+        .map((m) => {
+          const effortMatch = m.label.match(/\((Low|Medium|High|XHigh|Max)\)/i);
+          let remainingPct = 100;
+          if (m.quotaInfo?.remainingFraction != null) {
+            remainingPct = Math.round(m.quotaInfo.remainingFraction * 1000) / 10;
+          } else if (m.quotaInfo?.resetTime) {
+            const resetMs = new Date(m.quotaInfo.resetTime).getTime();
+            if (resetMs > Date.now()) remainingPct = 0;
+          }
+          return {
+            label: m.label,
+            modelId: m.modelId,
+            family: m.label.replace(/\s*\([^)]+\)\s*$/, '').trim(),
+            effort: effortMatch ? effortMatch[1].toLowerCase() : 'medium',
+            remainingPct,
+            resetTime: m.quotaInfo?.resetTime || null,
+            supportsImages: !!m.supportsImages
+          };
+        });
+
+      const pools = new Map();
+      for (const m of models) {
+        if (!pools.has(m.family)) pools.set(m.family, { family: m.family, remainingPct: m.remainingPct, resetTime: m.resetTime });
+      }
+
+      value = {
+        connected: true,
+        source: 'unofficial-local-api',
+        updatedAt: new Date().toISOString(),
+        user: { name: us.name, email: us.email, tier: us.userTier?.name || us.planStatus?.planInfo?.planName || 'Pro' },
+        models: models.length ? models : DEFAULT_AGY_MODELS,
+        pools: Array.from(pools.values())
+      };
+      try {
+        fs.writeFileSync(path.join(PUBLIC_DIR, 'agy-live-quotas.json'), JSON.stringify(value, null, 2), 'utf8');
+      } catch {}
+    }
   } catch (err) {
     value.error = err.message;
+  }
+  if (!value.connected) {
+    try {
+      const snapFile = path.join(PUBLIC_DIR, 'agy-live-quotas.json');
+      if (fs.existsSync(snapFile)) {
+        const snap = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
+        if (snap && Array.isArray(snap.models) && snap.models.length) {
+          value = snap;
+        }
+      }
+    } catch {}
   }
   agyStatusCache = { at: Date.now(), value };
   return value;
@@ -1499,7 +1947,7 @@ function resumeDecision(thread, engine) {
       sessionId: null
     };
   }
-  const lastAssistant = [...(thread.messages || [])].reverse().find((m) => m.role === 'assistant');
+  const lastAssistant = [...(thread.messages || [])].reverse().find((m) => m.role === 'assistant' && !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice);
   const sessionId = engine === 'antigravity' ? thread.agyConversationId : thread.codexSessionId;
   if (!sessionId) return { resume: false, reason: 'no-session' };
   const openElsewhere = engine === 'antigravity' ? isAgyConversationOpen(sessionId) : isCodexSessionOpen(sessionId);
@@ -1553,9 +2001,9 @@ const MODEL_BENCHMARK_PROFILES = {
     low:    { intelligence: 80, coding: 79, reasoning: 78, math: 80, costWeight: 0.20, arenaElo: 1312, sweBench: 58.0 }
   },
   'gemini-3.8-flash': {
-    high:   { intelligence: 83, coding: 82, reasoning: 84, math: 86, costWeight: 0.25, arenaElo: 1332, sweBench: 61.5 },
-    medium: { intelligence: 78, coding: 77, reasoning: 76, math: 79, costWeight: 0.14, arenaElo: 1308, sweBench: 55.0 },
-    low:    { intelligence: 72, coding: 70, reasoning: 68, math: 71, costWeight: 0.08, arenaElo: 1282, sweBench: 48.0 }
+    high:   { intelligence: 84, coding: 83, reasoning: 84, math: 86, costWeight: 0.22, arenaElo: 1336, sweBench: 62.5 },
+    medium: { intelligence: 80, coding: 79, reasoning: 79, math: 81, costWeight: 0.12, arenaElo: 1318, sweBench: 57.5 },
+    low:    { intelligence: 76, coding: 74, reasoning: 74, math: 75, costWeight: 0.06, arenaElo: 1298, sweBench: 52.0 }
   },
   'gpt-oss': {
     high:   { intelligence: 78, coding: 76, reasoning: 77, math: 78, costWeight: 0.18, arenaElo: 1305, sweBench: 53.0 },
@@ -1669,26 +2117,30 @@ function classifyTaskComplexity(prompt, attachments = [], thread = null) {
     };
   }
 
-  // 2. Signal detectors across cognitive domains
-  const ARCH_CRITIQUE_SIGNALS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed|consensus|raft|paxos|pareto|trade[- ]?offs?|benchmark(s|ing)?|model rout(er|ing)|auto[- ]?rout(er|ing)|auto mode|holistic review|critique|critical(ly)?|evaluate|comparison|compare|what do (you|u) think|give your opinion|is there a better|how should we|design decision|from scratch|comprehensive review|thoroughly analyze|deep dive|multi-tenant|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|zero[- ]downtime|high[- ]throughput)\b/i;
-  const DEBUG_ROOT_CAUSE_SIGNALS = /\b(race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|load failed|missing answer|dropped stream|root cause|why (does|did|is) (it|this)|sometime(s)? it|intermittent|flaky|hang(s|ing)?|freez(e|es|ing)|crash(es|ed|ing)?|exception|stack ?trace|typeerror|referenceerror|syntaxerror|not working|doesn't work|dont work|broken|bug(s|gy)?|fail(s|ed|ing|ure))\b/i;
-  const MATH_LOGIC_SIGNALS = /\b(formal verification|mathematical proof|theorem|lemma|derivation|eigenvalue|lagrangian|stochastic|differential equation|convex optimization|markov|bayesian|probability distribution|matrix factorization|elo rating|utility function|neowave|wave[- ]count|fibonacci|retracement)\b/i;
+  // 2. Signal detectors across cognitive domains (Arch-Router / RouteLLM intent taxonomy)
+  const ARCH_CRITIQUE_SIGNALS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed|consensus|raft|paxos|pareto|trade[- ]?offs?\s+analysis|model rout(er|ing)|model chooser|auto[- ]?rout(er|ing)|holistic review|critique|critical(ly)?\s+analyze|from scratch|comprehensive review|thoroughly analyze|deep dive|multi-tenant|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|zero[- ]downtime|high[- ]throughput)\b/i;
+  const DEBUG_ROOT_CAUSE_SIGNALS = /\b(race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|load failed|missing answer|dropped stream|root cause|can't see|cannot see|dont see|don't see|not showing|doesn't show|doesnt show|disappeared|intermittent|flaky|hang(s|ing)?|freez(e|es|ing)|crash(es|ed|ing)?|exception|stack ?trace|typeerror|referenceerror|syntaxerror|not working|doesn't work|dont work|broken|bug(s|gy)?|fail(s|ed|ing|ure))\b/i;
+  const MATH_LOGIC_SIGNALS = /\b(formal verification|mathematical proof|theorem|lemma|derivation|eigenvalue|lagrangian|stochastic|differential equation|convex optimization|markov|bayesian|probability distribution|matrix factorization|bradley[- ]terry|elo rating|utility function|neowave|wave[- ]count|fibonacci|retracement)\b/i;
   const CODING_ENG_SIGNALS = /\b(implement(ation)?|refactor(ing)?|migrate|rewrite|build|integrate|wire up|endpoint|route|component|service|module|schema|database|sqlite|sql|regex|parser|compiler|ast|middle-?ware|unit test|test suite|dockerfile|deployment|worker|pwa|service[- ]worker)\b/i;
   const MICRO_EDIT_SIGNALS = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|one[- ]liner|1[- ]liner|bash alias|git status|git push|git commit|rephrase|proofread)\b/i;
-  const ESCALATION_SIGNALS = /\b(too weak|not careful|still (broken|failing|wrong|not)|didn't work|didnt work|wrong answer|bad model|smarter model|more careful|missed the|you broke|try again|be thorough)\b/i;
+  const SIMPLE_QA_OR_CHAT_SIGNALS = /^(if i |can (i|you|u) |does |do (you|u) |is (it|this|there) |what (is|are|does) |how (do|does|can) |where (can|do|is) |who |when |which |tell me about |explain )/i;
+  const ESCALATION_SIGNALS = /\b(too weak|not careful|not good enough|still (is )?(broken|failing|wrong|not|bad|weak)|didn't work|didnt work|wrong answer|bad model|smarter model|more careful|missed the|you broke|try again|be thorough|used argon|wrong model)\b/i;
   const CONTINUATION_ACTION = /^(do it|go ahead|yes|proceed|implement (it|this|that)|build (it|this|that)|apply (it|this|that)|upgrade (it|this)|fix (it|this|that)|please do|let's do it|lets do it|sounds good,? do it)\b/i;
+  const REFERENTIAL_FOLLOWUP = /^(why\??|how so\??|what about\b|and for\b|what do (you|u) think\??|are you sure\??|can (you|u) (fix|change|update|check) (it|that|this)\b|fix (it|that|this)\b)/i;
 
   const bulletStepCount = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length;
   const codeOrFormulaDensity = (clean.match(/[{}()[\];=<>\\/$_]|```|\b(function|const|let|var|import|export|class|def|return|async|await)\b/g) || []).length;
   const hasPastedTranscriptOrLogs = clean.length > 900 || /🪙\s*[\d,]+\s*tokens|flowchart\s+(TD|LR)|Error:|at\s+\w+\s*\(/i.test(clean);
-  const isShortFollowUp = clean.length > 0 && clean.length < 140;
+  const isShortFollowUp = clean.length > 0 && clean.length < 95 && REFERENTIAL_FOLLOWUP.test(clean);
 
-  // 3. Inspect recent thread momentum (for short follow-ups like "What do u think about this?" or "Do it")
+  // 3. Inspect recent USER message momentum (only user messages, never assistant replies or handoff banners)
   let priorComplexityScore = 0;
   let priorDomain = null;
   if (thread && Array.isArray(thread.messages) && thread.messages.length > 0) {
-    const recentMsgs = thread.messages.slice(-4);
-    const combinedRecent = recentMsgs.map((m) => String(m.content || '')).join('\n');
+    const recentUserMsgs = thread.messages
+      .filter((m) => m.role === 'user' && !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice)
+      .slice(-2);
+    const combinedRecent = recentUserMsgs.map((m) => String(m.content || '')).join('\n');
     if (ARCH_CRITIQUE_SIGNALS.test(combinedRecent)) {
       priorComplexityScore = Math.max(priorComplexityScore, 88);
       priorDomain = 'architecture';
@@ -1699,22 +2151,22 @@ function classifyTaskComplexity(prompt, attachments = [], thread = null) {
       priorComplexityScore = Math.max(priorComplexityScore, 87);
       priorDomain = 'math';
     } else if (CODING_ENG_SIGNALS.test(combinedRecent)) {
-      priorComplexityScore = Math.max(priorComplexityScore, 84);
+      priorComplexityScore = Math.max(priorComplexityScore, 83);
       priorDomain = 'coding';
     }
   }
 
   // 4. Determine primary domain and baseline intelligence floor + thinking effort score
   let domain = 'general';
-  let domainLabel = 'General Analysis';
-  let requiredScore = 76;
-  let thinkingScore = 42;
+  let domainLabel = 'General Q&A';
+  let requiredScore = 72;
+  let thinkingScore = 26;
 
   if (MICRO_EDIT_SIGNALS.test(clean) && clean.length < 280 && attachCount <= 1 && !ARCH_CRITIQUE_SIGNALS.test(clean) && !DEBUG_ROOT_CAUSE_SIGNALS.test(clean)) {
     domain = 'micro';
     domainLabel = 'Micro-Edit';
-    requiredScore = 72;
-    thinkingScore = 24;
+    requiredScore = 71;
+    thinkingScore = 22;
   } else if (ARCH_CRITIQUE_SIGNALS.test(clean)) {
     domain = 'architecture';
     domainLabel = 'Architecture & Critique';
@@ -1733,8 +2185,18 @@ function classifyTaskComplexity(prompt, attachments = [], thread = null) {
   } else if (CODING_ENG_SIGNALS.test(clean)) {
     domain = 'coding';
     domainLabel = 'Feature Engineering';
-    requiredScore = 84;
-    thinkingScore = 56;
+    requiredScore = 83;
+    thinkingScore = 54;
+  } else if (SIMPLE_QA_OR_CHAT_SIGNALS.test(clean) && clean.length < 260 && attachCount === 0 && codeOrFormulaDensity < 4) {
+    domain = 'general';
+    domainLabel = 'Quick Question / Lookup';
+    requiredScore = 71;
+    thinkingScore = 24;
+  } else if (clean.length >= 220) {
+    domain = 'general';
+    domainLabel = 'General Analysis';
+    requiredScore = 76;
+    thinkingScore = 40;
   }
 
   // 5. Apply structural & multi-step modifiers
@@ -1918,16 +2380,19 @@ function selectAgyAutoModel(models = [], taskOrComplexity = 'moderate', threshol
     // - High lambda on simple tasks -> strongly prefers low-cost / abundant-quota models (Flash, Sonnet Low/Med)
     // - Moderate lambda on standard tasks -> prefers Pareto-optimal workhorses (Sonnet Med/High, Flash High, Argon Med)
     // - Low lambda on complex tasks -> prioritizes frontier intelligence (Argon High/Med, Opus High)
-    const baseLambda = task.requiredScore >= 87 ? 8 : task.requiredScore >= 82 ? 22 : 42;
+    const baseLambda = task.requiredScore >= 87 ? 8 : task.requiredScore >= 82 ? 24 : task.requiredScore <= 75 ? 68 : 42;
     const scarcityMult = remPct < 35 ? 1 + (35 - remPct) / 25 : 1.0;
     const costPenalty = baseLambda * profile.costWeight * scarcityMult;
 
-    // Diminishing returns on capability far above what a simple task needs, while rewarding raw intelligence on hard tasks
+    // RouteLLM Bradley-Terry / IRT Win-Probability + RouterBench Pareto Utility
+    const winProb = 1 / (1 + Math.exp(-(effectiveCap - task.requiredScore) / 3.2));
     const surplus = capability - task.requiredScore;
     const qualityValue =
       task.requiredScore >= 87
-        ? capability * 1.35
-        : task.requiredScore + (surplus >= 0 ? 6.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
+        ? capability * 1.35 + winProb * 12
+        : task.requiredScore <= 75
+          ? task.requiredScore + winProb * 4 + (surplus >= 0 ? 2.0 * Math.tanh(surplus / 6.5) : surplus * 3.0)
+          : task.requiredScore + winProb * 10 + (surplus >= 0 ? 5.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
 
     // Slight tie-breaker bonus for abundant quota pools
     const quotaBonus = (remPct / 100) * 2.5;
@@ -1937,6 +2402,7 @@ function selectAgyAutoModel(models = [], taskOrComplexity = 'moderate', threshol
       model: m,
       profile,
       capability,
+      winProb: Math.round(winProb * 100),
       clearsBar,
       utility
     };
@@ -1957,9 +2423,10 @@ function selectAgyAutoModel(models = [], taskOrComplexity = 'moderate', threshol
     model: winner.model,
     profile: winner.profile,
     capability: winner.capability,
+    winProb: winner.winProb,
     clearsBar: winner.clearsBar,
     utility: winner.utility,
-    reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${task.suggestedEffort.toUpperCase()} effort] → Bench ${winner.capability} (Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
+    reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${task.suggestedEffort.toUpperCase()} effort] → Bench ${winner.capability} (WinProb ${winner.winProb}%, Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
   };
 }
 
@@ -2105,10 +2572,54 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
   const autopilotBlock = autopilotStep
     ? `\n\n<autopilot_step_instruction>[AI Studio Hub — Multi-Turn Autopilot Loop (Step ${autopilotStep.step}/${autopilotStep.maxSteps} • Target: ${autopilotStep.targetUsedPct}% quota used)]\nIMPORTANT: AI Studio Hub is orchestrating an automated multi-turn loop for you so your connection never times out.\nDo NOT try to run hours of work inside a single monolithic turn.\nExecute ONLY THE NEXT SINGLE BOUNDED STEP (or milestone) right now, verify it, update CHECKPOINT.md (if used), and finish your turn with a concise summary of what was completed and what the next step is.\nAs soon as you finish this turn, the Hub will check the live quota and automatically trigger the next turn for you.\nIf all planned steps are 100% complete and nothing remains to be done, include [AUTOPILOT_DONE] at the end of your reply.</autopilot_step_instruction>`
     : '';
-  const request = `${userText}${attachmentBlock}${queryHintBlock}${autopilotBlock}`;
+  const needsMoveCapabilityHint =
+    (thread.contextTokens || 0) >= 55000 ||
+    /\b(new\s+(conversation|chat|thread|session)|token[- ]?wise|move\s+to\s+a?\s*new)\b/i.test(userPrompt);
+  const moveCapBlock = needsMoveCapabilityHint
+    ? `\n\n<token_wise_capability>Note: Whenever this conversation grows heavy on tokens or a phase/sub-task should be moved into a fresh token-wise conversation, you can include <move_to_new_conversation title="Short Title">...summary, decisions, files, and open tasks to move...</move_to_new_conversation> at the end of your response and AI Studio Hub will automatically create that new conversation with everything moved there and inform the user of the token savings.</token_wise_capability>`
+    : '';
+  const request = `${userText}${attachmentBlock}${queryHintBlock}${autopilotBlock}${moveCapBlock}`;
+
+  // If this is the initial native engine turn of a Token-Wise Continuation Conversation, inject the moved context package!
+  if (thread.movedFrom && !decision.resume && !decision.fork) {
+    const mf = thread.movedFrom;
+    const cpPath = mf.checkpointFile || (thread.projectPath ? path.join(thread.projectPath, 'CHECKPOINT.md') : null);
+    const hasCheckpoint = cpPath && fs.existsSync(cpPath);
+    const carriedAttBlock = mf.carriedAttachments?.length
+      ? `Carried-over attachments from parent conversation:\n${mf.carriedAttachments.map((a) => `  - ${a.path} (${a.name})`).join('\n')}`
+      : '';
+    const tokenWiseHeader = [
+      `[Token-Wise Continuation Session — continuing on ${engine.toUpperCase()}]`,
+      `Token-Wise Handoff Notice: This is a fresh conversation branched from "${mf.title}" to be token-wise (${Number(mf.prevTokens || 0).toLocaleString()} → ~${Number(mf.estimatedNewTokens || 1500).toLocaleString()} tokens/turn, ~${mf.savedPct || 85}% token savings).`,
+      handoffReason ? `Note: ${handoffReason}` : '',
+      mf.initialGoal ? `Original Conversation Objective: ${mf.initialGoal}` : '',
+      mf.movedItems ? `Moved Items & Open Tasks to Address:\n${mf.movedItems}` : '',
+      carriedAttBlock,
+      hasCheckpoint ? `Primary Workspace Checkpoint File (read if project state is needed): ${cpPath}` : '',
+      mf.transcriptFile ? `Full archived parent transcript (read ONLY if older details are needed): ${mf.transcriptFile}` : '',
+      mf.recentActions?.length ? `Recent tool/file actions moved from parent conversation:\n${mf.recentActions.slice(-8).map((a) => `  - ${a}`).join('\n')}` : '',
+      mf.gitSummary && mf.gitSummary !== 'Git working tree is clean.' ? `Workspace git status:\n${mf.gitSummary}` : '',
+      'IMPORTANT: In your response, briefly acknowledge that you are continuing in this new token-wise conversation with the moved context, and stay token-wise (do not read the full archived transcript unless specific older details are needed).'
+    ].filter(Boolean).join('\n');
+
+    const extraTurnsInNewThread = (history || [])
+      .filter((m) => !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice)
+      .slice(-6)
+      .map((m) => {
+        const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1500)}${att}`;
+      })
+      .join('\n\n');
+    const combinedHist = [mf.promptHistoryText || '', extraTurnsInNewThread].filter(Boolean).join('\n\n');
+    return {
+      prompt: `${tokenWiseHeader}\n\n<conversation_history>\n${combinedHist}\n</conversation_history>\n\n${request}`,
+      usedBriefing: true
+    };
+  }
 
   // If resuming or forking the same engine with no intervening turns on the other engine, send the user's prompt directly
-  if (((decision.resume || decision.fork) && !decision.deltaOnly) || history.length === 0) {
+  const nonHandoffHistory = (history || []).filter((m) => !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice);
+  if (((decision.resume || decision.fork) && !decision.deltaOnly) || nonHandoffHistory.length === 0) {
     return { prompt: request, usedBriefing: false };
   }
 
@@ -2530,22 +3041,26 @@ function runAntigravityTurn({ thread, promptText, modelId, effort, availableMode
           onEvent({ type: 'delta', delta: fullText });
         }
         settle(() => {
-          // Check if fullText or r.error or r.status is actually a quota / rate limit failure
-          const combined = `${r.error || ''} ${r.status || ''} ${fullText || ''}`;
-          if (QUOTA_RE.test(combined)) {
-            const err = new Error(r.error || fullText.trim() || 'Individual quota reached');
-            err.isQuotaError = true;
-            return reject(err);
-          }
           // NOTE: Antigravity CLI returns `r.status: "ERROR"` with a historical `r.error` string whenever a resumed
           // conversation had *any* failed step in its past history, even when the current turn produced a valid `fullText`!
-          // Only treat it as an error if the current turn produced no text output.
-          if (r.status && r.status !== 'SUCCESS' && !fullText.trim()) {
-            const err = new Error(r.error || `Antigravity finished with status ${r.status}`);
-            return reject(err);
-          } else {
-            resolve({ text: fullText.trim() || '(Task completed with no text output)', conversationId, usage, model: actualModel, effort: aligned.effort });
+          // Furthermore, a valid long assistant answer may legitimately discuss "quota reached" or "usage limit".
+          // Only treat `r.error` / `r.status` / `fullText` as a quota or execution error if no valid response was produced.
+          const trimmedText = (fullText || '').trim();
+          const isShortQuotaMsg = trimmedText.length > 0 && trimmedText.length < 240 && /^(\[?\s*error|⚠️|individual quota|resource_exhausted|rate limit|quota exceeded)/i.test(trimmedText);
+          const hasValidResponse = trimmedText.length > 0 && !isShortQuotaMsg;
+          if (!hasValidResponse) {
+            const combined = `${r.error || ''} ${r.status || ''} ${trimmedText}`;
+            if (QUOTA_RE.test(combined)) {
+              const err = new Error(r.error || trimmedText || 'Individual quota reached');
+              err.isQuotaError = true;
+              return reject(err);
+            }
+            if (r.status && r.status !== 'SUCCESS') {
+              const err = new Error(r.error || `Antigravity finished with status ${r.status}`);
+              return reject(err);
+            }
           }
+          resolve({ text: trimmedText || '(Task completed with no text output)', conversationId, usage, model: actualModel, effort: aligned.effort });
         });
         killTree(child);
       }
@@ -2565,13 +3080,17 @@ function runAntigravityTurn({ thread, promptText, modelId, effort, availableMode
       if (buffer.trim()) handleLine(buffer);
       settle(() => {
         if (cancelledThreads.delete(thread.id)) return reject(cancelledError(fullText));
-        const combined = `${stderrText || ''} ${fullText || ''}`;
+        const trimmedText = (fullText || '').trim();
+        const isShortQuotaMsg = trimmedText.length > 0 && trimmedText.length < 240 && /^(\[?\s*error|⚠️|individual quota|resource_exhausted|rate limit|quota exceeded)/i.test(trimmedText);
+        if (trimmedText && !isShortQuotaMsg) {
+          return resolve({ text: trimmedText, conversationId, usage, model: actualModel, effort: aligned.effort });
+        }
+        const combined = `${stderrText || ''} ${trimmedText}`;
         if (QUOTA_RE.test(combined)) {
-          const err = new Error(truncate(stderrText.trim() || fullText.trim(), 600) || 'Individual quota reached');
+          const err = new Error(truncate(stderrText.trim() || trimmedText, 600) || 'Individual quota reached');
           err.isQuotaError = true;
           return reject(err);
         }
-        if (fullText.trim()) return resolve({ text: fullText.trim(), conversationId, usage, model: actualModel, effort: aligned.effort });
         const err = new Error(truncate(stderrText.trim(), 600) || `Antigravity exited with code ${code}`);
         reject(err);
       });
@@ -2914,6 +3433,27 @@ function startCloudflareTunnel() {
   if (tunnelProcess && !tunnelProcess.killed && tunnelUrl) {
     return Promise.resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
   }
+  // If an existing cloudflared process is already running from before a hot-restart, adopt its active-tunnel.json URL seamlessly!
+  try {
+    const activeFile = path.join(__dirname, 'public', 'active-tunnel.json');
+    if (fs.existsSync(activeFile)) {
+      const saved = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+      if (saved?.url && /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i.test(saved.url)) {
+        const runningCheck = execFileSync('tasklist', ['/FI', 'IMAGENAME eq cloudflared.exe', '/NH'], { encoding: 'utf8', windowsHide: true });
+        if (runningCheck && runningCheck.toLowerCase().includes('cloudflared.exe')) {
+          tunnelUrl = saved.url;
+          const u = new URL(saved.url);
+          tunnelHostname = u.host.toLowerCase();
+          ALLOWED_HOSTS.add(tunnelHostname);
+          ALLOWED_ORIGINS.add(`https://${tunnelHostname}`);
+          ALLOWED_ORIGINS.add(`http://${tunnelHostname}`);
+          tunnelStatus = 'active';
+          console.log(`[AI Hub] 📱 Adopted active Cloudflare Tunnel: ${tunnelUrl}`);
+          return Promise.resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
+        }
+      }
+    }
+  } catch {}
   tunnelStatus = 'starting';
   tunnelError = null;
 
@@ -3040,18 +3580,11 @@ async function registerWithGateway(url) {
 // ---------------------------------------------------------------------------
 // 11. Chat Turn Orchestration (engine choice, in-engine fallback, failover, cancel)
 // ---------------------------------------------------------------------------
-function pickAgyModel(agyStatus, { excludeFamily, preferredEffort, threshold }) {
-  const pools = new Map();
-  for (const m of agyStatus.models) {
-    if (m.family === excludeFamily) continue;
-    const pct = m.remainingPct ?? 100;
-    if (pct < threshold) continue;
-    if (!pools.has(m.family)) pools.set(m.family, { pct, models: [] });
-    pools.get(m.family).models.push(m);
-  }
-  const best = [...pools.values()].sort((a, b) => b.pct - a.pct)[0];
-  if (!best) return null;
-  return best.models.find((m) => m.effort === preferredEffort) || best.models.find((m) => m.effort === 'medium') || best.models[0];
+function pickAgyModel(agyStatus, { excludeFamily, preferredEffort, threshold, task }) {
+  const filtered = (agyStatus.models || []).filter((m) => m.family !== excludeFamily && (m.remainingPct ?? 100) >= (threshold || 1));
+  if (!filtered.length) return null;
+  const pick = selectAgyAutoModel(filtered, task || { complexity: 'moderate', domain: 'general', domainLabel: 'Fallback', requiredScore: 80, thinkingScore: 45, suggestedEffort: preferredEffort || 'medium' }, threshold || 1);
+  return pick?.model || filtered.find((m) => m.effort === preferredEffort) || filtered.find((m) => m.effort === 'medium') || filtered[0];
 }
 
 function rememberSession(thread, engine, id, syncedMsgCount) {
@@ -3103,7 +3636,7 @@ function subscribeSseResponse(res, liveTurn) {
 
 async function handleChat(req, res, body) {
   const { threadId, prompt = '', engineMode = 'auto', agyModel, agyEffort, codexModel, codexEffort, executionMode = 'agent' } = body;
-  const thread = appState.threads.find((t) => t.id === threadId);
+  let thread = appState.threads.find((t) => t.id === threadId);
   if (!thread) return sendJson(res, 404, { error: 'Thread not found' });
   if (activeProcesses.has(thread.id) || activeTurns.has(thread.id)) {
     return sendJson(res, 409, { error: 'A turn is already running in this chat.' });
@@ -3134,9 +3667,59 @@ async function handleChat(req, res, body) {
     return res.end();
   }
 
+  // Check if user explicitly requested moving to a new token-wise conversation (or if auto-threshold reached)
+  const moveIntent = detectUserMoveToNewChatIntent(prompt);
+  if (moveIntent.matched && !moveIntent.followUpPrompt) {
+    const moveRes = createTokenWiseContinuationThread(thread, {
+      reason: moveIntent.reason || 'user-command',
+      movedItems: moveIntent.movedItems || null,
+      attachments
+    });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
+    res.write(`data: ${JSON.stringify({
+      type: 'thread_moved',
+      oldThreadId: moveRes.sourceThread.id,
+      sourceThread: moveRes.sourceThread,
+      newThread: moveRes.newThread,
+      threads: appState.threads.map(summarizeThread),
+      message: moveRes.noticeBannerText
+    })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      message: moveRes.handoffMessage,
+      thread: moveRes.newThread,
+      movedToThread: moveRes.newThread,
+      threads: appState.threads.map(summarizeThread)
+    })}\n\n`);
+    return res.end();
+  }
+
+  const autoNewChatThreshold = Number(appState.settings.autoNewChatThresholdTokens ?? 110000);
+  const realTurnCount = (thread.messages || []).filter((m) => !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice).length;
+  const shouldAutoRolloverPreTurn =
+    !body.stayInCurrentThread &&
+    !moveIntent.matched &&
+    autoNewChatThreshold > 0 &&
+    realTurnCount >= 2 &&
+    (thread.contextTokens || 0) >= autoNewChatThreshold;
+
+  let preTurnMoveRes = null;
+  let effectiveInputPrompt = prompt;
+  if (moveIntent.matched || shouldAutoRolloverPreTurn) {
+    preTurnMoveRes = createTokenWiseContinuationThread(thread, {
+      reason: moveIntent.matched ? (moveIntent.reason || 'user-request') : 'auto-token-threshold',
+      movedItems: moveIntent.movedItems || null,
+      attachments
+    });
+    thread = preTurnMoveRes.newThread;
+    if (moveIntent.matched && moveIntent.followUpPrompt) {
+      effectiveInputPrompt = moveIntent.followUpPrompt;
+    }
+  }
+
   const liveTurn = {
     threadId: thread.id,
-    userPrompt: prompt,
+    userPrompt: effectiveInputPrompt,
     engine: engineMode,
     model: engineMode === 'codex' ? codexModel : agyModel,
     statusText: 'Connecting to engine…',
@@ -3144,7 +3727,7 @@ async function handleChat(req, res, body) {
     narratives: [],
     thinkingSteps: [],
     switchNotices: [],
-    usage: { input_tokens: Math.max(1, Math.round((prompt || '').length / 4)), output_tokens: 0, total_tokens: Math.max(1, Math.round((prompt || '').length / 4)), live: true },
+    usage: { input_tokens: Math.max(1, Math.round((effectiveInputPrompt || '').length / 4)), output_tokens: 0, total_tokens: Math.max(1, Math.round((effectiveInputPrompt || '').length / 4)), live: true },
     startedAt: new Date().toISOString(),
     subscribers: new Set()
   };
@@ -3195,6 +3778,17 @@ async function handleChat(req, res, body) {
   };
 
   sendEvent({ type: 'status', message: 'Connecting to engine…' });
+  if (preTurnMoveRes) {
+    sendEvent({
+      type: 'thread_moved',
+      oldThreadId: preTurnMoveRes.sourceThread.id,
+      sourceThread: preTurnMoveRes.sourceThread,
+      newThread: thread,
+      threads: appState.threads.map(summarizeThread),
+      message: preTurnMoveRes.noticeBannerText
+    });
+    sendEvent({ type: 'switch_notice', message: preTurnMoveRes.noticeBannerText });
+  }
 
   const threshold = Number(appState.settings.autoSwitchThresholdPct) || 12;
   const [agyStatus, codexStatus] = await Promise.all([getAgyStatus(), Promise.resolve(getCodexStatus())]);
@@ -3202,9 +3796,9 @@ async function handleChat(req, res, body) {
   const agyFamily = (id) => agyStatus.models.find((m) => m.modelId === id)?.family;
   const codexPct = Math.min(codexStatus.fiveHourWindow.remainingPct, codexStatus.weeklyWindow.remainingPct);
 
-  const lastAssistant = [...thread.messages].reverse().find((m) => m.role === 'assistant');
+  const lastAssistant = [...thread.messages].reverse().find((m) => m.role === 'assistant' && !m.isTokenWiseHandoff && !m.isTokenWiseMoveNotice);
   const nativeEngine = thread.origin === 'vscode' || thread.origin === 'codex' ? 'codex' : 'antigravity';
-  const defaultEngine = lastAssistant?.engine || nativeEngine;
+  const defaultEngine = lastAssistant?.engine || thread.movedFrom?.lastEngine || nativeEngine;
 
   let engine = engineMode === 'auto' ? defaultEngine : engineMode;
   let agyModelToUse = agyModel;
@@ -3214,7 +3808,7 @@ async function handleChat(req, res, body) {
   let handoffReason = null;
   let smartRouted = false;
 
-  const taskAnalysis = classifyTaskComplexity(prompt, attachments, thread);
+  const taskAnalysis = classifyTaskComplexity(effectiveInputPrompt, attachments, thread);
 
   if (engineMode === 'auto') {
     // 1. Quota check & automatic cross-engine failover
@@ -3327,12 +3921,19 @@ async function handleChat(req, res, body) {
     effort: liveTurn.effort
   });
 
-  const autopilotCfg = detectAutopilotLoop(prompt, Boolean(body.autopilot));
+  const autopilotCfg = detectAutopilotLoop(effectiveInputPrompt, Boolean(body.autopilot));
   let currentStepIdx = 1;
-  let currentPromptText = prompt.replace(/^\/(loop|goal)\s*/i, '').trim() || 'Continue to the next step and save checkpoint.';
-  let currentAttachments = attachments;
+  let currentPromptText = effectiveInputPrompt.replace(/^\/(loop|goal)\s*/i, '').trim() || 'Continue to the next step and save checkpoint.';
+  const carriedFromParent = (!thread.agyConversationId && !thread.codexSessionId && Array.isArray(thread.movedFrom?.carriedAttachments))
+    ? thread.movedFrom.carriedAttachments
+    : [];
+  const mergedAttachmentMap = new Map();
+  for (const att of [...carriedFromParent, ...attachments]) {
+    if (att && att.path) mergedAttachmentMap.set(att.path, att);
+  }
+  let currentAttachments = [...mergedAttachmentMap.values()];
   let history = [...thread.messages];
-  let userMsg = { id: crypto.randomUUID(), role: 'user', content: currentPromptText, attachments: currentAttachments, fromHub: true, timestamp: new Date().toISOString() };
+  let userMsg = { id: crypto.randomUUID(), role: 'user', content: currentPromptText, attachments, fromHub: true, timestamp: new Date().toISOString() };
   if (thread.title === 'New Unified Session') {
     thread.title = currentPromptText.slice(0, 48) + (currentPromptText.length > 48 ? '…' : '');
     saveState(appState);
@@ -3476,10 +4077,37 @@ async function handleChat(req, res, body) {
   };
 
   const finishWith = (result, reason, note) => {
+    const agentMove = parseAgentMoveDirective(result.text || '');
+    if (agentMove.matched) {
+      result.text = agentMove.cleanText || 'Moved active context and open items to a new token-wise continuation conversation.';
+    }
     const assistantMsg = commitTurnMessages(result, reason, note);
     const outcome = /Stopped by user|stopped by user/.test(note || '') ? 'stopped' : /Turn interrupted/.test(note || '') ? 'error' : 'done';
     pushInfo = { engine: result.engine, text: String(result.text || '').replace(/\[AUTOPILOT_DONE\]/gi, '').trim() || note || '', outcome };
-    sendEvent({ type: 'done', message: assistantMsg, thread });
+
+    let postTurnMoveRes = null;
+    const shouldAutoRolloverPostTurn =
+      !body.stayInCurrentThread &&
+      autoNewChatThreshold > 0 &&
+      (thread.contextTokens || 0) >= autoNewChatThreshold &&
+      !thread.movedTo;
+    if (agentMove.matched || shouldAutoRolloverPostTurn) {
+      postTurnMoveRes = createTokenWiseContinuationThread(thread, {
+        reason: agentMove.matched ? 'agent-directive' : 'auto-token-threshold',
+        newTitle: agentMove.title || null,
+        movedItems: agentMove.movedItems || null,
+        attachments: currentAttachments
+      });
+      sendEvent({ type: 'switch_notice', message: postTurnMoveRes.noticeBannerText });
+    }
+
+    sendEvent({
+      type: 'done',
+      message: assistantMsg,
+      thread,
+      movedToThread: postTurnMoveRes ? postTurnMoveRes.newThread : null,
+      threads: (preTurnMoveRes || postTurnMoveRes) ? appState.threads.map(summarizeThread) : undefined
+    });
   };
 
   const TRANSIENT_NET_RE = /network error|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|502 Bad Gateway|503 Service Unavailable|504 Gateway|UNAVAILABLE|stream.*closed|connection.*reset|at capacity|server_overloaded|overloaded|temporarily unavailable/i;
@@ -3521,14 +4149,14 @@ async function handleChat(req, res, body) {
         let fbModel = fbEngine === 'antigravity' ? agyModelToUse : codexModelToUse;
         let fbEffort = fbEngine === 'antigravity' ? agyEffortToUse : codexEffortToUse;
         if (engine === 'antigravity') {
-          const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1 });
+          const alt = pickAgyModel(agyStatus, { excludeFamily: agyFamily(agyModelToUse), preferredEffort: agyEffortToUse, threshold: 1, task: taskAnalysis });
           if (alt) {
             fbEngine = 'antigravity';
             fbModel = alt.modelId;
             fbEffort = alt.effort;
           }
         } else if (agyModelPct(agyModelToUse) < 1) {
-          const alt = pickAgyModel(agyStatus, { preferredEffort: agyEffortToUse, threshold: 1 });
+          const alt = pickAgyModel(agyStatus, { preferredEffort: agyEffortToUse, threshold: 1, task: taskAnalysis });
           if (alt) {
             fbModel = alt.modelId;
             fbEffort = alt.effort;
@@ -4228,6 +4856,34 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, prevTokens: info?.prevTokens || 0, thread, threads: appState.threads.map(summarizeThread) });
     }
 
+    // --- POST /api/threads/move-token-wise (spawn a new token-wise continuation conversation with everything moved over) ---
+    if (req.method === 'POST' && pathname === '/api/threads/move-token-wise') {
+      const body = await parseJsonBody(req);
+      const sourceThread = appState.threads.find((t) => t.id === body.threadId);
+      if (!sourceThread) return sendJson(res, 404, { error: 'Thread not found' });
+      if (activeProcesses.has(sourceThread.id) || activeTurns.has(sourceThread.id)) {
+        return sendJson(res, 409, { error: 'A turn is currently running in this conversation. Stop it or wait for it to finish before moving.' });
+      }
+      const moveRes = createTokenWiseContinuationThread(sourceThread, {
+        reason: body.reason || 'manual',
+        customNote: body.customNote || '',
+        movedItems: body.movedItems || '',
+        newTitle: body.newTitle || null,
+        upToMessageId: body.upToMessageId || null,
+        attachments: sanitizeAttachments(body.attachments)
+      });
+      return sendJson(res, 200, {
+        ok: true,
+        newThread: moveRes.newThread,
+        sourceThread: moveRes.sourceThread,
+        prevTokens: moveRes.prevTokens,
+        estimatedNewTokens: moveRes.estimatedNewTokens,
+        savedPct: moveRes.savedPct,
+        noticeBannerText: moveRes.noticeBannerText,
+        threads: appState.threads.map(summarizeThread)
+      });
+    }
+
     // --- POST /api/threads (new chat) ---
     if (req.method === 'POST' && pathname === '/api/threads') {
       const body = await parseJsonBody(req);
@@ -4495,6 +5151,15 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
+const SERVER_BOOT_MTIME_MS = (() => {
+  try {
+    return fs.statSync(__filename).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+})();
+let hotReloadScheduled = false;
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[AI Hub] Antigravity binary: ${AGY_BIN}`);
   console.log(`[AI Hub] Codex binary:       ${getCodexBin()}`);
@@ -4518,7 +5183,22 @@ server.listen(PORT, '127.0.0.1', () => {
     } catch (e) {
       console.error('[AI Hub] Native completion watcher:', e.message);
     }
-  }, 12000);
+    // Auto hot-reload when server.js on disk is updated and no turns are active
+    try {
+      if (!hotReloadScheduled && activeTurns.size === 0 && activeProcesses.size === 0) {
+        const curMtime = fs.statSync(__filename).mtimeMs;
+        if (curMtime > SERVER_BOOT_MTIME_MS + 1000) {
+          hotReloadScheduled = true;
+          execFileSync(process.execPath, ['--check', __filename], { stdio: 'ignore', windowsHide: true });
+          const restarter = `setTimeout(()=>{require('child_process').spawn(${JSON.stringify(process.execPath)},[${JSON.stringify(__filename)}],{cwd:${JSON.stringify(__dirname)},detached:true,stdio:'ignore',windowsHide:true}).unref();process.exit(0);},900);`;
+          spawn(process.execPath, ['-e', restarter], { cwd: __dirname, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          setTimeout(() => process.exit(0), 250);
+        }
+      }
+    } catch {
+      hotReloadScheduled = false;
+    }
+  }, 6000);
   try {
     checkNativeCompletions(); // record a baseline right away
   } catch {}
