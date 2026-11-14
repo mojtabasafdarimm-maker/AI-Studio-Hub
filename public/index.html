@@ -4647,19 +4647,19 @@
       const codexSel = document.getElementById('codexModelSelect');
       const codexEff = document.getElementById('codexEffortSelect');
 
-      const wantAgyModel = thread?.agyModel || s.agyModel;
+      const wantAgyModel = s.agyModel || thread?.agyModel;
       if (wantAgyModel && agySel && [...agySel.options].some(o => o.value === wantAgyModel)) {
         agySel.value = wantAgyModel;
       }
       const selectedAgyOpt = agySel?.options[agySel.selectedIndex];
-      const wantAgyEffort = selectedAgyOpt?.dataset?.effort || thread?.agyEffort || s.agyEffort || 'medium';
+      const wantAgyEffort = selectedAgyOpt?.dataset?.effort || s.agyEffort || thread?.agyEffort || 'medium';
       if (agyEff) agyEff.value = wantAgyEffort;
 
-      const wantCodexModel = thread?.codexModel || s.codexModel;
+      const wantCodexModel = s.codexModel || thread?.codexModel;
       if (wantCodexModel && codexSel && [...codexSel.options].some(o => o.value === wantCodexModel)) {
         codexSel.value = wantCodexModel;
       }
-      const wantCodexEffort = thread?.codexEffort || s.codexEffort || 'high';
+      const wantCodexEffort = s.codexEffort || thread?.codexEffort || 'high';
       if (codexEff) codexEff.value = wantCodexEffort;
 
       syncMobileSheet();
@@ -4819,13 +4819,17 @@
         method: 'POST',
         body: JSON.stringify(payload)
       });
+      if (Array.isArray(hubData?.state?.threads)) {
+        for (const t of hubData.state.threads) {
+          t.agyModel = payload.agyModel;
+          t.agyEffort = payload.agyEffort;
+          t.codexModel = payload.codexModel;
+          t.codexEffort = payload.codexEffort;
+        }
+      }
       if (activeThreadId) {
         const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
         if (thread) {
-          thread.agyModel = payload.agyModel;
-          thread.agyEffort = payload.agyEffort;
-          thread.codexModel = payload.codexModel;
-          thread.codexEffort = payload.codexEffort;
           apiFetch('/api/thread/settings', {
             method: 'POST',
             body: JSON.stringify({
@@ -4839,6 +4843,7 @@
           }).catch(() => {});
         }
       }
+      if (isDeckViewOpen) renderDeckView(true);
     }
 
     function renderProjects() {
@@ -7956,10 +7961,10 @@
 
       const curT = (hubData.state.threads || []).find(t => t.id === threadId);
       const tileEngineMode = getThreadEngine(curT);
-      const selectedAgyModel = curT?.agyModel || document.getElementById('agyModelSelect')?.value;
-      const selectedAgyEffort = curT?.agyEffort || document.getElementById('agyEffortSelect')?.value;
-      const selectedCodexModel = curT?.codexModel || document.getElementById('codexModelSelect')?.value;
-      const selectedCodexEffort = curT?.codexEffort || document.getElementById('codexEffortSelect')?.value;
+      const selectedAgyModel = document.getElementById('agyModelSelect')?.value || curT?.agyModel;
+      const selectedAgyEffort = document.getElementById('agyEffortSelect')?.value || curT?.agyEffort;
+      const selectedCodexModel = document.getElementById('codexModelSelect')?.value || curT?.codexModel;
+      const selectedCodexEffort = document.getElementById('codexEffortSelect')?.value || curT?.codexEffort;
       const route = getPredictedAutoRoute(prompt);
       const initialEngine = tileEngineMode === 'auto' ? route.engine : (tileEngineMode === 'codex' ? 'codex' : 'antigravity');
       const initialModel = tileEngineMode === 'auto' ? route.label : (initialEngine === 'codex' ? selectedCodexModel : selectedAgyModel);

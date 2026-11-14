@@ -4788,6 +4788,14 @@ const server = http.createServer(async (req, res) => {
         if (k === 'codexBinary' && v && !CODEX_BINARIES.some((b) => b.path === v)) continue;
         appState.settings[k] = v;
       }
+      if (Array.isArray(appState.threads)) {
+        for (const t of appState.threads) {
+          if (typeof body.agyModel === 'string' && body.agyModel) t.agyModel = body.agyModel;
+          if (typeof body.agyEffort === 'string' && body.agyEffort) t.agyEffort = body.agyEffort;
+          if (typeof body.codexModel === 'string' && body.codexModel) t.codexModel = body.codexModel;
+          if (typeof body.codexEffort === 'string' && body.codexEffort) t.codexEffort = body.codexEffort;
+        }
+      }
       saveState(appState);
       codexStatusCache.at = 0;
       return sendJson(res, 200, { settings: appState.settings, codexBinaryInUse: getCodexBin() });
