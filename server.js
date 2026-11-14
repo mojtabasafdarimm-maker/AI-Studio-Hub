@@ -59,7 +59,7 @@ const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:$
 // ---------------------------------------------------------------------------
 function truncate(text, max) {
   const s = String(text || '');
-  return s.length > max ? s.slice(0, max) + '\n…[truncated]…' : s;
+  return s.length > max ? s.slice(0, max).trimEnd() + '…' : s;
 }
 
 function safeFileName(s) {
@@ -1167,15 +1167,14 @@ function createTokenWiseContinuationThread(sourceThread, options = {}) {
   const recentDigestBullets = recentTurns
     .map((m) => {
       const who = m.role === 'user' ? '👤 **User**' : `🤖 **Assistant (${m.engine === 'codex' ? 'Codex' : 'Antigravity'})**`;
-      const summary = truncate(String(m.content || '').replace(/\s+/g, ' ').trim(), 420);
-      return `- ${who}: ${summary}`;
+      return `**${who}**:\n${String(m.content || '').trim()}`;
     })
-    .join('\n');
+    .join('\n\n---\n\n');
 
   const promptHistoryText = recentTurns
     .map((m) => {
       const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
-      return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1100)}${att}`;
+      return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${String(m.content || '').trim()}${att}`;
     })
     .join('\n\n');
 
@@ -1197,12 +1196,21 @@ function createTokenWiseContinuationThread(sourceThread, options = {}) {
   const baseTitle = String(sourceThread.title || 'Session')
     .replace(/\s*(?:\(Token-Wise\s*#\d+\)|\[Token-Wise\s*#\d+\]|\(Cont\.\s*#\d+\))\s*$/i, '')
     .trim() || 'Session';
+  let maxNum = 0;
+  for (const t of appState.threads || []) {
+    const m = (t.title || '').match(/\(Token-Wise\s*#(\d+)\)/i);
+    if (m && (t.projectId === sourceThread.projectId || (t.title && t.title.startsWith(baseTitle.slice(0, 30))))) {
+      const num = parseInt(m[1], 10);
+      if (num > maxNum) maxNum = num;
+    }
+  }
   const siblingCount = (appState.threads || []).filter(
     (t) => t.parentThreadId === sourceThread.id || (t.title && t.title.startsWith(`${baseTitle.slice(0, 40)} (Token-Wise #`))
   ).length;
+  const nextNum = Math.max(siblingCount + 1, maxNum + 1);
   const newTitle = options.newTitle
     ? String(options.newTitle).trim().slice(0, 80)
-    : `${baseTitle.slice(0, 62)} (Token-Wise #${siblingCount + 1})`;
+    : `${baseTitle.slice(0, 62)} (Token-Wise #${nextNum})`;
 
   const estimatedBriefingChars =
     (initialGoal.length || 0) +
@@ -1586,14 +1594,14 @@ function buildDeckPreview(messages) {
   if (!lastUser && !lastAssistant) return null;
   const nars = Array.isArray(lastAssistant?.narratives) ? lastAssistant.narratives.filter(Boolean) : [];
   return {
-    lastUserText: lastUser?.content ? truncate(String(lastUser.content).trim(), 400) : '',
+    lastUserText: lastUser?.content ? String(lastUser.content).trim() : '',
     lastUserAt: lastUser?.timestamp || null,
-    lastAssistantText: lastAssistant?.content ? truncate(String(lastAssistant.content).trim(), 2400) : '',
+    lastAssistantText: lastAssistant?.content ? String(lastAssistant.content).trim() : '',
     lastAssistantEngine: lastAssistant?.engine || null,
     lastAssistantModel: lastAssistant?.model || null,
     lastAssistantAt: lastAssistant?.timestamp || null,
     narrativesCount: nars.length,
-    lastNarrative: nars.length > 0 ? truncate(String(nars[nars.length - 1]).trim(), 220) : null
+    lastNarrative: nars.length > 0 ? String(nars[nars.length - 1]).trim() : null
   };
 }
 
@@ -1922,7 +1930,7 @@ function writeContextFile(thread, history) {
       const when = m.timestamp ? ` — ${m.timestamp}` : '';
       const att = m.attachments?.length ? `\nAttachments: ${m.attachments.map((a) => a.path).join(', ')}` : '';
       const acts = m.actions?.length ? `\nActions: ${m.actions.join('; ')}` : '';
-      return `### ${who}${when}${att}${acts}\n\n${truncate(m.content, 4000)}`;
+      return `### ${who}${when}${att}${acts}\n\n${String(m.content || '').trim()}`;
     })
     .join('\n\n---\n\n');
   fs.writeFileSync(
@@ -2628,7 +2636,7 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
       .slice(-6)
       .map((m) => {
         const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
-        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1500)}${att}`;
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${String(m.content || '').trim()}${att}`;
       })
       .join('\n\n');
     const combinedHist = [mf.promptHistoryText || '', extraTurnsInNewThread].filter(Boolean).join('\n\n');
@@ -2684,7 +2692,7 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
       .slice(-4)
       .map((m) => {
         const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
-        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 1200)}${att}`;
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${String(m.content || '').trim()}${att}`;
       })
       .join('\n\n');
     return {
@@ -2707,7 +2715,7 @@ function buildEnginePrompt({ thread, history, userPrompt, attachments, engine, d
       .slice(-turns)
       .map((m) => {
         const att = m.attachments?.length ? `\n[Attached files: ${m.attachments.map((a) => a.path).join(', ')}]` : '';
-        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${truncate(m.content, 2000)}${att}`;
+        return `[${m.role === 'user' ? 'USER' : `ASSISTANT (${m.engine || 'agent'})`}]:\n${String(m.content || '').trim()}${att}`;
       })
       .join('\n\n');
     const prompt = `${header}\n\n<conversation_history>\n${hist}\n</conversation_history>\n\n${request}`;
@@ -4468,7 +4476,7 @@ function notifyTurnFinished({ thread, engine, text, outcome = 'done', durationMs
   const verb = outcome === 'error' ? 'needs attention' : 'finished';
   const dur = formatDuration(durationMs);
   const title = `${icon} ${engineLabel} ${verb}${dur ? ` · ${dur}` : ''}`;
-  const chatTitle = truncate(String(thread?.title || 'Chat').split('\n')[0], 60).replace(/\n…\[truncated\]…$/, '…');
+  const chatTitle = truncate(String(thread?.title || 'Chat').split('\n')[0], 60);
   const body = `${chatTitle}\n${plainPreview(text) || (outcome === 'error' ? 'The turn stopped with an error.' : 'Reply is ready.')}`;
   sendPushToAll({
     title,
