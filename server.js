@@ -15,6 +15,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
+const { BrowserController } = require('./browser-controller');
 
 // ---------------------------------------------------------------------------
 // 0. Constants, Data Location & Security Token
@@ -37,6 +38,7 @@ const CODEX_DB_PATH = path.join(HOME, '.codex', 'state_5.sqlite');
 // Persistent secret stored in local AppData so server restarts never break an open browser tab.
 const TOKEN_FILE = path.join(DATA_DIR, 'hub_token.txt');
 for (const d of [DATA_DIR, ATTACH_DIR, CONTEXT_DIR]) fs.mkdirSync(d, { recursive: true });
+const browserCtrl = new BrowserController({ dataDir: DATA_DIR });
 let HUB_TOKEN;
 try {
   if (fs.existsSync(TOKEN_FILE)) {
@@ -5089,6 +5091,83 @@ const server = http.createServer(async (req, res) => {
       return await handleChat(req, res, await parseJsonBody(req));
     }
 
+    // --- Remote Agent Browser & Phone Takeover API ---
+    if (req.method === 'GET' && pathname === '/api/browser/status') {
+      return sendJson(res, 200, browserCtrl.getState());
+    }
+
+    if (req.method === 'GET' && pathname === '/api/browser/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      res.write(': connected\n\n');
+      browserCtrl.addSseClient(res);
+      const keepalive = setInterval(() => {
+        try { res.write(': ping\n\n'); } catch { clearInterval(keepalive); }
+      }, 20000);
+      req.on('close', () => {
+        clearInterval(keepalive);
+        browserCtrl.removeSseClient(res);
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/browser/start') {
+      const body = await parseJsonBody(req);
+      const state = await browserCtrl.start({
+        url: body.url,
+        viewportMode: body.viewportMode,
+        headless: body.headless !== false
+      });
+      return sendJson(res, 200, state);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/browser/stop') {
+      const state = await browserCtrl.stop();
+      return sendJson(res, 200, state);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/browser/navigate') {
+      const body = await parseJsonBody(req);
+      const state = await browserCtrl.navigate(body.url);
+      return sendJson(res, 200, state);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/browser/action') {
+      const body = await parseJsonBody(req);
+      const action = String(body.type || '');
+      let result;
+      if (action === 'click') {
+        result = await browserCtrl.click(body.x, body.y, body.button || 'left', body.clickCount || 1);
+      } else if (action === 'scroll') {
+        result = await browserCtrl.scroll(body.x, body.y, body.deltaX || 0, body.deltaY || 0);
+      } else if (action === 'type') {
+        result = await browserCtrl.typeText(body.text, !!body.submit);
+      } else if (action === 'key') {
+        result = await browserCtrl.pressKey(body.key);
+      } else if (action === 'back') {
+        result = await browserCtrl.back();
+      } else if (action === 'forward') {
+        result = await browserCtrl.forward();
+      } else if (action === 'reload') {
+        result = await browserCtrl.reload();
+      } else if (action === 'snapshot') {
+        result = await browserCtrl.snapshot();
+      } else if (action === 'control') {
+        result = await browserCtrl.setControlMode(body.mode);
+      } else if (action === 'viewport') {
+        result = await browserCtrl.setViewport(body.viewportMode);
+      } else if (action === 'extract') {
+        result = await browserCtrl.extractContext();
+      } else {
+        return sendJson(res, 400, { error: `Unknown browser action: ${action}` });
+      }
+      return sendJson(res, 200, result);
+    }
+
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Unknown API route' });
 
     // --- Static files (index.html receives the per-launch token) ---
@@ -5147,6 +5226,7 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('SIGINT', () => {
   stopCloudflareTunnel();
+  browserCtrl.stop().catch(() => {});
   for (const child of activeProcesses.values()) killTree(child);
   process.exit(0);
 });

@@ -1942,10 +1942,10 @@
       .topbar-actions .selector-group,
       .topbar-actions #themeToggleBtn,
       .topbar-actions #mobileModalBtn,
-      .topbar-actions button:not(#mobileNewChatBtn):not(#mobileReloadBtn):not(#pushBellBtn):not(#deckToggleBtn) {
+      .topbar-actions button:not(#mobileNewChatBtn):not(#mobileReloadBtn):not(#pushBellBtn):not(#deckToggleBtn):not(#browserToggleBtn) {
         display: none !important;
       }
-      #deckToggleBtn {
+      #deckToggleBtn, #browserToggleBtn {
         padding: 4px 9px !important;
         font-size: 12px !important;
         font-weight: 700 !important;
@@ -2605,6 +2605,179 @@
         font-size: 16px !important; /* Prevents iOS Safari zoom on tap */
       }
     }
+
+    /* --- REMOTE AGENT BROWSER & PHONE TAKEOVER VIEW --- */
+    #browserToggleBtn.active-browser {
+      background: linear-gradient(135deg, #059669, #0284c7);
+      color: #ffffff;
+      border-color: transparent;
+      box-shadow: 0 2px 10px rgba(5, 150, 105, 0.35);
+    }
+    #browserToggleBtn.user-control-active {
+      border-color: #f59e0b;
+      box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45);
+    }
+    .browser-view {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+    .browser-view.open {
+      display: flex;
+    }
+    .browser-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .browser-nav-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .browser-url-form {
+      display: flex;
+      flex: 1;
+      min-width: 170px;
+      gap: 4px;
+      align-items: center;
+    }
+    .browser-url-input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .browser-control-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      background: rgba(56, 189, 248, 0.08);
+      color: var(--text-main);
+    }
+    .browser-control-banner.user-mode {
+      background: rgba(245, 158, 11, 0.14);
+      border-bottom-color: rgba(245, 158, 11, 0.35);
+    }
+    .browser-stage {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #070b12;
+      overflow: hidden;
+      padding: 8px;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .browser-viewport-wrap {
+      position: relative;
+      max-width: 100%;
+      max-height: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+      background: #111827;
+      touch-action: none;
+    }
+    #browserViewportImg {
+      display: block;
+      max-width: 100%;
+      max-height: calc(100vh - 280px);
+      max-height: calc(var(--vvh, 100dvh) - 270px);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      cursor: crosshair;
+      touch-action: none;
+      -webkit-user-drag: none;
+    }
+    .browser-placeholder {
+      padding: 28px 20px;
+      text-align: center;
+      color: var(--text-muted);
+      max-width: 420px;
+    }
+    .browser-tap-ripple {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      margin-left: -12px;
+      margin-top: -12px;
+      border-radius: 50%;
+      border: 2px solid #38bdf8;
+      background: rgba(56, 189, 248, 0.28);
+      pointer-events: none;
+      animation: browserTapFade 0.45s ease-out forwards;
+    }
+    @keyframes browserTapFade {
+      0% { transform: scale(0.5); opacity: 1; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+    .browser-input-dock {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 12px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+    }
+    .browser-type-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .browser-type-input {
+      flex: 1;
+      min-width: 0;
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-size: 14px;
+    }
+    .browser-keys-row {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    @media (max-width: 768px) {
+      .browser-url-input, .browser-type-input {
+        font-size: 16px !important;
+      }
+      .browser-toolbar {
+        padding: 6px 8px;
+      }
+      .browser-input-dock {
+        padding: 6px 8px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -2913,6 +3086,7 @@
 
     <div class="topbar-actions">
       <button id="deckToggleBtn" class="btn" onclick="toggleDeckView()" title="Toggle Multi-Project Widget Deck (view all projects & send prompts directly from tiles)">🎛️ Deck</button>
+      <button id="browserToggleBtn" class="btn" onclick="toggleBrowserView()" title="Remote Agent Browser & Phone Takeover (watch live & take control for logins/2FA)">🌐 Browser</button>
       <button id="mobileReloadBtn" class="btn mobile-only-btn" onclick="reloadHubApp()" style="display:none; padding:4px 8px; font-size:13px;" title="Reload latest app UI">↻</button>
       <button id="mobileNewChatBtn" class="btn btn-primary mobile-only-btn" onclick="createNewThread()" style="display:none; padding:4px 10px; font-size:13px; font-weight:700;" title="New Chat">＋ New</button>
       <div class="selector-group" title="When in Auto-Pilot mode, automatically switch models/engines if remaining quota falls below this percentage">
@@ -3012,6 +3186,66 @@
         </div>
         <div class="deck-scroll">
           <div id="deckGrid" class="deck-grid"></div>
+        </div>
+      </div>
+
+      <!-- REMOTE AGENT BROWSER & PHONE TAKEOVER VIEW -->
+      <div id="browserViewContainer" class="browser-view">
+        <div class="browser-toolbar">
+          <div class="browser-nav-group">
+            <button class="btn btn-sm" onclick="browserAction('back')" title="Back">◀</button>
+            <button class="btn btn-sm" onclick="browserAction('forward')" title="Forward">▶</button>
+            <button class="btn btn-sm" onclick="browserAction('reload')" title="Reload">↻</button>
+          </div>
+          <form class="browser-url-form" onsubmit="event.preventDefault(); browserNavigate();">
+            <input id="browserUrlInput" class="browser-url-input" type="text" placeholder="Enter URL or search (e.g. github.com)..." autocomplete="off" autocapitalize="none" spellcheck="false" />
+            <button type="submit" class="btn btn-sm btn-primary">Go</button>
+          </form>
+          <div class="browser-nav-group">
+            <button id="browserViewportBtn" class="btn btn-sm" onclick="toggleBrowserViewport()" title="Switch between Desktop and Mobile viewport">🖥️ Desktop</button>
+            <button id="browserPowerBtn" class="btn btn-sm btn-primary" onclick="toggleBrowserPower()">▶️ Start</button>
+            <button class="btn btn-sm" onclick="toggleBrowserView(false)" title="Return to Chat">💬 Chat</button>
+          </div>
+        </div>
+
+        <div id="browserControlBanner" class="browser-control-banner">
+          <span id="browserStatusText">🌐 Browser stopped — tap Start to launch sandboxed Chrome/Edge</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button id="browserExtractBtn" class="btn btn-sm" onclick="extractBrowserPageToClipboard()" title="Extract visible page text & URL">📋 Extract</button>
+            <button id="browserTakeoverBtn" class="btn btn-sm" onclick="toggleBrowserControlMode()" style="font-weight:700;">✋ Take Control</button>
+          </div>
+        </div>
+
+        <div id="browserStage" class="browser-stage">
+          <div id="browserPlaceholder" class="browser-placeholder">
+            <div style="font-size:32px; margin-bottom:8px;">🌐</div>
+            <div style="font-size:15px; font-weight:700; color:var(--text-main); margin-bottom:6px;">Remote Agent Browser & Phone Takeover</div>
+            <div style="font-size:12.5px; line-height:1.5; margin-bottom:14px;">
+              Runs a persistent Chrome/Edge session on your PC and streams it live here. Tap <strong>✋ Take Control</strong> anytime to log in, complete 2FA, or solve prompts directly from your phone.
+            </div>
+            <button class="btn btn-primary" onclick="startRemoteBrowser()">▶️ Launch Browser Session</button>
+          </div>
+          <div id="browserViewportWrap" class="browser-viewport-wrap" style="display:none;">
+            <img id="browserViewportImg" alt="Live Remote Browser Viewport" draggable="false" />
+          </div>
+        </div>
+
+        <div class="browser-input-dock">
+          <div class="browser-type-row">
+            <input id="browserTypeInput" class="browser-type-input" type="text" placeholder="Type text / password / 2FA code into focused field..." autocomplete="off" autocapitalize="none" />
+            <button id="browserMaskBtn" class="btn btn-sm" onclick="toggleBrowserInputMask()" title="Toggle password masking">👁️</button>
+            <button class="btn btn-sm" onclick="sendBrowserType(false)">Send</button>
+            <button class="btn btn-sm btn-primary" onclick="sendBrowserType(true)">Send ↵</button>
+          </div>
+          <div class="browser-keys-row">
+            <span style="font-size:11px; color:var(--text-muted); margin-right:2px;">Keys:</span>
+            <button class="btn btn-sm" onclick="browserKey('Tab')">Tab</button>
+            <button class="btn btn-sm" onclick="browserKey('Enter')">Enter ↵</button>
+            <button class="btn btn-sm" onclick="browserKey('Backspace')">⌫</button>
+            <button class="btn btn-sm" onclick="browserKey('Escape')">Esc</button>
+            <button class="btn btn-sm" onclick="browserScrollStep(-280)">▲ Up</button>
+            <button class="btn btn-sm" onclick="browserScrollStep(280)">▼ Down</button>
+          </div>
         </div>
       </div>
 
@@ -7144,15 +7378,22 @@
       if (!deckEl) return;
 
       if (isDeckViewOpen) {
+        if (typeof isBrowserViewOpen !== 'undefined' && isBrowserViewOpen) {
+          isBrowserViewOpen = false;
+          document.getElementById('browserViewContainer')?.classList.remove('open');
+          document.getElementById('browserToggleBtn')?.classList.remove('active-browser');
+        }
         deckEl.classList.add('open');
         if (ribbonEl) ribbonEl.style.display = 'none';
         if (chatScrollEl) chatScrollEl.style.display = 'none';
         if (composerEl) composerEl.style.display = 'none';
       } else {
         deckEl.classList.remove('open');
-        if (ribbonEl) ribbonEl.style.display = '';
-        if (chatScrollEl) chatScrollEl.style.display = '';
-        if (composerEl) composerEl.style.display = '';
+        if (typeof isBrowserViewOpen === 'undefined' || !isBrowserViewOpen) {
+          if (ribbonEl) ribbonEl.style.display = '';
+          if (chatScrollEl) chatScrollEl.style.display = '';
+          if (composerEl) composerEl.style.display = '';
+        }
       }
       updateDeckToggleBtn();
     }
@@ -7883,5 +8124,376 @@ function toggleVoiceInput() {
   _voiceRec.onend = () => { _voiceActive = false; btn.textContent = '🎤 Voice'; btn.style.borderColor = ''; ta.focus(); };
   try { _voiceRec.start(); } catch (err) { console.error(err); }
 }
+</script>
+<script>
+// ===== Remote Agent Browser & Phone Takeover =====
+let isBrowserViewOpen = false;
+let browserStreamEs = null;
+let browserState = {
+  running: false,
+  viewportMode: 'desktop',
+  viewport: { width: 1280, height: 800, mobile: false },
+  controlMode: 'agent',
+  url: '',
+  title: ''
+};
+
+function updateBrowserUi() {
+  const btn = document.getElementById('browserToggleBtn');
+  const powerBtn = document.getElementById('browserPowerBtn');
+  const vpBtn = document.getElementById('browserViewportBtn');
+  const banner = document.getElementById('browserControlBanner');
+  const statusText = document.getElementById('browserStatusText');
+  const takeoverBtn = document.getElementById('browserTakeoverBtn');
+  const urlInput = document.getElementById('browserUrlInput');
+  const placeholder = document.getElementById('browserPlaceholder');
+  const wrap = document.getElementById('browserViewportWrap');
+
+  if (btn) {
+    btn.classList.toggle('active-browser', isBrowserViewOpen);
+    btn.classList.toggle('user-control-active', browserState.running && browserState.controlMode === 'user');
+    btn.textContent = browserState.running && browserState.controlMode === 'user' ? '✋ Browser' : '🌐 Browser';
+  }
+  if (powerBtn) {
+    powerBtn.textContent = browserState.running ? '⏹️ Stop' : '▶️ Start';
+    powerBtn.classList.toggle('btn-primary', !browserState.running);
+  }
+  if (vpBtn) {
+    vpBtn.textContent = browserState.viewportMode === 'mobile' ? '📱 Mobile' : '🖥️ Desktop';
+  }
+  if (banner) {
+    banner.classList.toggle('user-mode', browserState.running && browserState.controlMode === 'user');
+  }
+  if (takeoverBtn) {
+    if (browserState.controlMode === 'user') {
+      takeoverBtn.textContent = '🤖 Return to Agent';
+      takeoverBtn.classList.add('btn-primary');
+    } else {
+      takeoverBtn.textContent = '✋ Take Control';
+      takeoverBtn.classList.remove('btn-primary');
+    }
+  }
+  if (statusText) {
+    if (!browserState.running) {
+      statusText.textContent = browserState.lastError
+        ? `⚠️ Browser error: ${browserState.lastError}`
+        : '🌐 Browser stopped — tap Start to launch sandboxed Chrome/Edge';
+    } else if (browserState.controlMode === 'user') {
+      statusText.textContent = `✋ You have control — tap, scroll, or type below (${browserState.title || browserState.url || 'active'})`;
+    } else {
+      statusText.textContent = `🤖 Agent mode (${browserState.browserName || 'Browser'}) — ${browserState.title || browserState.url || 'ready'}`;
+    }
+  }
+  if (urlInput && document.activeElement !== urlInput && browserState.url) {
+    urlInput.value = browserState.url;
+  }
+  if (placeholder && wrap) {
+    placeholder.style.display = browserState.running ? 'none' : 'block';
+    wrap.style.display = browserState.running ? 'inline-flex' : 'none';
+  }
+}
+
+function connectBrowserStream() {
+  if (browserStreamEs) return;
+  const token = typeof HUB_TOKEN !== 'undefined' ? HUB_TOKEN : '';
+  const url = `/api/browser/stream?token=${encodeURIComponent(token)}`;
+  const es = new EventSource(url);
+  browserStreamEs = es;
+
+  es.addEventListener('state', (ev) => {
+    try {
+      browserState = JSON.parse(ev.data);
+      updateBrowserUi();
+    } catch {}
+  });
+
+  es.addEventListener('frame', (ev) => {
+    try {
+      const frame = JSON.parse(ev.data);
+      if (frame && frame.data) {
+        const img = document.getElementById('browserViewportImg');
+        if (img) img.src = 'data:image/jpeg;base64,' + frame.data;
+        const placeholder = document.getElementById('browserPlaceholder');
+        const wrap = document.getElementById('browserViewportWrap');
+        if (placeholder && wrap && browserState.running) {
+          placeholder.style.display = 'none';
+          wrap.style.display = 'inline-flex';
+        }
+      }
+    } catch {}
+  });
+
+  es.onerror = () => {
+    // EventSource auto-reconnects; keep status fresh
+  };
+}
+
+function disconnectBrowserStream() {
+  if (browserStreamEs) {
+    try { browserStreamEs.close(); } catch {}
+    browserStreamEs = null;
+  }
+}
+
+function toggleBrowserView(forceState) {
+  isBrowserViewOpen = typeof forceState === 'boolean' ? forceState : !isBrowserViewOpen;
+  const browserEl = document.getElementById('browserViewContainer');
+  const ribbonEl = document.querySelector('.engine-ribbon');
+  const chatScrollEl = document.getElementById('chatScroll');
+  const composerEl = document.querySelector('.composer-wrap');
+
+  if (isBrowserViewOpen) {
+    if (typeof isDeckViewOpen !== 'undefined' && isDeckViewOpen) {
+      isDeckViewOpen = false;
+      document.getElementById('deckViewContainer')?.classList.remove('open');
+      if (typeof updateDeckToggleBtn === 'function') updateDeckToggleBtn();
+    }
+    browserEl?.classList.add('open');
+    if (ribbonEl) ribbonEl.style.display = 'none';
+    if (chatScrollEl) chatScrollEl.style.display = 'none';
+    if (composerEl) composerEl.style.display = 'none';
+    connectBrowserStream();
+    apiFetch('/api/browser/status').then((r) => r.json()).then((s) => {
+      browserState = s;
+      updateBrowserUi();
+    }).catch(() => {});
+  } else {
+    browserEl?.classList.remove('open');
+    disconnectBrowserStream();
+    if (typeof isDeckViewOpen === 'undefined' || !isDeckViewOpen) {
+      if (ribbonEl) ribbonEl.style.display = '';
+      if (chatScrollEl) chatScrollEl.style.display = '';
+      if (composerEl) composerEl.style.display = '';
+    }
+  }
+  updateBrowserUi();
+}
+
+async function startRemoteBrowser(initialUrl) {
+  const urlVal = initialUrl || document.getElementById('browserUrlInput')?.value?.trim() || '';
+  const defaultVp = window.innerWidth <= 768 ? 'mobile' : 'desktop';
+  try {
+    const res = await apiFetch('/api/browser/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlVal || undefined, viewportMode: browserState.viewportMode || defaultVp })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to start browser');
+    browserState = data;
+    connectBrowserStream();
+    updateBrowserUi();
+  } catch (err) {
+    alert('Could not start browser: ' + err.message);
+  }
+}
+
+async function toggleBrowserPower() {
+  if (browserState.running) {
+    const res = await apiFetch('/api/browser/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    browserState = await res.json();
+    updateBrowserUi();
+  } else {
+    await startRemoteBrowser();
+  }
+}
+
+async function browserNavigate() {
+  const input = document.getElementById('browserUrlInput');
+  const url = (input?.value || '').trim();
+  if (!url) return;
+  input.blur();
+  const res = await apiFetch('/api/browser/navigate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
+  });
+  const data = await res.json();
+  if (res.ok) {
+    browserState = data;
+    updateBrowserUi();
+  } else {
+    alert(data.error || 'Navigation failed');
+  }
+}
+
+async function browserAction(type, extra = {}) {
+  if (!browserState.running && type !== 'viewport') return;
+  const res = await apiFetch('/api/browser/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, ...extra })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Browser action failed');
+  if (data && typeof data.running === 'boolean') {
+    browserState = data;
+    updateBrowserUi();
+  }
+  return data;
+}
+
+async function toggleBrowserControlMode() {
+  const nextMode = browserState.controlMode === 'user' ? 'agent' : 'user';
+  await browserAction('control', { mode: nextMode });
+}
+
+async function toggleBrowserViewport() {
+  const nextVp = browserState.viewportMode === 'mobile' ? 'desktop' : 'mobile';
+  await browserAction('viewport', { viewportMode: nextVp });
+}
+
+function toggleBrowserInputMask() {
+  const inp = document.getElementById('browserTypeInput');
+  const btn = document.getElementById('browserMaskBtn');
+  if (!inp) return;
+  const isPass = inp.type === 'password';
+  inp.type = isPass ? 'text' : 'password';
+  if (btn) btn.textContent = isPass ? '👁️' : '🙈';
+}
+
+async function sendBrowserType(submit) {
+  const inp = document.getElementById('browserTypeInput');
+  if (!inp) return;
+  const text = inp.value;
+  if (!text && !submit) return;
+  await browserAction('type', { text, submit: !!submit });
+  inp.value = '';
+}
+
+async function browserKey(key) {
+  await browserAction('key', { key });
+}
+
+async function browserScrollStep(deltaY) {
+  const vp = browserState.viewport || { width: 1280, height: 800 };
+  await browserAction('scroll', { x: Math.round(vp.width / 2), y: Math.round(vp.height / 2), deltaX: 0, deltaY });
+}
+
+async function extractBrowserPageToClipboard() {
+  try {
+    const ctx = await browserAction('extract');
+    const summary = `URL: ${ctx.url}\nTitle: ${ctx.title}\n\n${ctx.text || ''}`;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(summary);
+    }
+    const btn = document.getElementById('browserExtractBtn');
+    if (btn) {
+      const prev = btn.textContent;
+      btn.textContent = '✅ Copied';
+      setTimeout(() => { btn.textContent = prev; }, 1600);
+    }
+  } catch (err) {
+    alert('Extract failed: ' + err.message);
+  }
+}
+
+function showBrowserTapRipple(clientX, clientY) {
+  const wrap = document.getElementById('browserViewportWrap');
+  if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const ripple = document.createElement('div');
+  ripple.className = 'browser-tap-ripple';
+  ripple.style.left = (clientX - rect.left) + 'px';
+  ripple.style.top = (clientY - rect.top) + 'px';
+  wrap.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 480);
+}
+
+function mapClientToViewport(clientX, clientY) {
+  const img = document.getElementById('browserViewportImg');
+  if (!img) return null;
+  const rect = img.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const vp = browserState.viewport || { width: 1280, height: 800 };
+  const x = Math.round(((clientX - rect.left) / rect.width) * vp.width);
+  const y = Math.round(((clientY - rect.top) / rect.height) * vp.height);
+  return { x, y };
+}
+
+(function initBrowserViewportGestures() {
+  const img = document.getElementById('browserViewportImg');
+  const typeInp = document.getElementById('browserTypeInput');
+  if (!img) return;
+
+  let touchStart = null;
+  let lastTouch = null;
+  let lastScrollSentAt = 0;
+
+  img.addEventListener('touchstart', (e) => {
+    if (!browserState.running || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    touchStart = { x: t.clientX, y: t.clientY, time: Date.now() };
+    lastTouch = { x: t.clientX, y: t.clientY };
+  }, { passive: true });
+
+  img.addEventListener('touchmove', (e) => {
+    if (!browserState.running || !lastTouch || e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    const dy = lastTouch.y - t.clientY;
+    const dx = lastTouch.x - t.clientX;
+    const now = Date.now();
+    if (now - lastScrollSentAt >= 75 && (Math.abs(dy) > 4 || Math.abs(dx) > 4)) {
+      lastScrollSentAt = now;
+      const pt = mapClientToViewport(t.clientX, t.clientY);
+      if (pt) browserAction('scroll', { x: pt.x, y: pt.y, deltaX: dx * 2, deltaY: dy * 2 }).catch(() => {});
+      lastTouch = { x: t.clientX, y: t.clientY };
+    }
+  }, { passive: false });
+
+  img.addEventListener('touchend', (e) => {
+    if (!browserState.running || !touchStart) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dist = Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y);
+    if (dist < 10) {
+      const pt = mapClientToViewport(t.clientX, t.clientY);
+      if (pt) {
+        showBrowserTapRipple(t.clientX, t.clientY);
+        browserAction('click', { x: pt.x, y: pt.y }).catch(() => {});
+      }
+    }
+    touchStart = null;
+    lastTouch = null;
+  }, { passive: true });
+
+  img.addEventListener('click', (e) => {
+    // Ignore synthesized click right after touch
+    if (e.pointerType === 'touch' || !browserState.running) return;
+    const pt = mapClientToViewport(e.clientX, e.clientY);
+    if (pt) {
+      showBrowserTapRipple(e.clientX, e.clientY);
+      browserAction('click', { x: pt.x, y: pt.y }).catch(() => {});
+    }
+  });
+
+  let wheelAccX = 0, wheelAccY = 0, wheelTimer = null, lastWheelPt = null;
+  img.addEventListener('wheel', (e) => {
+    if (!browserState.running) return;
+    e.preventDefault();
+    wheelAccX += e.deltaX;
+    wheelAccY += e.deltaY;
+    lastWheelPt = mapClientToViewport(e.clientX, e.clientY);
+    if (!wheelTimer) {
+      wheelTimer = setTimeout(() => {
+        const pt = lastWheelPt || { x: 400, y: 400 };
+        browserAction('scroll', { x: pt.x, y: pt.y, deltaX: wheelAccX, deltaY: wheelAccY }).catch(() => {});
+        wheelAccX = 0;
+        wheelAccY = 0;
+        wheelTimer = null;
+      }, 60);
+    }
+  }, { passive: false });
+
+  if (typeInp) {
+    typeInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendBrowserType(true);
+      }
+    });
+  }
+})();
 </script></body>
 </html>
