@@ -2666,7 +2666,7 @@
   </div>
 
   <script>
-    const HUB_CLIENT_VERSION = '2026-11-13-stream-recovery-v3';
+    const HUB_CLIENT_VERSION = '2026-11-13-pareto-router-v4';
     let HUB_TOKEN = "__HUB_TOKEN__";
     if (!HUB_TOKEN || HUB_TOKEN.startsWith('__')) {
       HUB_TOKEN = localStorage.getItem('ai_hub_token') || "";
@@ -3151,95 +3151,407 @@
       updateTopEngineBadge();
     });
 
-    function classifyTaskComplexity(prompt, attachments = []) {
+    const MODEL_BENCHMARK_PROFILES = {
+      'gemini-4-argon': {
+        high:   { intelligence: 96, coding: 95, reasoning: 97, math: 97, costWeight: 0.95, arenaElo: 1395, sweBench: 74.8 },
+        medium: { intelligence: 93, coding: 92, reasoning: 93, math: 93, costWeight: 0.68, arenaElo: 1380, sweBench: 71.2 },
+        low:    { intelligence: 88, coding: 87, reasoning: 86, math: 87, costWeight: 0.45, arenaElo: 1355, sweBench: 66.0 }
+      },
+      'claude-opus-5-5': {
+        high:   { intelligence: 96, coding: 96, reasoning: 96, math: 94, costWeight: 0.98, arenaElo: 1393, sweBench: 75.4 },
+        medium: { intelligence: 93, coding: 93, reasoning: 92, math: 90, costWeight: 0.72, arenaElo: 1378, sweBench: 72.0 },
+        low:    { intelligence: 88, coding: 89, reasoning: 86, math: 85, costWeight: 0.50, arenaElo: 1352, sweBench: 67.5 }
+      },
+      'claude-sonnet-5-5': {
+        high:   { intelligence: 90, coding: 92, reasoning: 89, math: 88, costWeight: 0.52, arenaElo: 1362, sweBench: 70.5 },
+        medium: { intelligence: 87, coding: 89, reasoning: 85, math: 85, costWeight: 0.36, arenaElo: 1348, sweBench: 67.2 },
+        low:    { intelligence: 82, coding: 84, reasoning: 79, math: 80, costWeight: 0.24, arenaElo: 1325, sweBench: 62.0 }
+      },
+      'gemini-4-hydrogen': {
+        xhigh:  { intelligence: 90, coding: 89, reasoning: 91, math: 92, costWeight: 0.58, arenaElo: 1364, sweBench: 68.5 },
+        high:   { intelligence: 89, coding: 88, reasoning: 90, math: 91, costWeight: 0.50, arenaElo: 1358, sweBench: 67.8 },
+        medium: { intelligence: 85, coding: 84, reasoning: 85, math: 86, costWeight: 0.34, arenaElo: 1338, sweBench: 63.5 },
+        low:    { intelligence: 80, coding: 79, reasoning: 78, math: 80, costWeight: 0.20, arenaElo: 1312, sweBench: 58.0 }
+      },
+      'gemini-3.8-flash': {
+        high:   { intelligence: 83, coding: 82, reasoning: 84, math: 86, costWeight: 0.25, arenaElo: 1332, sweBench: 61.5 },
+        medium: { intelligence: 78, coding: 77, reasoning: 76, math: 79, costWeight: 0.14, arenaElo: 1308, sweBench: 55.0 },
+        low:    { intelligence: 72, coding: 70, reasoning: 68, math: 71, costWeight: 0.08, arenaElo: 1282, sweBench: 48.0 }
+      },
+      'gpt-oss': {
+        high:   { intelligence: 78, coding: 76, reasoning: 77, math: 78, costWeight: 0.18, arenaElo: 1305, sweBench: 53.0 },
+        medium: { intelligence: 75, coding: 73, reasoning: 74, math: 75, costWeight: 0.12, arenaElo: 1295, sweBench: 50.0 },
+        low:    { intelligence: 71, coding: 69, reasoning: 68, math: 70, costWeight: 0.08, arenaElo: 1278, sweBench: 45.0 }
+      },
+      'gpt-6-astra': {
+        ultra:  { intelligence: 98, coding: 97, reasoning: 98, math: 98, costWeight: 1.00, arenaElo: 1408, sweBench: 77.5 },
+        max:    { intelligence: 98, coding: 97, reasoning: 98, math: 98, costWeight: 0.98, arenaElo: 1405, sweBench: 77.2 },
+        xhigh:  { intelligence: 97, coding: 96, reasoning: 98, math: 98, costWeight: 0.95, arenaElo: 1402, sweBench: 76.5 },
+        high:   { intelligence: 96, coding: 96, reasoning: 97, math: 97, costWeight: 0.90, arenaElo: 1396, sweBench: 75.5 },
+        medium: { intelligence: 92, coding: 92, reasoning: 92, math: 93, costWeight: 0.65, arenaElo: 1375, sweBench: 71.0 },
+        low:    { intelligence: 87, coding: 87, reasoning: 86, math: 87, costWeight: 0.42, arenaElo: 1350, sweBench: 65.5 }
+      },
+      'gpt-6.1-terra': {
+        xhigh:  { intelligence: 95, coding: 96, reasoning: 95, math: 95, costWeight: 0.88, arenaElo: 1390, sweBench: 74.8 },
+        high:   { intelligence: 94, coding: 95, reasoning: 94, math: 94, costWeight: 0.80, arenaElo: 1386, sweBench: 74.0 },
+        medium: { intelligence: 90, coding: 91, reasoning: 90, math: 90, costWeight: 0.56, arenaElo: 1368, sweBench: 69.8 },
+        low:    { intelligence: 85, coding: 86, reasoning: 83, math: 84, costWeight: 0.36, arenaElo: 1340, sweBench: 64.0 }
+      },
+      'gpt-5.6-terra': {
+        high:   { intelligence: 92, coding: 93, reasoning: 92, math: 92, costWeight: 0.74, arenaElo: 1376, sweBench: 72.0 },
+        medium: { intelligence: 88, coding: 89, reasoning: 88, math: 88, costWeight: 0.50, arenaElo: 1358, sweBench: 67.8 },
+        low:    { intelligence: 83, coding: 84, reasoning: 81, math: 82, costWeight: 0.32, arenaElo: 1330, sweBench: 62.0 }
+      },
+      'gpt-6.1-sol': {
+        xhigh:  { intelligence: 94, coding: 95, reasoning: 93, math: 94, costWeight: 0.78, arenaElo: 1384, sweBench: 73.6 },
+        high:   { intelligence: 92, coding: 93, reasoning: 91, math: 92, costWeight: 0.66, arenaElo: 1376, sweBench: 72.4 },
+        medium: { intelligence: 88, coding: 90, reasoning: 87, math: 88, costWeight: 0.44, arenaElo: 1355, sweBench: 68.5 },
+        low:    { intelligence: 83, coding: 85, reasoning: 80, math: 82, costWeight: 0.26, arenaElo: 1330, sweBench: 62.5 }
+      },
+      'gpt-6-sol': {
+        high:   { intelligence: 91, coding: 92, reasoning: 90, math: 91, costWeight: 0.64, arenaElo: 1372, sweBench: 71.5 },
+        medium: { intelligence: 87, coding: 89, reasoning: 86, math: 87, costWeight: 0.42, arenaElo: 1350, sweBench: 67.5 },
+        low:    { intelligence: 82, coding: 84, reasoning: 79, math: 81, costWeight: 0.25, arenaElo: 1325, sweBench: 61.5 }
+      },
+      'gpt-5.6-sol': {
+        high:   { intelligence: 89, coding: 90, reasoning: 88, math: 89, costWeight: 0.58, arenaElo: 1362, sweBench: 69.5 },
+        medium: { intelligence: 85, coding: 87, reasoning: 84, math: 85, costWeight: 0.38, arenaElo: 1342, sweBench: 65.5 },
+        low:    { intelligence: 80, coding: 82, reasoning: 77, math: 79, costWeight: 0.22, arenaElo: 1318, sweBench: 59.5 }
+      },
+      'gpt-6-luna': {
+        high:   { intelligence: 83, coding: 84, reasoning: 82, math: 84, costWeight: 0.28, arenaElo: 1330, sweBench: 62.0 },
+        medium: { intelligence: 79, coding: 80, reasoning: 77, math: 79, costWeight: 0.16, arenaElo: 1310, sweBench: 57.0 },
+        low:    { intelligence: 73, coding: 74, reasoning: 70, math: 72, costWeight: 0.09, arenaElo: 1285, sweBench: 50.0 }
+      },
+      'gpt-5.6-luna': {
+        high:   { intelligence: 81, coding: 82, reasoning: 80, math: 82, costWeight: 0.24, arenaElo: 1320, sweBench: 59.5 },
+        medium: { intelligence: 77, coding: 78, reasoning: 75, math: 77, costWeight: 0.14, arenaElo: 1300, sweBench: 54.5 },
+        low:    { intelligence: 71, coding: 72, reasoning: 68, math: 70, costWeight: 0.08, arenaElo: 1275, sweBench: 48.0 }
+      }
+    };
+
+    const EFFORT_RANK = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 6 };
+
+    function getModelBenchmarkProfile(slugOrId, effort = 'medium') {
+      const raw = String(slugOrId || '').toLowerCase();
+      const eff = String(effort || 'medium').toLowerCase();
+      const matchedKey = Object.keys(MODEL_BENCHMARK_PROFILES).find(k => raw.includes(k));
+      if (matchedKey) {
+        const familyTable = MODEL_BENCHMARK_PROFILES[matchedKey];
+        return familyTable[eff] || familyTable.medium || Object.values(familyTable)[0];
+      }
+      const boost = eff === 'high' || eff === 'xhigh' ? 4 : eff === 'low' ? -4 : 0;
+      return {
+        intelligence: 82 + boost,
+        coding: 82 + boost,
+        reasoning: 81 + boost,
+        math: 81 + boost,
+        costWeight: eff === 'high' ? 0.55 : eff === 'low' ? 0.22 : 0.38,
+        arenaElo: 1330 + boost * 5,
+        sweBench: 62 + boost
+      };
+    }
+
+    function computeDomainCapability(profile, domain = 'general') {
+      if (domain === 'coding') return Math.round((0.50 * profile.coding + 0.35 * profile.reasoning + 0.15 * profile.intelligence) * 10) / 10;
+      if (domain === 'debugging') return Math.round((0.45 * profile.reasoning + 0.40 * profile.coding + 0.15 * profile.intelligence) * 10) / 10;
+      if (domain === 'architecture') return Math.round((0.50 * profile.reasoning + 0.30 * profile.intelligence + 0.20 * profile.coding) * 10) / 10;
+      if (domain === 'math') return Math.round((0.55 * profile.math + 0.30 * profile.reasoning + 0.15 * profile.intelligence) * 10) / 10;
+      return Math.round((0.45 * profile.intelligence + 0.30 * profile.reasoning + 0.25 * profile.coding) * 10) / 10;
+    }
+
+    function classifyTaskComplexity(prompt, attachments = [], thread = null) {
       const clean = String(prompt || '').trim();
       const attachCount = Array.isArray(attachments) ? attachments.length : 0;
-      const COMPLEX_KEYWORDS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed system|consensus|raft|paxos|race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|penetration test(ing)?|formal verification|mathematical proof|compiler(s)?|ast parser|kernel|zero[- ]downtime|end-to-end implementation|full implementation|from scratch|comprehensive review|thoroughly analyze|deep dive|step-by-step refactor|multi-tenant|transaction isolation|high[- ]throughput)\b/i;
-      const hasMultipleSteps = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length >= 3;
-      const isLongSpecification = clean.length > 700 && hasMultipleSteps;
-      if (COMPLEX_KEYWORDS.test(clean) || isLongSpecification || (attachCount >= 3 && clean.length > 300)) {
-        return { complexity: 'complex', suggestedEffort: 'high', reason: 'Deep reasoning / complex task' };
-      }
-      const TRIVIAL_ACTION = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|type annotations?|one[- ]liner|1[- ]liner|regex|simple function|quick script|hello world|bash alias|curl command|git command|quick test|simple helper|rephrase|proofread)\b/i;
-      const CASUAL_GREETING = /^(hi|hello|hey|thanks|thank you|ok|okay|got it|sounds good|yes|no|perfect|great)[\.\!\?]?$/i;
-      const STATUS_OR_META = /^(status|what's left|summary of recent|what did we do|where was i|ping|test)[\.\!\?]?$/i;
-      const INFORMATIONAL_QUESTION = /^(what|whats|what's|why|how|when|where|who|which|can you explain|tell me about|summarize|explain)\b/i;
-      const isShort = clean.length < 450;
-      const isQuestion = INFORMATIONAL_QUESTION.test(clean) || clean.endsWith('?');
-      if (CASUAL_GREETING.test(clean) || STATUS_OR_META.test(clean)) {
-        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Conversational / status check' };
-      }
-      if (TRIVIAL_ACTION.test(clean) && isShort && attachCount <= 1) {
-        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Micro-task / simple edit' };
-      }
-      if (isQuestion && isShort && attachCount <= 1 && !COMPLEX_KEYWORDS.test(clean)) {
-        return { complexity: 'simple', suggestedEffort: 'low', reason: 'Lightweight question / explanation' };
-      }
-      const MODERATE_ACTION = /\b(implement|refactor|migrate|rewrite|build|integrate|(create|add)\s+.*(endpoint|route|feature|component|service|module))\b/i;
-      if (MODERATE_ACTION.test(clean) || attachCount > 1 || clean.length > 400) {
-        return { complexity: 'moderate', suggestedEffort: 'medium', reason: 'Standard coding / execution task' };
-      }
-      return { complexity: 'simple', suggestedEffort: 'medium', reason: 'Straightforward request' };
-    }
 
-    function selectAgyAutoModel(models = [], complexity = 'simple', threshold = 12) {
-      const getModel = (familySlug, effort) =>
-        models.find(m => m.modelId && m.modelId.toLowerCase().includes(familySlug.toLowerCase()) && m.effort === effort && (m.remainingPct ?? 100) >= threshold);
-      const getAnyModelInFamily = (familySlug) => {
-        const list = models.filter(m => m.modelId && m.modelId.toLowerCase().includes(familySlug.toLowerCase()) && (m.remainingPct ?? 100) >= threshold)
-          .sort((a, b) => (b.remainingPct ?? 100) - (a.remainingPct ?? 100));
-        return list[0] || null;
+      const CASUAL_GREETING = /^(hi|hello|hey|thanks|thank you|thx|ok|okay|got it|sounds good|great|awesome|cool|nice)[\.\!\?]?$/i;
+      const STATUS_OR_META = /^(status|what's left|whats left|where was i|ping|test)[\.\!\?]?$/i;
+      if ((CASUAL_GREETING.test(clean) || STATUS_OR_META.test(clean)) && attachCount === 0) {
+        return {
+          complexity: 'simple',
+          domain: 'status',
+          domainLabel: 'Status / Greeting',
+          requiredScore: 70,
+          thinkingScore: 18,
+          suggestedEffort: 'low',
+          reason: 'Conversational / status check'
+        };
+      }
+
+      const ARCH_CRITIQUE_SIGNALS = /\b(architect(ure|ural)?|system design|scalab(le|ility)|fault[- ]tolerant|distributed|consensus|raft|paxos|pareto|trade[- ]?offs?|benchmark(s|ing)?|model rout(er|ing)|auto[- ]?rout(er|ing)|auto mode|holistic review|critique|critical(ly)?|evaluate|comparison|compare|what do (you|u) think|give your opinion|is there a better|how should we|design decision|from scratch|comprehensive review|thoroughly analyze|deep dive|multi-tenant|security audit|vulnerabilit(y|ies)|cryptograph(y|ic)|zero[- ]downtime|high[- ]throughput)\b/i;
+      const DEBUG_ROOT_CAUSE_SIGNALS = /\b(race condition(s)?|deadlock(s|ing)?|concurren(cy|t)|memory leak(s|ing)?|heap corruption|segfault(s)?|buffer overflow|load failed|missing answer|dropped stream|root cause|why (does|did|is) (it|this)|sometime(s)? it|intermittent|flaky|hang(s|ing)?|freez(e|es|ing)|crash(es|ed|ing)?|exception|stack ?trace|typeerror|referenceerror|syntaxerror|not working|doesn't work|dont work|broken|bug(s|gy)?|fail(s|ed|ing|ure))\b/i;
+      const MATH_LOGIC_SIGNALS = /\b(formal verification|mathematical proof|theorem|lemma|derivation|eigenvalue|lagrangian|stochastic|differential equation|convex optimization|markov|bayesian|probability distribution|matrix factorization|elo rating|utility function|neowave|wave[- ]count|fibonacci|retracement)\b/i;
+      const CODING_ENG_SIGNALS = /\b(implement(ation)?|refactor(ing)?|migrate|rewrite|build|integrate|wire up|endpoint|route|component|service|module|schema|database|sqlite|sql|regex|parser|compiler|ast|middle-?ware|unit test|test suite|dockerfile|deployment|worker|pwa|service[- ]worker)\b/i;
+      const MICRO_EDIT_SIGNALS = /\b(typo|spelling|format(ting)?|indent|prettify|rename|clean up comments?|add comments?|docstring|one[- ]liner|1[- ]liner|bash alias|git status|git push|git commit|rephrase|proofread)\b/i;
+      const ESCALATION_SIGNALS = /\b(too weak|not careful|still (broken|failing|wrong|not)|didn't work|didnt work|wrong answer|bad model|smarter model|more careful|missed the|you broke|try again|be thorough)\b/i;
+      const CONTINUATION_ACTION = /^(do it|go ahead|yes|proceed|implement (it|this|that)|build (it|this|that)|apply (it|this|that)|upgrade (it|this)|fix (it|this|that)|please do|let's do it|lets do it|sounds good,? do it)\b/i;
+
+      const bulletStepCount = (clean.match(/^\s*(\d+[\.\)]|\*|-)\s+/gm) || []).length;
+      const codeOrFormulaDensity = (clean.match(/[{}()[\];=<>\\/$_]|```|\b(function|const|let|var|import|export|class|def|return|async|await)\b/g) || []).length;
+      const hasPastedTranscriptOrLogs = clean.length > 900 || /🪙\s*[\d,]+\s*tokens|flowchart\s+(TD|LR)|Error:|at\s+\w+\s*\(/i.test(clean);
+      const isShortFollowUp = clean.length > 0 && clean.length < 140;
+
+      let priorComplexityScore = 0;
+      let priorDomain = null;
+      if (thread && Array.isArray(thread.messages) && thread.messages.length > 0) {
+        const recentMsgs = thread.messages.slice(-4);
+        const combinedRecent = recentMsgs.map(m => String(m.content || '')).join('\n');
+        if (ARCH_CRITIQUE_SIGNALS.test(combinedRecent)) {
+          priorComplexityScore = Math.max(priorComplexityScore, 88);
+          priorDomain = 'architecture';
+        } else if (DEBUG_ROOT_CAUSE_SIGNALS.test(combinedRecent)) {
+          priorComplexityScore = Math.max(priorComplexityScore, 87);
+          priorDomain = 'debugging';
+        } else if (MATH_LOGIC_SIGNALS.test(combinedRecent)) {
+          priorComplexityScore = Math.max(priorComplexityScore, 87);
+          priorDomain = 'math';
+        } else if (CODING_ENG_SIGNALS.test(combinedRecent)) {
+          priorComplexityScore = Math.max(priorComplexityScore, 84);
+          priorDomain = 'coding';
+        }
+      }
+
+      let domain = 'general';
+      let domainLabel = 'General Analysis';
+      let requiredScore = 76;
+      let thinkingScore = 42;
+
+      if (MICRO_EDIT_SIGNALS.test(clean) && clean.length < 280 && attachCount <= 1 && !ARCH_CRITIQUE_SIGNALS.test(clean) && !DEBUG_ROOT_CAUSE_SIGNALS.test(clean)) {
+        domain = 'micro';
+        domainLabel = 'Micro-Edit';
+        requiredScore = 72;
+        thinkingScore = 24;
+      } else if (ARCH_CRITIQUE_SIGNALS.test(clean)) {
+        domain = 'architecture';
+        domainLabel = 'Architecture & Critique';
+        requiredScore = 88;
+        thinkingScore = 72;
+      } else if (DEBUG_ROOT_CAUSE_SIGNALS.test(clean)) {
+        domain = 'debugging';
+        domainLabel = 'Root-Cause Debugging';
+        requiredScore = 87;
+        thinkingScore = 74;
+      } else if (MATH_LOGIC_SIGNALS.test(clean)) {
+        domain = 'math';
+        domainLabel = 'Math & Formal Logic';
+        requiredScore = 87;
+        thinkingScore = 76;
+      } else if (CODING_ENG_SIGNALS.test(clean)) {
+        domain = 'coding';
+        domainLabel = 'Feature Engineering';
+        requiredScore = 84;
+        thinkingScore = 56;
+      }
+
+      if (bulletStepCount >= 3) {
+        requiredScore += 4;
+        thinkingScore += 14;
+      } else if (bulletStepCount >= 2) {
+        requiredScore += 2;
+        thinkingScore += 8;
+      }
+
+      if (hasPastedTranscriptOrLogs) {
+        requiredScore = Math.max(requiredScore, 87);
+        thinkingScore += 14;
+        if (domain === 'general') {
+          domain = 'architecture';
+          domainLabel = 'Deep Context Synthesis';
+        }
+      } else if (clean.length > 450) {
+        requiredScore += 3;
+        thinkingScore += 10;
+      }
+
+      if (codeOrFormulaDensity >= 12) {
+        requiredScore = Math.max(requiredScore, 84);
+        thinkingScore += 10;
+        if (domain === 'general') {
+          domain = 'coding';
+          domainLabel = 'Code Analysis';
+        }
+      }
+
+      if (attachCount >= 3) {
+        requiredScore = Math.max(requiredScore, 87);
+        thinkingScore += 15;
+      } else if (attachCount >= 1) {
+        requiredScore = Math.max(requiredScore, 82);
+        thinkingScore += 8;
+      }
+
+      if ((isShortFollowUp || !clean) && priorComplexityScore >= 84 && domain !== 'micro') {
+        const inheritedScore = Math.round(priorComplexityScore * (clean ? 0.97 : 0.94));
+        if (inheritedScore > requiredScore) {
+          requiredScore = inheritedScore;
+          thinkingScore = Math.max(thinkingScore, 64);
+          if (domain === 'general' && priorDomain) {
+            domain = priorDomain;
+            domainLabel = priorDomain === 'architecture' ? 'Architecture Follow-Up' : priorDomain === 'debugging' ? 'Debugging Follow-Up' : 'Context Follow-Up';
+          }
+        }
+      }
+
+      if (CONTINUATION_ACTION.test(clean)) {
+        domain = 'coding';
+        domainLabel = 'Implementation Execution';
+        requiredScore = Math.max(requiredScore, priorComplexityScore >= 85 ? 88 : 85);
+        thinkingScore = Math.max(thinkingScore, 64);
+      }
+
+      if (ESCALATION_SIGNALS.test(clean)) {
+        requiredScore = Math.max(requiredScore + 5, 90);
+        thinkingScore = Math.max(thinkingScore + 16, 78);
+        if (domain === 'general') {
+          domain = 'architecture';
+          domainLabel = 'Escalated Deep Analysis';
+        }
+      }
+
+      requiredScore = Math.min(95, Math.max(70, Math.round(requiredScore)));
+      thinkingScore = Math.min(96, Math.max(15, Math.round(thinkingScore)));
+
+      let suggestedEffort = 'medium';
+      if (thinkingScore >= 70) suggestedEffort = 'high';
+      else if (thinkingScore < 38) suggestedEffort = 'low';
+
+      let complexity = 'moderate';
+      if (requiredScore >= 87 || (requiredScore >= 85 && suggestedEffort === 'high')) complexity = 'complex';
+      else if (requiredScore <= 77 && suggestedEffort === 'low') complexity = 'simple';
+
+      return {
+        complexity,
+        domain,
+        domainLabel,
+        requiredScore,
+        thinkingScore,
+        suggestedEffort,
+        reason: `${domainLabel} (Demand ${requiredScore}/100 • ${suggestedEffort[0].toUpperCase()}${suggestedEffort.slice(1)} Effort)`
       };
-      if (complexity === 'simple') {
-        const sonnet = getModel('claude-sonnet-5-5', 'medium') || getModel('claude-sonnet-5-5', 'low') || getAnyModelInFamily('claude-sonnet-5-5');
-        if (sonnet) return { model: sonnet, reason: 'Extra model (Claude Sonnet 5.5) prioritized for simple task' };
-        const opus = getModel('claude-opus-5-5', 'medium') || getModel('claude-opus-5-5', 'low') || getAnyModelInFamily('claude-opus-5-5');
-        if (opus) return { model: opus, reason: 'Extra model (Claude Opus 5.5) prioritized for simple task' };
-        const flash = getModel('gemini-3.8-flash', 'medium') || getModel('gemini-3.8-flash', 'high') || getModel('gemini-3.8-flash', 'low') || getAnyModelInFamily('gemini-3.8-flash');
-        if (flash) return { model: flash, reason: 'Gemini 3.8 Flash (abundant quota) selected for simple task' };
-        const hydro = getModel('gemini-4-hydrogen', 'low') || getModel('gemini-4-hydrogen', 'medium') || getAnyModelInFamily('gemini-4-hydrogen');
-        if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen selected for simple task' };
-        const gptoss = getAnyModelInFamily('gpt-oss');
-        if (gptoss) return { model: gptoss, reason: 'GPT-OSS 120B selected for simple task' };
-        const argon = getModel('gemini-4-argon', 'low') || getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
-        if (argon) return { model: argon, reason: 'Gemini 4 Argon (all extra models depleted)' };
-        return { model: models.find(m => (m.remainingPct ?? 100) > 0) || models[0], reason: 'Available model' };
-      }
-      if (complexity === 'complex') {
-        const argon = getModel('gemini-4-argon', 'high') || getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
-        if (argon) return { model: argon, reason: 'Gemini 4 Argon (Flagship Reasoning) allocated for complex task' };
-        const opus = getModel('claude-opus-5-5', 'high') || getModel('claude-opus-5-5', 'medium') || getAnyModelInFamily('claude-opus-5-5');
-        if (opus) return { model: opus, reason: 'Claude Opus 5.5 (Deep Reasoning) allocated for complex task' };
-        const hydro = getModel('gemini-4-hydrogen', 'high') || getModel('gemini-4-hydrogen', 'xhigh') || getAnyModelInFamily('gemini-4-hydrogen');
-        if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen (High) allocated for complex task' };
-        return { model: models.find(m => (m.remainingPct ?? 100) > 0) || models[0], reason: 'Available reasoning model' };
-      }
-      const sonnet = getModel('claude-sonnet-5-5', 'medium') || getAnyModelInFamily('claude-sonnet-5-5');
-      if (sonnet) return { model: sonnet, reason: 'Claude Sonnet 5.5 balanced model' };
-      const flash = getModel('gemini-3.8-flash', 'high') || getModel('gemini-3.8-flash', 'medium') || getAnyModelInFamily('gemini-3.8-flash');
-      if (flash) return { model: flash, reason: 'Gemini 3.8 Flash balanced model' };
-      const hydro = getModel('gemini-4-hydrogen', 'medium') || getAnyModelInFamily('gemini-4-hydrogen');
-      if (hydro) return { model: hydro, reason: 'Gemini 4 Hydrogen balanced model' };
-      const argon = getModel('gemini-4-argon', 'medium') || getAnyModelInFamily('gemini-4-argon');
-      if (argon) return { model: argon, reason: 'Gemini 4 Argon' };
-      return { model: models[0], reason: 'Default model' };
     }
 
-    function selectCodexAutoModel(models = [], complexity = 'simple', userEffort = 'medium') {
-      const hasModel = slug => models.some(m => m.slug === slug);
-      if (complexity === 'simple') {
-        const slug = hasModel('gpt-6-luna') ? 'gpt-6-luna' : (hasModel('gpt-5.6-luna') ? 'gpt-5.6-luna' : (hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (models[0]?.slug || 'gpt-6.1-sol')));
-        const name = models.find(m => m.slug === slug)?.name || slug;
-        return { modelSlug: slug, effort: 'low', label: `${name} (Low)`, reason: 'Lightweight Codex model prioritized for simple task' };
+    function normalizeTaskInput(taskOrComplexity, fallbackEffort = 'medium') {
+      if (taskOrComplexity && typeof taskOrComplexity === 'object') return taskOrComplexity;
+      const c = String(taskOrComplexity || 'moderate').toLowerCase();
+      if (c === 'complex') return { complexity: 'complex', domain: 'architecture', domainLabel: 'Complex Reasoning', requiredScore: 90, thinkingScore: 78, suggestedEffort: 'high' };
+      if (c === 'simple') return { complexity: 'simple', domain: 'general', domainLabel: 'Simple Task', requiredScore: 73, thinkingScore: 25, suggestedEffort: 'low' };
+      return { complexity: 'moderate', domain: 'coding', domainLabel: 'Standard Engineering', requiredScore: 84, thinkingScore: 55, suggestedEffort: fallbackEffort || 'medium' };
+    }
+
+    function selectAgyAutoModel(models = [], taskOrComplexity = 'moderate', threshold = 12) {
+      if (!Array.isArray(models) || models.length === 0) return { model: null, reason: 'No Antigravity models available' };
+      const task = normalizeTaskInput(taskOrComplexity);
+      const aliveModels = models.filter(m => m && m.modelId && (m.remainingPct ?? 100) >= threshold);
+      const pool = aliveModels.length > 0 ? aliveModels : models.filter(m => (m.remainingPct ?? 100) > 0);
+      const candidates = (pool.length > 0 ? pool : models).map(m => {
+        const effort = String(m.effort || 'medium').toLowerCase();
+        const profile = getModelBenchmarkProfile(m.modelId, effort);
+        const capability = computeDomainCapability(profile, task.domain);
+        const remPct = m.remainingPct ?? 100;
+        const targetRank = EFFORT_RANK[task.suggestedEffort] || 2;
+        const candRank = EFFORT_RANK[effort] || 2;
+        const effortDiff = candRank - targetRank;
+
+        let effortFit = 0;
+        if (effortDiff === 0) effortFit = 3.5;
+        else if (effortDiff > 0) effortFit = task.requiredScore >= 86 ? 1.5 : -3.5 * effortDiff;
+        else effortFit = task.requiredScore >= 85 ? -8.0 * Math.abs(effortDiff) : -3.0 * Math.abs(effortDiff);
+
+        const effectiveCap = capability + (effortDiff === 0 ? 1.0 : 0);
+        const clearsBar = effectiveCap >= task.requiredScore && (candRank >= targetRank || profile.intelligence >= 93);
+
+        const baseLambda = task.requiredScore >= 87 ? 8 : task.requiredScore >= 82 ? 22 : 42;
+        const scarcityMult = remPct < 35 ? 1 + (35 - remPct) / 25 : 1.0;
+        const costPenalty = baseLambda * profile.costWeight * scarcityMult;
+
+        const surplus = capability - task.requiredScore;
+        const qualityValue = task.requiredScore >= 87
+          ? capability * 1.35
+          : task.requiredScore + (surplus >= 0 ? 6.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
+
+        const quotaBonus = (remPct / 100) * 2.5;
+        const utility = Math.round((qualityValue + effortFit + quotaBonus - costPenalty) * 100) / 100;
+
+        return { model: m, profile, capability, clearsBar, utility };
+      });
+
+      const qualified = candidates.filter(c => c.clearsBar);
+      const ranked = (qualified.length > 0 ? qualified : candidates).sort((a, b) => {
+        if (qualified.length > 0) return b.utility - a.utility;
+        return b.capability - a.capability || b.utility - a.utility;
+      });
+      const winner = ranked[0];
+      if (!winner) return { model: models[0], reason: 'Default model' };
+      return {
+        model: winner.model,
+        profile: winner.profile,
+        capability: winner.capability,
+        clearsBar: winner.clearsBar,
+        utility: winner.utility,
+        reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${task.suggestedEffort.toUpperCase()} effort] → Bench ${winner.capability} (Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
+      };
+    }
+
+    function selectCodexAutoModel(models = [], taskOrComplexity = 'moderate', userEffort = 'medium', codexRemainingPct = 100) {
+      const task = normalizeTaskInput(taskOrComplexity, userEffort);
+      const list = (Array.isArray(models) && models.length > 0)
+        ? models.filter(m => m.slug && !m.slug.includes('auto-review'))
+        : [
+            { slug: 'gpt-6.1-sol', name: 'GPT-6.1-Sol', efforts: ['low', 'medium', 'high', 'xhigh'] },
+            { slug: 'gpt-6-astra', name: 'GPT-6-Astra', efforts: ['low', 'medium', 'high', 'xhigh'] },
+            { slug: 'gpt-6-luna', name: 'GPT-6-Luna', efforts: ['low', 'medium', 'high'] }
+          ];
+      const candidateEfforts = ['low', 'medium', 'high'];
+      const candidates = [];
+      for (const m of list) {
+        const supported = (Array.isArray(m.efforts) && m.efforts.length) ? m.efforts : candidateEfforts;
+        for (const effort of candidateEfforts) {
+          if (!supported.includes(effort)) continue;
+          const profile = getModelBenchmarkProfile(m.slug, effort);
+          const capability = computeDomainCapability(profile, task.domain);
+          const targetRank = EFFORT_RANK[task.suggestedEffort] || 2;
+          const candRank = EFFORT_RANK[effort] || 2;
+          const effortDiff = candRank - targetRank;
+
+          let effortFit = 0;
+          if (effortDiff === 0) effortFit = 4.0;
+          else if (effortDiff > 0) effortFit = task.requiredScore >= 86 ? 1.5 : -4.0 * effortDiff;
+          else effortFit = task.requiredScore >= 85 ? -8.5 * Math.abs(effortDiff) : -3.5 * Math.abs(effortDiff);
+
+          const effectiveCap = capability + (effortDiff === 0 ? 1.0 : 0);
+          const clearsBar = effectiveCap >= task.requiredScore && (candRank >= targetRank || profile.intelligence >= 93);
+
+          const baseLambda = task.requiredScore >= 87 ? 8 : task.requiredScore >= 82 ? 22 : 42;
+          const scarcityMult = codexRemainingPct < 35 ? 1 + (35 - codexRemainingPct) / 25 : 1.0;
+          const costPenalty = baseLambda * profile.costWeight * scarcityMult;
+
+          const surplus = capability - task.requiredScore;
+          const qualityValue = task.requiredScore >= 87
+            ? capability * 1.35
+            : task.requiredScore + (surplus >= 0 ? 6.5 * Math.tanh(surplus / 6.5) : surplus * 2.4);
+
+          const utility = Math.round((qualityValue + effortFit - costPenalty) * 100) / 100;
+          const name = m.name || m.slug;
+          const capEffort = `${effort[0].toUpperCase()}${effort.slice(1)}`;
+          candidates.push({ modelSlug: m.slug, effort, label: `${name} (${capEffort})`, profile, capability, clearsBar, utility });
+        }
       }
-      if (complexity === 'complex') {
-        const slug = hasModel('gpt-6-astra') ? 'gpt-6-astra' : (hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (models[0]?.slug || 'gpt-6.1-sol'));
-        const name = models.find(m => m.slug === slug)?.name || slug;
-        return { modelSlug: slug, effort: 'high', label: `${name} (High)`, reason: 'Frontier reasoning Codex model allocated for complex task' };
-      }
-      const slug = hasModel('gpt-6.1-sol') ? 'gpt-6.1-sol' : (hasModel('gpt-6-sol') ? 'gpt-6-sol' : (models[0]?.slug || 'gpt-6.1-sol'));
-      const name = models.find(m => m.slug === slug)?.name || slug;
-      return { modelSlug: slug, effort: 'medium', label: `${name} (Medium)`, reason: 'Balanced Codex model selected for standard task' };
+      const qualified = candidates.filter(c => c.clearsBar);
+      const ranked = (qualified.length > 0 ? qualified : candidates).sort((a, b) => {
+        if (qualified.length > 0) return b.utility - a.utility;
+        return b.capability - a.capability || b.utility - a.utility;
+      });
+      const winner = ranked[0];
+      if (!winner) return { modelSlug: 'gpt-6.1-sol', effort: task.suggestedEffort || 'medium', label: 'GPT-6.1-Sol (Medium)', reason: 'Default Codex model' };
+      return {
+        modelSlug: winner.modelSlug,
+        effort: winner.effort,
+        label: winner.label,
+        profile: winner.profile,
+        capability: winner.capability,
+        utility: winner.utility,
+        reason: `${task.domainLabel} [Demand ${task.requiredScore} • ${winner.effort.toUpperCase()} effort] → Bench ${winner.capability} (Elo ~${winner.profile.arenaElo}, Cost ${winner.profile.costWeight}x)`
+      };
     }
 
     function humanizeModelName(engine, rawModel) {
@@ -3263,7 +3575,8 @@
       return str;
     }
 
-    function getPredictedAutoRoute(promptText = '') {
+    function getPredictedAutoRoute(promptText) {
+      const livePrompt = typeof promptText === 'string' ? promptText : (document.getElementById('promptInput')?.value || '');
       const thread = (hubData.state.threads || []).find(t => t.id === activeThreadId);
       const msgs = thread?.messages || [];
       let lastAssistant = null;
@@ -3297,32 +3610,43 @@
         targetEngine = 'antigravity';
       }
 
-      const task = promptText ? classifyTaskComplexity(promptText) : null;
+      const hasInputOrHistory = Boolean(livePrompt.trim()) || msgs.length > 0;
+      const task = hasInputOrHistory
+        ? classifyTaskComplexity(livePrompt, typeof pendingAttachments !== 'undefined' ? pendingAttachments : [], thread)
+        : null;
       let targetLabel = targetEngine === 'codex' ? codexLabel : agyLabel;
       let targetPct = targetEngine === 'codex' ? codexPct : agyPct;
       let targetEffort = 'medium';
 
       if (targetEngine === 'antigravity') {
-        const autoAgy = selectAgyAutoModel(agyModels, task ? task.complexity : 'moderate', threshold);
-        if (autoAgy?.model) {
+        const autoAgy = selectAgyAutoModel(agyModels, task || 'moderate', threshold);
+        if (autoAgy && !autoAgy.clearsBar && task && task.requiredScore >= 87 && codexPct >= Math.max(threshold, 20)) {
+          const autoCodex = selectCodexAutoModel(codexModels, task, 'medium', codexPct);
+          if (autoCodex && autoCodex.capability > (autoAgy.capability || 0) + 4) {
+            targetEngine = 'codex';
+            targetLabel = autoCodex.label;
+            targetPct = codexPct;
+            targetEffort = autoCodex.effort;
+          }
+        }
+        if (targetEngine === 'antigravity' && autoAgy?.model) {
           targetLabel = autoAgy.model.label;
           targetPct = Math.round(autoAgy.model.remainingPct ?? 100);
           targetEffort = autoAgy.model.effort || (task?.suggestedEffort || 'medium');
         }
       } else {
-        const autoCodex = selectCodexAutoModel(codexModels, task ? task.complexity : 'moderate');
+        const autoCodex = selectCodexAutoModel(codexModels, task || 'moderate', 'medium', codexPct);
         if (autoCodex) {
           targetLabel = autoCodex.label;
           targetEffort = autoCodex.effort;
         }
       }
 
-      const shortSummary = task
-        ? `${targetLabel} (${targetPct}%)`
-        : 'Smart Task Routing';
-      const fullSummary = task
-        ? (targetEngine === 'codex' ? `🟢 OpenAI Codex (${targetLabel} • ${targetPct}%)` : `🌌 Antigravity (${targetLabel} • ${targetPct}%)`)
-        : 'Smart Task Routing (Claude/Flash for simple, Argon for complex)';
+      const demandTag = task && livePrompt.trim() ? ` • ${task.domainLabel} [${task.requiredScore}]` : '';
+      const shortSummary = `${targetLabel} (${targetPct}%)`;
+      const fullSummary = targetEngine === 'codex'
+        ? `🟢 OpenAI Codex (${targetLabel} • ${targetPct}%${demandTag})`
+        : `🌌 Antigravity (${targetLabel} • ${targetPct}%${demandTag})`;
 
       return {
         engine: targetEngine,
@@ -5046,6 +5370,16 @@
 
       const promptEl = document.getElementById('promptInput');
       if (promptEl) {
+        let routePreviewTimer = null;
+        promptEl.addEventListener('input', () => {
+          clearTimeout(routePreviewTimer);
+          routePreviewTimer = setTimeout(() => {
+            if ((currentEngineMode || 'auto') === 'auto') {
+              updateTopEngineBadge();
+              updateComposerEngineUI('auto');
+            }
+          }, 120);
+        });
         promptEl.addEventListener('paste', async (e) => {
           const items = e.clipboardData?.items;
           if (!items) return;
