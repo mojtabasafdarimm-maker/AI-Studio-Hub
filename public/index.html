@@ -4934,6 +4934,8 @@
       const q = (document.getElementById('threadSearchInput')?.value || '').trim().toLowerCase();
 
       return allThreads.filter(t => {
+        // Keep active view focused on the latest conversation; hide superseded token-wise parent chats unless explicitly searching
+        if (!q && t.movedTo) return false;
         if (activeProjectId !== 'ALL' && t.projectId !== activeProjectId) return false;
         if (activeSourceFilter !== 'all') {
           if (activeSourceFilter === 'antigravity' && t.origin !== 'antigravity' && !t.agyConversationId) return false;
@@ -7500,8 +7502,9 @@
 
       if (deckMode === 'pinned') {
         for (const t of allThreads) {
+          if (t.movedTo) continue;
           if (pinnedDeckIds.has(t.id)) {
-            const pThreads = allThreads.filter(x => (x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath));
+            const pThreads = allThreads.filter(x => !x.movedTo && ((x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath)));
             tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: t.projectId || t.projectPath || t.id });
             usedThreadIds.add(t.id);
           }
@@ -7510,9 +7513,15 @@
       }
 
       if (deckMode === 'recent') {
-        for (const t of allThreads.slice(0, 12)) {
-          const pThreads = allThreads.filter(x => (x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath));
-          tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: t.projectId || t.projectPath || t.id });
+        const seenProjects = new Set();
+        for (const t of allThreads) {
+          if (t.movedTo) continue;
+          const pKey = t.projectId || (t.projectPath ? t.projectPath.toLowerCase() : t.id);
+          if (seenProjects.has(pKey)) continue;
+          seenProjects.add(pKey);
+          const pThreads = allThreads.filter(x => !x.movedTo && ((x.projectId && x.projectId === t.projectId) || (x.projectPath && x.projectPath === t.projectPath)));
+          tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: pKey });
+          if (tiles.length >= 12) break;
         }
         return tiles;
       }
@@ -7520,6 +7529,7 @@
       // Default: 'projects' mode — 1 tile per active project (sorted by most recent activity or running status), plus any extra pinned threads
       const projectGroups = new Map();
       for (const t of allThreads) {
+        if (t.movedTo) continue;
         const pKey = t.projectId || (t.projectPath ? t.projectPath.toLowerCase() : 'default');
         if (!projectGroups.has(pKey)) {
           projectGroups.set(pKey, []);
@@ -7528,10 +7538,10 @@
       }
 
       for (const [pKey, pThreads] of projectGroups.entries()) {
-        // Prefer a currently running thread in this project, or the user's selected thread for this project, or the most recent thread
+        // Prefer a currently running thread in this project, or the user's selected thread for this project (if not superseded), or the most recent thread
         const runningT = pThreads.find(t => runningThreadIds.has(t.id));
         const preferredId = projectSelectedThreadMap.get(pKey);
-        const preferredT = preferredId ? pThreads.find(t => t.id === preferredId) : null;
+        const preferredT = preferredId ? pThreads.find(t => t.id === preferredId && !t.movedTo) : null;
         const chosen = runningT || preferredT || pThreads[0];
         if (chosen) {
           tiles.push({ thread: chosen, projectThreads: pThreads, projectKey: pKey });
@@ -7541,10 +7551,11 @@
 
       // Also include any pinned threads that weren't the primary thread of their project
       for (const t of allThreads) {
+        if (t.movedTo) continue;
         if (pinnedDeckIds.has(t.id) && !usedThreadIds.has(t.id)) {
           const pKey = t.projectId || (t.projectPath ? t.projectPath.toLowerCase() : 'default');
-          const pThreads = projectGroups.get(pKey) || [t];
-          tiles.push({ thread: t, projectThreads: pThreads, projectKey: pKey });
+          const pThreads = (projectGroups.get(pKey) || [t]).filter(x => !x.movedTo);
+          tiles.push({ thread: t, projectThreads: pThreads.length ? pThreads : [t], projectKey: pKey });
           usedThreadIds.add(t.id);
         }
       }

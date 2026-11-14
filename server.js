@@ -1372,7 +1372,26 @@ function createTokenWiseContinuationThread(sourceThread, options = {}) {
     sourceThread.hubRev = (sourceThread.hubRev || 0) + 1;
   }
 
-  appState.threads = (appState.threads || []).filter((t) => t.id !== newThread.id);
+  // Automatically archive the source thread and older token-wise iterations from the same family
+  const hidden = new Set(appState.hiddenThreadIds || []);
+  hidden.add(sourceThread.id);
+  const cleanBaseTitle = baseTitle.replace(/[\(\[\{]?token-wise.*$/i, '').trim().toLowerCase();
+  for (const t of appState.threads || []) {
+    if (t.id !== newThread.id) {
+      const tTitleClean = String(t.title || '').replace(/[\(\[\{]?token-wise.*$/i, '').trim().toLowerCase();
+      if (
+        t.id === sourceThread.id ||
+        t.parentThreadId === sourceThread.id ||
+        (sourceThread.parentThreadId && t.parentThreadId === sourceThread.parentThreadId) ||
+        (cleanBaseTitle.length > 5 && tTitleClean === cleanBaseTitle && String(t.title || '').toLowerCase().includes('token-wise'))
+      ) {
+        hidden.add(t.id);
+      }
+    }
+  }
+  appState.hiddenThreadIds = [...hidden];
+
+  appState.threads = (appState.threads || []).filter((t) => !hidden.has(t.id) && t.id !== newThread.id);
   appState.threads.unshift(newThread);
   saveState(appState);
   writeContextFile(newThread, newThread.messages);
