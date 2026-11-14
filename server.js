@@ -3449,6 +3449,8 @@ let tunnelUrl = null;
 let tunnelHostname = null;
 let tunnelStatus = 'inactive'; // 'inactive' | 'starting' | 'active' | 'error'
 let tunnelError = null;
+let tunnelManuallyStopped = false;
+let tunnelRestartTimer = null;
 
 function findCloudflaredBin() {
   const p1 = 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe';
@@ -3459,6 +3461,11 @@ function findCloudflaredBin() {
 }
 
 function startCloudflareTunnel() {
+  tunnelManuallyStopped = false;
+  if (tunnelRestartTimer) {
+    clearTimeout(tunnelRestartTimer);
+    tunnelRestartTimer = null;
+  }
   if (tunnelProcess && !tunnelProcess.killed && tunnelUrl) {
     return Promise.resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
   }
@@ -3542,6 +3549,13 @@ function startCloudflareTunnel() {
           resolved = true;
           resolve({ running: false, error: `cloudflared exited with code ${code}`, status: tunnelStatus, pin: appState.settings.mobilePin });
         }
+        if (!tunnelManuallyStopped && appState.settings.autoStartTunnel !== false && !tunnelRestartTimer) {
+          console.log('[AI Hub] Cloudflare Tunnel exited unexpectedly — reconnecting in 5s...');
+          tunnelRestartTimer = setTimeout(() => {
+            tunnelRestartTimer = null;
+            startCloudflareTunnel().catch(() => {});
+          }, 5000);
+        }
       });
 
       setTimeout(() => {
@@ -3559,6 +3573,11 @@ function startCloudflareTunnel() {
 }
 
 function stopCloudflareTunnel() {
+  tunnelManuallyStopped = true;
+  if (tunnelRestartTimer) {
+    clearTimeout(tunnelRestartTimer);
+    tunnelRestartTimer = null;
+  }
   if (tunnelProcess) {
     killTree(tunnelProcess);
     tunnelProcess = null;

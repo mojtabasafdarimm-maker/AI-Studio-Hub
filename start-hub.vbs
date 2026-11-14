@@ -23,5 +23,5 @@ If Not fso.FileExists(targetServer) Then
   targetDir = localAppDir
 End If
 
-psCmd = "powershell -NoProfile -WindowStyle Hidden -Command ""if (-not (Get-NetTCPConnection -LocalPort 4747 -State Listen -ErrorAction SilentlyContinue)) { Start-Process -FilePath 'node' -ArgumentList '\""" & targetServer & "\""' -WorkingDirectory '" & targetDir & "' -WindowStyle Hidden }"""
+psCmd = "powershell -NoProfile -WindowStyle Hidden -Command ""if (-not (Get-NetTCPConnection -LocalPort 4747 -State Listen -ErrorAction SilentlyContinue)) { Start-Process -FilePath 'node' -ArgumentList 'server.js' -WorkingDirectory '" & targetDir & "' -WindowStyle Hidden }"""
 sh.Run psCmd, 0, False
