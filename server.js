@@ -4675,6 +4675,700 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+// ---------------------------------------------------------------------------
+// 12b. MUSE — Personal AI Companion, Cross-Model Task Radar, Search & Calendar
+// ---------------------------------------------------------------------------
+const MUSE_FILE = path.join(DATA_DIR, 'muse_state.json');
+const MUSE_CAL_DIR = path.join(DATA_DIR, 'calendars');
+try { fs.mkdirSync(MUSE_CAL_DIR, { recursive: true }); } catch {}
+
+function loadMuseState() {
+  try {
+    if (fs.existsSync(MUSE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(MUSE_FILE, 'utf8'));
+      return {
+        messages: Array.isArray(parsed.messages) ? parsed.messages.slice(-80) : [],
+        reminders: Array.isArray(parsed.reminders) ? parsed.reminders : [],
+        calendarSources: {
+          icsUrls: Array.isArray(parsed.calendarSources?.icsUrls) ? parsed.calendarSources.icsUrls : [],
+          syncWindowsOutlook: parsed.calendarSources?.syncWindowsOutlook !== false
+        },
+        cachedCalendarEvents: Array.isArray(parsed.cachedCalendarEvents) ? parsed.cachedCalendarEvents : [],
+        dismissedStalled: parsed.dismissedStalled && typeof parsed.dismissedStalled === 'object' ? parsed.dismissedStalled : {},
+        lastStalledPushAt: Number(parsed.lastStalledPushAt || 0),
+        notifiedCalendarIds: Array.isArray(parsed.notifiedCalendarIds) ? parsed.notifiedCalendarIds.slice(-300) : []
+      };
+    }
+  } catch {}
+  return {
+    messages: [],
+    reminders: [],
+    calendarSources: { icsUrls: [], syncWindowsOutlook: true },
+    cachedCalendarEvents: [],
+    dismissedStalled: {},
+    lastStalledPushAt: 0,
+    notifiedCalendarIds: []
+  };
+}
+
+let museState = loadMuseState();
+let lastMuseCalSyncMs = 0;
+
+function saveMuseState() {
+  try {
+    museState.messages = (museState.messages || []).slice(-80);
+    museState.notifiedCalendarIds = (museState.notifiedCalendarIds || []).slice(-300);
+    fs.writeFileSync(MUSE_FILE, JSON.stringify(museState, null, 2), 'utf8');
+  } catch {}
+}
+
+function parseIcsDate(rawVal) {
+  if (!rawVal) return null;
+  const v = String(rawVal).trim();
+  const m = v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/);
+  if (!m) {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const [, yr, mo, da, hh = '09', mm = '00', ss = '00', isUtc] = m;
+  if (isUtc === 'Z') {
+    return new Date(`${yr}-${mo}-${da}T${hh}:${mm}:${ss}Z`).toISOString();
+  }
+  return new Date(Number(yr), Number(mo) - 1, Number(da), Number(hh), Number(mm), Number(ss)).toISOString();
+}
+
+function parseIcsEvents(icsText, sourceLabel = 'Calendar') {
+  const unfolded = String(icsText || '').replace(/\r?\n[ \t]/g, '');
+  const blocks = unfolded.split(/BEGIN:VEVENT/i).slice(1);
+  const now = Date.now();
+  const minMs = now - 24 * 3600 * 1000;
+  const maxMs = now + 30 * 24 * 3600 * 1000;
+  const out = [];
+
+  for (const blk of blocks) {
+    const body = blk.split(/END:VEVENT/i)[0] || '';
+    const lines = body.split(/\r?\n/);
+    let summary = '';
+    let dtStart = null;
+    let dtEnd = null;
+    let location = '';
+    let uid = '';
+    for (const line of lines) {
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const keyPart = line.slice(0, idx).toUpperCase();
+      const val = line.slice(idx + 1).trim().replace(/\\n/g, ' ').replace(/\\,/g, ',');
+      if (keyPart === 'SUMMARY' || keyPart.startsWith('SUMMARY;')) summary = val;
+      else if (keyPart === 'DTSTART' || keyPart.startsWith('DTSTART;')) dtStart = parseIcsDate(val);
+      else if (keyPart === 'DTEND' || keyPart.startsWith('DTEND;')) dtEnd = parseIcsDate(val);
+      else if (keyPart === 'LOCATION' || keyPart.startsWith('LOCATION;')) location = val;
+      else if (keyPart === 'UID' || keyPart.startsWith('UID;')) uid = val;
+    }
+    if (!summary || !dtStart) continue;
+    const startMs = Date.parse(dtStart);
+    if (!startMs || startMs < minMs || startMs > maxMs) continue;
+    out.push({
+      id: uid ? `ics-${uid}-${startMs}` : `ics-${Buffer.from(summary + dtStart).toString('base64').slice(0, 20)}`,
+      title: summary,
+      startAt: dtStart,
+      endAt: dtEnd || null,
+      location: location || '',
+      source: sourceLabel
+    });
+  }
+  return out;
+}
+
+async function syncWindowsLocalCalendar() {
+  const events = [];
+  // 1. Scan any .ics files in DATA_DIR/calendars or Downloads (modified recently)
+  try {
+    const dirs = [MUSE_CAL_DIR, path.join(HOME, 'Downloads')];
+    for (const d of dirs) {
+      if (!existsDir(d)) continue;
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.ics')) continue;
+        const full = path.join(d, entry.name);
+        const st = fs.statSync(full);
+        if (Date.now() - st.mtimeMs > 60 * 24 * 3600 * 1000) continue;
+        const raw = fs.readFileSync(full, 'utf8');
+        events.push(...parseIcsEvents(raw, `Local ICS (${entry.name})`));
+      }
+    }
+  } catch {}
+
+  // 2. Query Windows / Outlook Calendar via non-interactive PowerShell if enabled
+  if (museState.calendarSources?.syncWindowsOutlook !== false) {
+    try {
+      const psScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+$out = @()
+try {
+  $ol = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application')
+  if (-not $ol) { $ol = New-Object -ComObject Outlook.Application }
+  if ($ol) {
+    $ns = $ol.GetNamespace('MAPI')
+    $cal = $ns.GetDefaultFolder(9)
+    $items = $cal.Items
+    $items.IncludeRecurrences = $true
+    $items.Sort('[Start]')
+    $min = (Get-Date).AddDays(-1).ToString('g')
+    $max = (Get-Date).AddDays(14).ToString('g')
+    $restricted = $items.Restrict("[Start] >= '$min' AND [Start] <= '$max'")
+    foreach ($it in $restricted) {
+      if ($it.Subject) {
+        $out += [PSCustomObject]@{
+          id = "ol-" + $it.EntryID
+          title = [string]$it.Subject
+          startAt = $it.Start.ToUniversalTime().ToString('o')
+          endAt = $it.End.ToUniversalTime().ToString('o')
+          location = [string]$it.Location
+          source = 'PC Outlook Calendar'
+        }
+      }
+      if ($out.Count -ge 40) { break }
+    }
+  }
+} catch {}
+$out | ConvertTo-Json -Compress
+`;
+      const rawJson = await runPowerShell(psScript, { timeoutMs: 4500 });
+      if (rawJson && rawJson.trim()) {
+        const parsed = JSON.parse(rawJson.trim());
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        for (const ev of arr) {
+          if (ev && ev.title && ev.startAt) events.push(ev);
+        }
+      }
+    } catch {}
+  }
+  return events;
+}
+
+async function syncMuseCalendars(force = false) {
+  const now = Date.now();
+  if (!force && now - lastMuseCalSyncMs < 10 * 60 * 1000) {
+    return museState.cachedCalendarEvents || [];
+  }
+  lastMuseCalSyncMs = now;
+  const collected = [];
+
+  for (const src of museState.calendarSources?.icsUrls || []) {
+    if (!src.url) continue;
+    try {
+      const res = await fetch(src.url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const evs = parseIcsEvents(text, src.label || 'Google/ICS Calendar');
+      collected.push(...evs);
+      src.lastSyncedAt = new Date().toISOString();
+      src.lastError = null;
+    } catch (e) {
+      src.lastError = e.message || 'Sync failed';
+    }
+  }
+
+  const localEvs = await syncWindowsLocalCalendar();
+  collected.push(...localEvs);
+
+  // Deduplicate by title + startAt
+  const seen = new Set();
+  const deduped = [];
+  for (const ev of collected.sort((a, b) => (Date.parse(a.startAt) || 0) - (Date.parse(b.startAt) || 0))) {
+    const key = `${ev.title.toLowerCase().trim()}|${ev.startAt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(ev);
+  }
+  museState.cachedCalendarEvents = deduped.slice(0, 80);
+  saveMuseState();
+  return museState.cachedCalendarEvents;
+}
+
+function formatIdleDuration(ms) {
+  const hours = Math.max(0.1, ms / (3600 * 1000));
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m ago`;
+  if (hours < 24) return `${Math.round(hours)}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function summarizeThreadForCard(t, matchSnippet = '') {
+  const msgs = (t.messages || []).filter((m) => m && m.content && String(m.content).trim());
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+  const lastAsst = [...msgs].reverse().find((m) => m.role === 'assistant');
+  return {
+    id: t.id,
+    title: t.title || 'Untitled Session',
+    origin: t.origin || 'hub',
+    originLabel: t.origin === 'antigravity' ? '🌌 Antigravity' : t.origin === 'codex' ? '🟢 Codex' : t.origin === 'vscode' ? '💠 VS Code' : '⚡ Hub',
+    projectName: t.projectName || 'Workspace',
+    projectPath: t.projectPath || '',
+    updatedAt: t.updatedAt || t.createdAt,
+    idleLabel: t.updatedAt ? formatIdleDuration(Date.now() - (Date.parse(t.updatedAt) || Date.now())) : '',
+    messageCount: msgs.length || t.messageCount || 0,
+    lastUserPrompt: lastUser ? truncate(String(lastUser.content).replace(/\s+/g, ' ').trim(), 160) : '',
+    lastAssistantSummary: lastAsst ? truncate(String(lastAsst.content).replace(/\s+/g, ' ').trim(), 180) : '',
+    matchSnippet: matchSnippet || ''
+  };
+}
+
+function buildMuseRadar() {
+  const now = Date.now();
+  const threads = (appState.threads || [])
+    .filter((t) => !t.supersededByThreadId)
+    .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+
+  // Ensure recent 35 threads have their messages loaded so Muse knows their exact contents
+  for (const t of threads.slice(0, 35)) {
+    try { loadThreadHistory(t, false); } catch {}
+  }
+
+  const activeToday = [];
+  const stalledTasks = [];
+  const UNFINISHED_RE = /\b(next step|next steps|todo|to-do|remaining|unfinished|in progress|continue|shall i|would you like|let me know if|waiting for|interrupted|stopped by user|phase \d|step \d|pending)\b/i;
+
+  for (const t of threads.slice(0, 45)) {
+    const msgs = (t.messages || []).filter((m) => m && m.content && String(m.content).trim());
+    if (msgs.length === 0) continue;
+    if (/^New Unified Session$/i.test(t.title || '') && msgs.length === 0) continue;
+
+    const updatedMs = Date.parse(t.updatedAt) || 0;
+    const ageMs = Math.max(0, now - updatedMs);
+    const ageHours = ageMs / (3600 * 1000);
+    const card = summarizeThreadForCard(t);
+    card.isRunning = activeTurns.has(t.id);
+    card.hoursIdle = Math.round(ageHours * 10) / 10;
+
+    if (ageHours <= 48 || card.isRunning) {
+      activeToday.push(card);
+    }
+
+    // Check if dismissed at or after this updatedAt timestamp
+    const dismissedAt = museState.dismissedStalled?.[t.id];
+    if (dismissedAt && (dismissedAt === t.updatedAt || (typeof dismissedAt === 'number' && dismissedAt >= updatedMs))) continue;
+    if (card.isRunning) continue;
+
+    const lastMsg = msgs[msgs.length - 1];
+    const lastAsst = [...msgs].reverse().find((m) => m.role === 'assistant');
+    let checkpointTodo = '';
+    if (t.projectPath) {
+      try {
+        const cpFile = path.join(t.projectPath, 'CHECKPOINT.md');
+        if (fs.existsSync(cpFile)) {
+          const cpText = fs.readFileSync(cpFile, 'utf8');
+          const unchecked = cpText.match(/^[ \t]*[-*]\s+\[\s\]\s+(.+)$/m);
+          if (unchecked) checkpointTodo = truncate(unchecked[1].trim(), 120);
+        }
+      } catch {}
+    }
+
+    const lastIsUser = lastMsg?.role === 'user';
+    const hasUnfinishedSignal = Boolean(lastAsst && UNFINISHED_RE.test(lastAsst.content));
+    const wasSubstantialSession = msgs.length >= 2 && ageHours >= 2 && ageHours <= 21 * 24;
+
+    if ((ageHours >= 1 && (lastIsUser || hasUnfinishedSignal || checkpointTodo)) || (ageHours >= 6 && wasSubstantialSession)) {
+      let statusBadge = '🕒 Left In Progress';
+      let reason = card.lastAssistantSummary || card.lastUserPrompt;
+      if (lastIsUser) {
+        statusBadge = '⚠️ Unanswered Prompt';
+        reason = `You asked: "${card.lastUserPrompt}" — no completed reply recorded.`;
+      } else if (checkpointTodo) {
+        statusBadge = '📋 Open Checkpoint Step';
+        reason = `Next unchecked item in CHECKPOINT.md: ${checkpointTodo}`;
+      } else if (hasUnfinishedSignal) {
+        statusBadge = '⏸️ Paused Mid-Task';
+        reason = card.lastAssistantSummary;
+      }
+      stalledTasks.push({
+        ...card,
+        statusBadge,
+        reason,
+        ageHours: Math.round(ageHours * 10) / 10
+      });
+    }
+  }
+
+  return {
+    totalScanned: threads.length,
+    activeToday: activeToday.slice(0, 8),
+    stalledTasks: stalledTasks.slice(0, 10)
+  };
+}
+
+function searchAllConversations(query, limit = 6) {
+  const raw = String(query || '').trim().toLowerCase();
+  if (!raw) return [];
+  const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'had', 'what', 'where', 'when', 'which', 'who', 'how', 'can', 'you', 'about', 'into', 'move', 'find', 'show', 'open', 'take', 'jump', 'chat', 'conversation', 'conversations', 'thread', 'model', 'models', 'antigravity', 'codex', 'vscode', 'please', 'remind', 'remember', 'started', 'left', 'working', 'task', 'tasks']);
+  const tokens = raw
+    .replace(/[^a-z0-9_\-\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !STOP.has(w));
+
+  const threads = (appState.threads || []).filter((t) => !t.supersededByThreadId);
+  for (const t of threads.slice(0, 65)) {
+    try { loadThreadHistory(t, false); } catch {}
+  }
+
+  if (tokens.length === 0) {
+    return threads.slice(0, limit).map((t) => summarizeThreadForCard(t));
+  }
+
+  const scored = [];
+  for (const t of threads) {
+    const msgs = t.messages || [];
+    if (msgs.length === 0 && (t.messageCount || 0) === 0) continue;
+    const titleL = String(t.title || '').toLowerCase();
+    const projL = `${t.projectName || ''} ${t.projectPath || ''}`.toLowerCase();
+    let score = 0;
+    let bestSnippet = '';
+
+    for (const tok of tokens) {
+      if (titleL.includes(tok)) score += 12;
+      if (projL.includes(tok)) score += 8;
+    }
+
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const content = String(msgs[i]?.content || '');
+      const cLow = content.toLowerCase();
+      let msgHits = 0;
+      for (const tok of tokens) {
+        if (cLow.includes(tok)) msgHits++;
+      }
+      if (msgHits > 0) {
+        score += msgHits * 3;
+        if (!bestSnippet) {
+          const firstTok = tokens.find((tk) => cLow.includes(tk));
+          const pos = firstTok ? cLow.indexOf(firstTok) : 0;
+          const start = Math.max(0, pos - 50);
+          bestSnippet = (start > 0 ? '…' : '') + truncate(content.slice(start).replace(/\s+/g, ' ').trim(), 160);
+        }
+      }
+    }
+
+    if (score > 0) {
+      const recencyBoost = Math.max(0, 3 - (Date.now() - (Date.parse(t.updatedAt) || 0)) / (7 * 24 * 3600 * 1000));
+      scored.push({ thread: t, score: score + recencyBoost, snippet: bestSnippet });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((item) => summarizeThreadForCard(item.thread, item.snippet));
+}
+
+async function runMuseChatTurn(promptText) {
+  await syncMuseCalendars(false);
+  const radar = buildMuseRadar();
+  const matchedFromQuery = searchAllConversations(promptText, 6);
+
+  const nowStr = new Date().toLocaleString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  const activeReminders = (museState.reminders || []).filter((r) => !r.completed);
+  const upcomingCal = (museState.cachedCalendarEvents || [])
+    .filter((e) => (Date.parse(e.startAt) || 0) >= Date.now() - 2 * 3600 * 1000)
+    .slice(0, 15);
+
+  const stalledDigest = radar.stalledTasks.map((s, idx) =>
+    `${idx + 1}. [THREAD_ID: ${s.id}] "${s.title}" (${s.originLabel} • Project: ${s.projectName} • Updated: ${s.idleLabel} • Status: ${s.statusBadge})\n   Last User Prompt: ${s.lastUserPrompt || '(none)'}\n   Last Progress/Note: ${s.reason || '(none)'}`
+  ).join('\n');
+
+  const activeDigest = radar.activeToday.map((a, idx) =>
+    `${idx + 1}. [THREAD_ID: ${a.id}] "${a.title}" (${a.originLabel} • Project: ${a.projectName} • Updated: ${a.idleLabel})\n   Last User Prompt: ${a.lastUserPrompt || '(none)'}\n   Last Reply: ${a.lastAssistantSummary || '(none)'}`
+  ).join('\n');
+
+  const searchDigest = matchedFromQuery.map((m, idx) =>
+    `${idx + 1}. [THREAD_ID: ${m.id}] "${m.title}" (${m.originLabel} • Project: ${m.projectName} • Updated: ${m.idleLabel})\n   Match Snippet: ${m.matchSnippet || m.lastUserPrompt || m.lastAssistantSummary}`
+  ).join('\n');
+
+  const remDigest = activeReminders.length
+    ? activeReminders.map((r) => `- [REMINDER_ID: ${r.id}] "${r.title}" • Due: ${r.dueAt || 'unscheduled'}${r.projectName ? ` (${r.projectName})` : ''}`).join('\n')
+    : '(No active reminders yet)';
+
+  const calDigest = upcomingCal.length
+    ? upcomingCal.map((c) => `- "${c.title}" • Starts: ${new Date(c.startAt).toLocaleString()} (${c.source})${c.location ? ` @ ${c.location}` : ''}`).join('\n')
+    : '(No upcoming calendar events synced yet)';
+
+  const recentMuseChat = (museState.messages || []).slice(-6).map((m) =>
+    `${m.role === 'user' ? 'USER' : 'MUSE'}: ${truncate(m.content, 600)}`
+  ).join('\n\n');
+
+  const musePrompt = [
+    `You are MUSE, the user's sharp, witty, proactive personal AI Chief-of-Staff & Cross-Model Memory Agent inside AI Studio Hub (inspired by Muse / Grok).`,
+    `Current Local Time: ${nowStr} (ISO: ${new Date().toISOString()})`,
+    `IMPORTANT RULES:`,
+    `1. Do NOT run shell commands, do NOT read/edit files, and do NOT call tools. Everything you need is provided in the live snapshot below. Answer directly and fast.`,
+    `2. Whenever you mention, recommend, or help the user find ANY conversation from the lists below, include the exact tag [THREAD_CARD: <threadId>] in your reply. The UI automatically renders a clickable "Jump to Chat" card for every [THREAD_CARD: <threadId>] tag you output.`,
+    `3. If the user asks to add/schedule a reminder, deadline, or calendar note in chat, output the exact tag on its own line: [ADD_REMINDER: {"title":"...","dueAt":"ISO-8601 timestamp","threadId":"optional threadId"}].`,
+    `4. If the user says an existing reminder is completed/done, output: [COMPLETE_REMINDER: <reminderId>].`,
+    `5. Be concise, insightful, and specific — cite the exact project name, model (Antigravity, Codex, VS Code), how long ago they left it, and what the unfinished next step is.`,
+    ``,
+    `=== STALLED / UNFINISHED TASKS ACROSS ALL MODELS ===`,
+    stalledDigest || '(None detected right now)',
+    ``,
+    `=== ACTIVE CONVERSATIONS TODAY ===`,
+    activeDigest || '(None active in last 18h)',
+    ``,
+    `=== TOP SEARCH MATCHES ACROSS ALL CONVERSATIONS FOR THIS QUERY ===`,
+    searchDigest || '(No specific keyword matches)',
+    ``,
+    `=== UPCOMING CALENDAR EVENTS (PC / GOOGLE / OUTLOOK) ===`,
+    calDigest,
+    ``,
+    `=== ACTIVE REMINDERS & DEADLINES ===`,
+    remDigest,
+    ``,
+    recentMuseChat ? `=== RECENT MUSE DIALOGUE ===\n${recentMuseChat}\n` : '',
+    `=== USER MESSAGE TO MUSE ===`,
+    promptText
+  ].filter(Boolean).join('\n');
+
+  const [agyStatus, codexStatus] = await Promise.all([getAgyStatus(), Promise.resolve(getCodexStatus())]);
+  const threshold = Number(appState.settings.autoSwitchThresholdPct) || 12;
+  const anyAgyAlive = agyStatus.models.some((m) => (m.remainingPct ?? 100) >= threshold);
+  const codexPct = Math.min(codexStatus.fiveHourWindow.remainingPct ?? 100, codexStatus.weeklyWindow.remainingPct ?? 100);
+
+  let engine = anyAgyAlive ? 'antigravity' : (codexPct > 0 ? 'codex' : 'antigravity');
+  const dummyThread = { id: `muse-turn-${Date.now()}`, projectPath: HOME };
+  let replyText = '';
+  let usedModel = '';
+
+  try {
+    if (engine === 'antigravity') {
+      const pick = selectAgyAutoModel(agyStatus.models, 'simple', threshold)?.model || agyStatus.models[0];
+      const modelId = pick?.modelId || appState.settings.agyModel;
+      const r = await runAntigravityTurn({
+        thread: dummyThread,
+        promptText: musePrompt,
+        modelId,
+        effort: 'low',
+        availableModels: agyStatus.models,
+        mode: 'plan',
+        cwd: HOME,
+        resumeSessionId: null,
+        extraDirs: [],
+        onEvent: () => {}
+      });
+      replyText = r.text;
+      usedModel = formatModelLabel('antigravity', r.model || modelId, 'low', agyStatus.models, codexStatus.models);
+    } else {
+      const autoCodex = selectCodexAutoModel(codexStatus.models || [], 'simple', 'low');
+      const slug = autoCodex?.modelSlug || appState.settings.codexModel;
+      const r = await runCodexTurn({
+        thread: dummyThread,
+        promptText: musePrompt,
+        modelSlug: slug,
+        effort: 'low',
+        mode: 'plan',
+        cwd: HOME,
+        resumeSessionId: null,
+        forkSessionId: null,
+        attachments: [],
+        onEvent: () => {}
+      });
+      replyText = r.text;
+      usedModel = formatModelLabel('codex', r.model || slug, 'low', agyStatus.models, codexStatus.models);
+    }
+  } catch (primaryErr) {
+    // Automatic fallback to the other engine
+    engine = engine === 'antigravity' ? 'codex' : 'antigravity';
+    if (engine === 'codex') {
+      const autoCodex = selectCodexAutoModel(codexStatus.models || [], 'simple', 'low');
+      const slug = autoCodex?.modelSlug || appState.settings.codexModel;
+      const r = await runCodexTurn({
+        thread: dummyThread,
+        promptText: musePrompt,
+        modelSlug: slug,
+        effort: 'low',
+        mode: 'plan',
+        cwd: HOME,
+        resumeSessionId: null,
+        forkSessionId: null,
+        attachments: [],
+        onEvent: () => {}
+      });
+      replyText = r.text;
+      usedModel = formatModelLabel('codex', r.model || slug, 'low', agyStatus.models, codexStatus.models);
+    } else {
+      const pick = agyStatus.models[0];
+      const modelId = pick?.modelId || appState.settings.agyModel;
+      const r = await runAntigravityTurn({
+        thread: dummyThread,
+        promptText: musePrompt,
+        modelId,
+        effort: 'low',
+        availableModels: agyStatus.models,
+        mode: 'plan',
+        cwd: HOME,
+        resumeSessionId: null,
+        extraDirs: [],
+        onEvent: () => {}
+      });
+      replyText = r.text;
+      usedModel = formatModelLabel('antigravity', r.model || modelId, 'low', agyStatus.models, codexStatus.models);
+    }
+  }
+
+  // Parse [ADD_REMINDER: {...}], [COMPLETE_REMINDER: ...], and [THREAD_CARD: ...]
+  const actionsTaken = [];
+  const referencedThreadIds = new Set();
+
+  replyText = String(replyText || '').replace(/\[ADD_REMINDER:\s*(\{[\s\S]*?\})\s*\]/gi, (_, jsonStr) => {
+    try {
+      const obj = JSON.parse(jsonStr);
+      if (obj && obj.title) {
+        const linkedThread = obj.threadId ? appState.threads.find((t) => t.id === obj.threadId) : null;
+        const rem = {
+          id: crypto.randomUUID(),
+          title: String(obj.title).trim(),
+          dueAt: obj.dueAt ? new Date(obj.dueAt).toISOString() : null,
+          threadId: linkedThread ? linkedThread.id : null,
+          projectName: linkedThread ? linkedThread.projectName : (obj.projectName || ''),
+          source: 'chat',
+          completed: false,
+          notified: false,
+          createdAt: new Date().toISOString()
+        };
+        museState.reminders.unshift(rem);
+        actionsTaken.push(`Added reminder: "${rem.title}"${rem.dueAt ? ` (${new Date(rem.dueAt).toLocaleString()})` : ''}`);
+      }
+    } catch {}
+    return '';
+  });
+
+  replyText = replyText.replace(/\[COMPLETE_REMINDER:\s*([^\]]+)\]/gi, (_, rid) => {
+    const cleanId = String(rid || '').trim();
+    const found = (museState.reminders || []).find((r) => r.id === cleanId);
+    if (found) {
+      found.completed = true;
+      actionsTaken.push(`Completed reminder: "${found.title}"`);
+    }
+    return '';
+  });
+
+  replyText = replyText.replace(/\[THREAD_CARD:\s*([^\]]+)\]/gi, (_, tid) => {
+    const cleanId = String(tid || '').trim().replace(/^["']|["']$/g, '');
+    if (cleanId) referencedThreadIds.add(cleanId);
+    return '';
+  });
+
+  // Also detect any raw thread IDs mentioned in text
+  for (const t of appState.threads || []) {
+    if (replyText.includes(t.id)) {
+      referencedThreadIds.add(t.id);
+    }
+  }
+
+  const matchedThreads = [];
+  for (const tid of referencedThreadIds) {
+    const t = (appState.threads || []).find((x) => x.id === tid);
+    if (t) {
+      const fromSearch = matchedFromQuery.find((m) => m.id === tid);
+      matchedThreads.push(fromSearch || summarizeThreadForCard(t));
+    }
+  }
+
+  // Guarantee clickable "Jump to Chat" cards when the user asks about conversations or unfinished tasks
+  if (matchedThreads.length === 0) {
+    if (/\b(unfinished|stalled|left|stopped|working on|remind|briefing|status)\b/i.test(promptText) && radar.stalledTasks.length > 0) {
+      matchedThreads.push(...radar.stalledTasks.slice(0, 4));
+    } else if (matchedFromQuery.length > 0) {
+      matchedThreads.push(...matchedFromQuery.slice(0, 4));
+    }
+  }
+
+  const userMessage = {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: promptText,
+    timestamp: new Date().toISOString()
+  };
+  const assistantMessage = {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    engine,
+    model: usedModel,
+    content: replyText.trim(),
+    matchedThreads: matchedThreads.slice(0, 6),
+    actionsTaken,
+    timestamp: new Date().toISOString()
+  };
+
+  museState.messages.push(userMessage, assistantMessage);
+  saveMuseState();
+  return { userMessage, assistantMessage, radar };
+}
+
+function checkMuseNotifications() {
+  if (appState.settings.pushEnabled === false || pushSubs.length === 0) return;
+  const now = Date.now();
+  let dirty = false;
+
+  // 1. Check due reminders
+  for (const rem of museState.reminders || []) {
+    if (rem.completed || rem.notified || !rem.dueAt) continue;
+    const dueMs = Date.parse(rem.dueAt);
+    if (dueMs && now >= dueMs - 60 * 1000) {
+      rem.notified = true;
+      dirty = true;
+      sendPushToAll({
+        title: `🧠 Muse Reminder: ${truncate(rem.title, 50)}`,
+        body: rem.projectName ? `Project: ${rem.projectName} • Tap to open in AI Studio Hub` : 'Tap to open Muse in AI Studio Hub',
+        tag: `muse-rem-${rem.id}`,
+        threadId: rem.threadId || null,
+        url: rem.threadId ? `/?thread=${encodeURIComponent(rem.threadId)}` : '/?muse=1',
+        ts: now
+      }).catch(() => {});
+    }
+  }
+
+  // 2. Check upcoming calendar events (notify 15 minutes before start)
+  const notifiedSet = new Set(museState.notifiedCalendarIds || []);
+  for (const ev of museState.cachedCalendarEvents || []) {
+    if (!ev.id || notifiedSet.has(ev.id) || !ev.startAt) continue;
+    const startMs = Date.parse(ev.startAt);
+    if (startMs && startMs > now - 5 * 60 * 1000 && startMs <= now + 15 * 60 * 1000) {
+      notifiedSet.add(ev.id);
+      museState.notifiedCalendarIds = [...notifiedSet];
+      dirty = true;
+      const minsLeft = Math.max(0, Math.round((startMs - now) / 60000));
+      sendPushToAll({
+        title: `📅 Upcoming (${minsLeft === 0 ? 'Now' : `in ${minsLeft}m`}): ${truncate(ev.title, 48)}`,
+        body: `${ev.source}${ev.location ? ` • ${ev.location}` : ''}`,
+        tag: `muse-cal-${ev.id}`,
+        url: '/?muse=1',
+        ts: now
+      }).catch(() => {});
+    }
+  }
+
+  // 3. Proactive stalled-task nudge (at most once every 12 hours when a task sits unfinished > 18h)
+  if (now - (museState.lastStalledPushAt || 0) > 12 * 3600 * 1000) {
+    const radar = buildMuseRadar();
+    const topStalled = radar.stalledTasks.find((s) => s.ageHours >= 18);
+    if (topStalled) {
+      museState.lastStalledPushAt = now;
+      dirty = true;
+      sendPushToAll({
+        title: `🧠 Muse • Unfinished Task (${topStalled.idleLabel})`,
+        body: `You left "${truncate(topStalled.title, 45)}" on ${topStalled.originLabel.replace(/^[^\s]+\s/, '')}. Tap to jump back in.`,
+        tag: `muse-stalled-${topStalled.id}`,
+        threadId: topStalled.id,
+        url: `/?thread=${encodeURIComponent(topStalled.id)}`,
+        ts: now
+      }).catch(() => {});
+    }
+  }
+
+  if (dirty) saveMuseState();
+}
+
 const SETTINGS_KEYS = new Set(Object.keys(DEFAULT_SETTINGS));
 const STATIC_MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -5222,6 +5916,152 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    // --- MUSE AGENT & PERSONAL CHIEF-OF-STAFF ROUTES ---
+    if (pathname === '/api/muse/state' && req.method === 'GET') {
+      const forceSync = parsedUrl.searchParams.get('sync') === '1';
+      await syncMuseCalendars(forceSync);
+      const radar = buildMuseRadar();
+      const nowMs = Date.now();
+      const upcomingEvents = (museState.cachedCalendarEvents || [])
+        .map((ev) => ({
+          ...ev,
+          summary: ev.summary || ev.title || 'Calendar Event',
+          startMs: ev.startMs || Date.parse(ev.startAt) || 0,
+          endMs: ev.endMs || Date.parse(ev.endAt || ev.startAt) || 0
+        }))
+        .filter((ev) => ev.startMs > 0 && ev.endMs >= nowMs - 30 * 60 * 1000 && ev.startMs <= nowMs + 14 * 24 * 3600 * 1000)
+        .sort((a, b) => a.startMs - b.startMs);
+      const chatHistory = (museState.messages || []).slice(-60).map((m) => ({
+        ...m,
+        text: m.text || m.content || ''
+      }));
+      return sendJson(res, 200, {
+        ok: true,
+        chatHistory,
+        reminders: museState.reminders || [],
+        calendarUrls: museState.calendarSources?.icsUrls || [],
+        lastCalendarSyncAt: lastMuseCalSyncMs ? new Date(lastMuseCalSyncMs).toISOString() : null,
+        upcomingEvents,
+        radar
+      });
+    }
+
+    if (pathname === '/api/muse/search' && req.method === 'GET') {
+      const q = (parsedUrl.searchParams.get('q') || '').trim();
+      const limit = Math.min(20, Math.max(1, Number(parsedUrl.searchParams.get('limit') || 10)));
+      const matches = q ? searchAllConversations(q, limit) : [];
+      return sendJson(res, 200, { ok: true, query: q, matches });
+    }
+
+    if (pathname === '/api/muse/chat' && req.method === 'POST') {
+      const body = await parseJsonBody(req);
+      const promptText = String(body.prompt || '').trim();
+      if (!promptText) return sendJson(res, 400, { error: 'Prompt is required' });
+      const turnResult = await runMuseChatTurn(promptText);
+      const radar = buildMuseRadar();
+      const chatHistory = (museState.messages || []).slice(-60).map((m) => ({
+        ...m,
+        text: m.text || m.content || ''
+      }));
+      return sendJson(res, 200, {
+        ok: true,
+        ...turnResult,
+        chatHistory,
+        reminders: museState.reminders || [],
+        radar
+      });
+    }
+
+    if (pathname === '/api/muse/reminders' && req.method === 'POST') {
+      const body = await parseJsonBody(req);
+      const action = String(body.action || 'add');
+      if (!Array.isArray(museState.reminders)) museState.reminders = [];
+      if (action === 'add') {
+        const title = String(body.title || '').trim();
+        if (!title) return sendJson(res, 400, { error: 'Reminder title is required' });
+        let dueAt = null;
+        if (body.dueAt) {
+          const d = new Date(body.dueAt);
+          if (!Number.isNaN(d.getTime())) dueAt = d.toISOString();
+        }
+        museState.reminders.unshift({
+          id: `rem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          title,
+          dueAt,
+          threadId: body.threadId || null,
+          notes: String(body.notes || ''),
+          completed: false,
+          notified: false,
+          createdAt: new Date().toISOString()
+        });
+      } else if (action === 'toggle') {
+        const rem = museState.reminders.find((r) => r.id === body.id);
+        if (rem) {
+          rem.completed = !rem.completed;
+          rem.completedAt = rem.completed ? new Date().toISOString() : null;
+        }
+      } else if (action === 'delete') {
+        museState.reminders = museState.reminders.filter((r) => r.id !== body.id);
+      }
+      saveMuseState();
+      return sendJson(res, 200, { ok: true, reminders: museState.reminders });
+    }
+
+    if (pathname === '/api/muse/calendar' && req.method === 'POST') {
+      const body = await parseJsonBody(req);
+      const action = String(body.action || 'sync');
+      if (!museState.calendarSources) museState.calendarSources = { icsUrls: [], syncWindowsOutlook: true };
+      if (!Array.isArray(museState.calendarSources.icsUrls)) museState.calendarSources.icsUrls = [];
+      if (action === 'add_url') {
+        const calUrl = String(body.url || '').trim();
+        if (!calUrl) return sendJson(res, 400, { error: 'Calendar URL (.ics) is required' });
+        if (!museState.calendarSources.icsUrls.includes(calUrl)) {
+          museState.calendarSources.icsUrls.push(calUrl);
+          saveMuseState();
+        }
+      } else if (action === 'remove_url') {
+        const target = String(body.url || body.id || '');
+        museState.calendarSources.icsUrls = museState.calendarSources.icsUrls.filter((u) => u !== target);
+        saveMuseState();
+      }
+      await syncMuseCalendars(true);
+      const nowMs = Date.now();
+      const upcomingEvents = (museState.cachedCalendarEvents || [])
+        .map((ev) => ({
+          ...ev,
+          summary: ev.summary || ev.title || 'Calendar Event',
+          startMs: ev.startMs || Date.parse(ev.startAt) || 0,
+          endMs: ev.endMs || Date.parse(ev.endAt || ev.startAt) || 0
+        }))
+        .filter((ev) => ev.startMs > 0 && ev.endMs >= nowMs - 30 * 60 * 1000 && ev.startMs <= nowMs + 14 * 24 * 3600 * 1000)
+        .sort((a, b) => a.startMs - b.startMs);
+      return sendJson(res, 200, {
+        ok: true,
+        calendarUrls: museState.calendarSources.icsUrls || [],
+        lastCalendarSyncAt: lastMuseCalSyncMs ? new Date(lastMuseCalSyncMs).toISOString() : null,
+        upcomingEvents
+      });
+    }
+
+    if (pathname === '/api/muse/dismiss-stalled' && req.method === 'POST') {
+      const body = await parseJsonBody(req);
+      const threadId = String(body.threadId || '').trim();
+      if (!museState.dismissedStalled || typeof museState.dismissedStalled !== 'object') museState.dismissedStalled = {};
+      if (body.restore) {
+        delete museState.dismissedStalled[threadId];
+      } else if (threadId) {
+        museState.dismissedStalled[threadId] = Date.now();
+      }
+      saveMuseState();
+      return sendJson(res, 200, { ok: true, radar: buildMuseRadar() });
+    }
+
+    if (pathname === '/api/muse/clear' && req.method === 'POST') {
+      museState.messages = [];
+      saveMuseState();
+      return sendJson(res, 200, { ok: true, chatHistory: [] });
+    }
+
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Unknown API route' });
 
     // --- Static files (index.html receives the per-launch token) ---
@@ -5316,6 +6156,12 @@ server.listen(PORT, '127.0.0.1', () => {
       checkNativeCompletions();
     } catch (e) {
       console.error('[AI Hub] Native completion watcher:', e.message);
+    }
+    try {
+      syncMuseCalendars(false).catch(() => {});
+      checkMuseNotifications();
+    } catch (e) {
+      console.error('[AI Hub] Muse notification watcher:', e.message);
     }
     // Auto hot-reload when server.js on disk is updated and no turns are active
     try {
