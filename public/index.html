@@ -1902,35 +1902,52 @@
         max-width: 100vw;
       }
       .topbar {
-        padding: 0 10px;
-        gap: 6px;
+        padding: 0 8px;
+        gap: 5px;
         height: 50px;
+        display: flex;
+        align-items: center;
         justify-content: space-between;
+        overflow: hidden;
+        box-sizing: border-box;
       }
       .brand {
-        gap: 6px;
-        font-size: 14px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 13px;
         white-space: nowrap;
+        flex-shrink: 0;
+        min-width: max-content;
       }
       .brand-icon {
-        width: 26px;
-        height: 26px;
-        font-size: 14px;
+        width: 24px;
+        height: 24px;
+        font-size: 13px;
+        flex-shrink: 0;
       }
+      .brand-subtitle,
       .brand div > div:nth-child(2) {
         display: none !important;
       }
       .topbar-center {
         margin: 0;
         gap: 0;
-        flex: 1;
+        display: flex;
+        align-items: center;
         justify-content: center;
+        flex-shrink: 0;
+        min-width: max-content;
       }
       .top-engine-badge {
-        padding: 4px 10px;
-        font-size: 11.5px;
-        gap: 4px;
-        white-space: nowrap;
+        padding: 3px 7px !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        gap: 3px !important;
+        white-space: nowrap !important;
+        flex-shrink: 0;
+        border-radius: 999px;
+        line-height: 1.2;
       }
       .top-engine-badge .badge-sub {
         display: none !important;
@@ -1945,14 +1962,33 @@
       .topbar-actions button:not(#mobileNewChatBtn):not(#mobileReloadBtn):not(#pushBellBtn):not(#deckToggleBtn):not(#browserToggleBtn):not(#museToggleBtn) {
         display: none !important;
       }
+      .topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: flex-end;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      .topbar-actions::-webkit-scrollbar {
+        display: none;
+      }
       #deckToggleBtn, #browserToggleBtn, #museToggleBtn {
-        padding: 4px 9px !important;
-        font-size: 12px !important;
+        padding: 4px 7px !important;
+        font-size: 11.5px !important;
         font-weight: 700 !important;
+        flex-shrink: 0;
+        white-space: nowrap !important;
       }
       #pushBellBtn {
-        padding: 4px 9px;
-        font-size: 14px;
+        padding: 4px 6px !important;
+        font-size: 12px !important;
+        flex-shrink: 0;
       }
       #pushBellBtn .bell-label {
         display: none;
@@ -2188,35 +2224,69 @@
         padding-bottom: 0;
         padding-left: max(8px, var(--safe-left));
         padding-right: max(8px, var(--safe-right));
-        gap: 4px;
+        gap: 5px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        overflow: hidden;
+        box-sizing: border-box;
       }
       .brand {
         gap: 5px;
-        font-size: 13.5px;
-        min-width: 0;
+        font-size: 13px;
+        flex-shrink: 0;
+        min-width: max-content;
       }
       #mobileMenuBtn {
         padding: 4px 6px !important;
         margin-right: 0 !important;
+        font-size: 16px;
+        flex-shrink: 0;
       }
       .topbar-center {
-        min-width: 0;
+        flex-shrink: 0;
+        min-width: max-content;
+        margin: 0;
       }
       .top-engine-badge {
-        padding: 4px 8px;
-        font-size: 11px;
+        padding: 3px 7px !important;
+        font-size: 11px !important;
+        flex-shrink: 0;
+        white-space: nowrap !important;
       }
       .topbar-actions {
-        gap: 5px;
+        gap: 4px;
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: flex-end;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      .topbar-actions::-webkit-scrollbar {
+        display: none;
+      }
+      .topbar-actions .btn {
         flex-shrink: 0;
+        white-space: nowrap !important;
       }
       #mobileNewChatBtn {
         padding: 4px 8px !important;
+        font-size: 11.5px !important;
+        font-weight: 700 !important;
+        flex-shrink: 0;
+      }
+      #mobileReloadBtn {
+        padding: 4px 6px !important;
         font-size: 12px !important;
+        flex-shrink: 0;
       }
       #pushBellBtn {
-        padding: 4px 7px;
-        font-size: 13px;
+        padding: 4px 6px !important;
+        font-size: 12px !important;
+        flex-shrink: 0;
       }
       .workspace {
         grid-template-columns: minmax(0, 1fr) !important;
@@ -2280,6 +2350,18 @@
     @media (max-width: 480px) {
       .brand-studio {
         display: none;
+      }
+      .brand-title-wrap {
+        display: none !important;
+      }
+      .browser-label-text {
+        display: none !important;
+      }
+      .muse-label-text {
+        display: none !important;
+      }
+      .deck-label-text {
+        display: none !important;
       }
     }
 
@@ -3328,9 +3410,9 @@
     <div class="brand">
       <button id="mobileMenuBtn" class="btn mobile-only-btn" style="display:none; font-size:18px; padding:4px 8px; margin-right:4px;" onclick="toggleMobileSidebar()" title="Toggle Sidebar">☰</button>
       <div class="brand-icon">⚡</div>
-      <div>
+      <div class="brand-title-wrap">
         <div style="font-weight:700; font-size:14.5px; color:var(--text-main);">AI<span class="brand-studio"> Studio</span> Hub</div>
-        <div style="font-size:10.5px; color:var(--text-muted); font-weight:500;">Antigravity + Codex Unified</div>
+        <div class="brand-subtitle" style="font-size:10.5px; color:var(--text-muted); font-weight:500;">Antigravity + Codex Unified</div>
       </div>
     </div>
 
@@ -3378,9 +3460,9 @@
     </div>
 
     <div class="topbar-actions">
-      <button id="museToggleBtn" class="btn" onclick="toggleMuseView()" title="Muse — Personal AI Companion, Cross-Model Memory, Stalled Task Radar & Calendar">🧠 Muse<span id="museBadgeDot" class="muse-badge-dot" style="display:none;">0</span></button>
-      <button id="deckToggleBtn" class="btn" onclick="toggleDeckView()" title="Toggle Multi-Project Widget Deck (view all projects & send prompts directly from tiles)">🎛️ Deck</button>
-      <button id="browserToggleBtn" class="btn" onclick="toggleBrowserView()" title="Remote Agent Browser & Phone Takeover (watch live & take control for logins/2FA)">🌐 Browser</button>
+      <button id="museToggleBtn" class="btn" onclick="toggleMuseView()" title="Muse — Personal AI Companion, Cross-Model Memory, Stalled Task Radar & Calendar">🧠<span class="muse-label-text"> Muse</span><span id="museBadgeDot" class="muse-badge-dot" style="display:none;">0</span></button>
+      <button id="deckToggleBtn" class="btn" onclick="toggleDeckView()" title="Toggle Multi-Project Widget Deck (view all projects & send prompts directly from tiles)">🎛️<span class="deck-label-text"> Deck</span></button>
+      <button id="browserToggleBtn" class="btn" onclick="toggleBrowserView()" title="Remote Agent Browser & Phone Takeover (watch live & take control for logins/2FA)">🌐<span class="browser-label-text"> Browser</span></button>
       <button id="mobileReloadBtn" class="btn mobile-only-btn" onclick="reloadHubApp()" style="display:none; padding:4px 8px; font-size:13px;" title="Reload latest app UI">↻</button>
       <button id="mobileNewChatBtn" class="btn btn-primary mobile-only-btn" onclick="createNewThread()" style="display:none; padding:4px 10px; font-size:13px; font-weight:700;" title="New Chat">＋ New</button>
       <div class="selector-group" title="When in Auto-Pilot mode, automatically switch models/engines if remaining quota falls below this percentage">
@@ -7778,11 +7860,11 @@
       const runBadge = runningCount > 0 ? `<span class="deck-running-pill">${runningCount}</span>` : '';
       if (isDeckViewOpen) {
         btn.classList.add('active-deck');
-        btn.innerHTML = `💬 Chat${runBadge}`;
+        btn.innerHTML = `💬<span class="deck-label-text"> Chat</span>${runBadge}`;
         btn.title = 'Return to Single Chat View';
       } else {
         btn.classList.remove('active-deck');
-        btn.innerHTML = `🎛️ Deck${runBadge}`;
+        btn.innerHTML = `🎛️<span class="deck-label-text"> Deck</span>${runBadge}`;
         btn.title = 'Open Multi-Project Widget Deck (see all projects & prompt in place)';
       }
       const pinnedCountEl = document.getElementById('deckPinnedCount');
@@ -9087,9 +9169,9 @@ function renderMuseJumpCardHtml(t) {
         </div>
         ${safeSnippet ? `<div style="font-size:11.5px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:6px;">${safeSnippet}</div>` : ''}
         <div onclick="event.stopPropagation();" style="display:flex; gap:6px; margin-top:6px; align-items:center;">
-          <input id="museCardInput_${domId}" type="text" placeholder="Type prompt to send directly to this chat..." style="flex:1; font-size:12px; padding:5px 9px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-elevated); color:var(--text-primary);" onkeydown="if(event.key==='Enter'){event.preventDefault(); sendPromptToJumpedThread('${safeId}');}" />
-          <button class="btn btn-sm btn-primary" onclick="sendPromptToJumpedThread('${safeId}')" style="font-size:11px; padding:4px 9px; font-weight:700;">Send ↵</button>
-          <button class="muse-jump-btn" onclick="museJumpToThread('${safeId}')" title="Jump to full conversation with composer focused">↗ Chat</button>
+          <input id="museCardInput_${domId}" type="text" placeholder="Prompt this chat..." style="flex:1; min-width:0; font-size:12px; padding:5px 9px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-elevated); color:var(--text-primary);" onkeydown="if(event.key==='Enter'){event.preventDefault(); sendPromptToJumpedThread('${safeId}');}" />
+          <button class="btn btn-sm btn-primary" onclick="sendPromptToJumpedThread('${safeId}')" style="font-size:11px; padding:4px 9px; font-weight:700; white-space:nowrap; flex-shrink:0;">Send ↵</button>
+          <button class="muse-jump-btn" onclick="museJumpToThread('${safeId}')" style="white-space:nowrap; flex-shrink:0;" title="Jump to full conversation with composer focused">↗ Chat</button>
         </div>
       </div>
     </div>
