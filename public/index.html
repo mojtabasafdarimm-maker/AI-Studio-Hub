@@ -5408,9 +5408,33 @@
       activeThreadId = id;
       loadingThreadId = id;
       threadLoadError = null;
-      if (typeof isMuseViewOpen !== 'undefined' && isMuseViewOpen) {
-        toggleMuseView(false);
+
+      // Close all overlay views (Muse, Deck, Browser) so the chat & composer are 100% visible
+      if (typeof isDeckViewOpen !== 'undefined' && isDeckViewOpen) {
+        isDeckViewOpen = false;
+        document.getElementById('deckViewContainer')?.classList.remove('open');
+        if (typeof updateDeckToggleBtn === 'function') updateDeckToggleBtn();
       }
+      if (typeof isBrowserViewOpen !== 'undefined' && isBrowserViewOpen) {
+        isBrowserViewOpen = false;
+        document.getElementById('browserViewContainer')?.classList.remove('open');
+        document.getElementById('browserToggleBtn')?.classList.remove('active-browser');
+        if (typeof disconnectBrowserStream === 'function') disconnectBrowserStream();
+      }
+      if (typeof isMuseViewOpen !== 'undefined' && isMuseViewOpen) {
+        isMuseViewOpen = false;
+        document.getElementById('museViewContainer')?.classList.remove('open');
+        document.getElementById('museToggleBtn')?.classList.remove('active-muse');
+      }
+
+      // Guarantee chat elements and composer are visible
+      const composerEl = document.querySelector('.composer-wrap');
+      if (composerEl) composerEl.style.display = '';
+      const ribbonEl = document.querySelector('.engine-ribbon');
+      if (ribbonEl) ribbonEl.style.display = '';
+      const chatScrollEl = document.getElementById('chatScroll');
+      if (chatScrollEl) chatScrollEl.style.display = '';
+
       loadPendingAttachments(id);
       renderPendingAttachments();
       try {
@@ -8941,7 +8965,7 @@ function toggleMuseView(forceState) {
   const btn = document.getElementById('museToggleBtn');
   const ribbonEl = document.querySelector('.engine-ribbon');
   const chatScrollEl = document.getElementById('chatScroll');
-  const composerEl = document.querySelector('.composer-area');
+  const composerEl = document.querySelector('.composer-wrap');
 
   if (isMuseViewOpen) {
     if (typeof isDeckViewOpen !== 'undefined' && isDeckViewOpen) {
@@ -9000,40 +9024,74 @@ function museOriginBadge(origin) {
   return '<span class="badge" style="background:rgba(245,158,11,0.18); color:#fcd34d; border:1px solid rgba(245,158,11,0.4);">🏠 Hub</span>';
 }
 
-async function museJumpToThread(threadId) {
+async function museJumpToThread(threadId, initialPrompt = '') {
   if (!threadId) return;
   toggleMuseView(false);
+  if (typeof isDeckViewOpen !== 'undefined' && isDeckViewOpen) {
+    isDeckViewOpen = false;
+    document.getElementById('deckViewContainer')?.classList.remove('open');
+    if (typeof updateDeckToggleBtn === 'function') updateDeckToggleBtn();
+  }
   const quickRes = document.getElementById('museQuickSearchResults');
   if (quickRes) quickRes.style.display = 'none';
-  if (typeof openThreadFromNotification === 'function') {
-    await openThreadFromNotification(threadId);
-  } else if (typeof selectThread === 'function') {
-    activeProjectId = 'ALL';
-    activeSourceFilter = 'all';
-    const projSel = document.getElementById('projectSelect');
-    if (projSel) projSel.value = 'ALL';
-    const searchInp = document.getElementById('threadSearchInput');
-    if (searchInp) searchInp.value = '';
-    await selectThread(threadId);
+
+  // Reset filters so the jumped thread is visible in sidebar
+  activeProjectId = 'ALL';
+  activeSourceFilter = 'all';
+  const projSel = document.getElementById('projectSelect');
+  if (projSel) projSel.value = 'ALL';
+  const searchInp = document.getElementById('threadSearchInput');
+  if (searchInp) searchInp.value = '';
+
+  await selectThread(threadId);
+
+  // Guarantee composer is visible and focused
+  const composerEl = document.querySelector('.composer-wrap');
+  if (composerEl) composerEl.style.display = '';
+  const promptInput = document.getElementById('promptInput');
+  if (promptInput) {
+    if (initialPrompt) promptInput.value = initialPrompt;
+    setTimeout(() => {
+      promptInput.focus();
+      promptInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 60);
+  }
+}
+
+async function sendPromptToJumpedThread(threadId) {
+  const safeId = typeof domSafeId === 'function' ? domSafeId(threadId) : threadId;
+  const inp = document.getElementById(`museCardInput_${safeId}`) || document.getElementById(`museCardInput_${threadId}`);
+  const prompt = String(inp?.value || '').trim();
+  if (inp) inp.value = '';
+  await museJumpToThread(threadId, prompt);
+  if (prompt) {
+    const mainInp = document.getElementById('promptInput');
+    if (mainInp) mainInp.value = prompt;
+    if (typeof sendMessage === 'function') sendMessage();
   }
 }
 
 function renderMuseJumpCardHtml(t) {
   const safeId = escapeHtml(t.id || '');
+  const domId = typeof domSafeId === 'function' ? domSafeId(t.id || '') : safeId;
   const safeTitle = escapeHtml(t.title || 'Untitled Conversation');
-  const safeProj = escapeHtml(t.projectId || 'general');
-  const safeSnippet = escapeHtml((t.snippet || t.lastAssistantSnippet || t.lastUserPrompt || '').slice(0, 140));
+  const safeProj = escapeHtml(t.projectName || t.projectId || 'general');
+  const safeSnippet = escapeHtml((t.snippet || t.matchSnippet || t.lastAssistantSnippet || t.lastAssistantSummary || t.lastUserPrompt || '').slice(0, 140));
   return `
     <div class="muse-jump-card" onclick="museJumpToThread('${safeId}')">
       <div style="min-width:0; flex:1;">
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:2px;">
-          ${museOriginBadge(t.origin)}
+          ${museOriginBadge(t.origin || t.originLabel)}
           <span style="font-weight:700; font-size:12.5px; color:var(--text-primary);">${safeTitle}</span>
           <span style="font-size:10.5px; color:var(--text-muted);">(${safeProj})</span>
         </div>
-        ${safeSnippet ? `<div style="font-size:11.5px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${safeSnippet}</div>` : ''}
+        ${safeSnippet ? `<div style="font-size:11.5px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:6px;">${safeSnippet}</div>` : ''}
+        <div onclick="event.stopPropagation();" style="display:flex; gap:6px; margin-top:6px; align-items:center;">
+          <input id="museCardInput_${domId}" type="text" placeholder="Type prompt to send directly to this chat..." style="flex:1; font-size:12px; padding:5px 9px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-elevated); color:var(--text-primary);" onkeydown="if(event.key==='Enter'){event.preventDefault(); sendPromptToJumpedThread('${safeId}');}" />
+          <button class="btn btn-sm btn-primary" onclick="sendPromptToJumpedThread('${safeId}')" style="font-size:11px; padding:4px 9px; font-weight:700;">Send ↵</button>
+          <button class="muse-jump-btn" onclick="museJumpToThread('${safeId}')" title="Jump to full conversation with composer focused">↗ Chat</button>
+        </div>
       </div>
-      <button class="muse-jump-btn" onclick="event.stopPropagation(); museJumpToThread('${safeId}')">↗ Jump to Chat</button>
     </div>
   `;
 }
