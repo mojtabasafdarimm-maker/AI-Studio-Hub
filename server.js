@@ -3568,6 +3568,9 @@ let tunnelStatus = 'inactive'; // 'inactive' | 'starting' | 'active' | 'error'
 let tunnelError = null;
 let tunnelManuallyStopped = false;
 let tunnelRestartTimer = null;
+let isStartingTunnel = false;
+let tunnelProbeFailCount = 0;
+let lastTunnelProbeAt = 0;
 
 function findCloudflaredBin() {
   const p1 = 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe';
@@ -3583,9 +3586,13 @@ function startCloudflareTunnel() {
     clearTimeout(tunnelRestartTimer);
     tunnelRestartTimer = null;
   }
-  if (tunnelProcess && !tunnelProcess.killed && tunnelUrl) {
+  if (isStartingTunnel) {
+    return Promise.resolve({ running: tunnelStatus === 'active', url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
+  }
+  if (tunnelProcess && !tunnelProcess.killed && tunnelUrl && tunnelStatus === 'active') {
     return Promise.resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
   }
+
   // If an existing cloudflared process is already running from before a hot-restart, adopt its active-tunnel.json URL seamlessly!
   try {
     const activeFile = path.join(__dirname, 'public', 'active-tunnel.json');
@@ -3607,6 +3614,14 @@ function startCloudflareTunnel() {
       }
     }
   } catch {}
+
+  // Clean up any stale process before spawning fresh
+  if (tunnelProcess) {
+    try { killTree(tunnelProcess); } catch {}
+    tunnelProcess = null;
+  }
+
+  isStartingTunnel = true;
   tunnelStatus = 'starting';
   tunnelError = null;
 
@@ -3620,7 +3635,10 @@ function startCloudflareTunnel() {
       const onUrlFound = (url) => {
         if (resolved) return;
         resolved = true;
+        isStartingTunnel = false;
         tunnelUrl = url;
+        tunnelProbeFailCount = 0;
+        lastTunnelProbeAt = Date.now();
         try {
           const u = new URL(url);
           tunnelHostname = u.host.toLowerCase();
@@ -3630,7 +3648,7 @@ function startCloudflareTunnel() {
         } catch {}
         tunnelStatus = 'active';
         console.log(`[AI Hub] 📱 Cloudflare Tunnel Live: ${tunnelUrl}`);
-        registerWithGateway(tunnelUrl);
+        registerWithGateway(tunnelUrl).catch(() => {});
         resolve({ running: true, url: tunnelUrl, status: tunnelStatus, pin: appState.settings.mobilePin });
       };
 
@@ -3646,9 +3664,20 @@ function startCloudflareTunnel() {
       child.on('error', (err) => {
         tunnelStatus = 'error';
         tunnelError = err.message;
+        isStartingTunnel = false;
+        if (child && !child.killed) {
+          try { killTree(child); } catch {}
+        }
+        tunnelProcess = null;
         if (!resolved) {
           resolved = true;
           resolve({ running: false, error: err.message, status: tunnelStatus, pin: appState.settings.mobilePin });
+        }
+        if (!tunnelManuallyStopped && appState.settings.autoStartTunnel !== false && !tunnelRestartTimer) {
+          tunnelRestartTimer = setTimeout(() => {
+            tunnelRestartTimer = null;
+            startCloudflareTunnel().catch(() => {});
+          }, 8000);
         }
       });
 
@@ -3662,12 +3691,13 @@ function startCloudflareTunnel() {
         tunnelUrl = null;
         tunnelHostname = null;
         tunnelStatus = 'inactive';
+        isStartingTunnel = false;
         if (!resolved) {
           resolved = true;
           resolve({ running: false, error: `cloudflared exited with code ${code}`, status: tunnelStatus, pin: appState.settings.mobilePin });
         }
         if (!tunnelManuallyStopped && appState.settings.autoStartTunnel !== false && !tunnelRestartTimer) {
-          console.log('[AI Hub] Cloudflare Tunnel exited unexpectedly — reconnecting in 5s...');
+          console.log(`[AI Hub] Cloudflare Tunnel exited (code ${code}) — reconnecting in 5s...`);
           tunnelRestartTimer = setTimeout(() => {
             tunnelRestartTimer = null;
             startCloudflareTunnel().catch(() => {});
@@ -3678,12 +3708,25 @@ function startCloudflareTunnel() {
       setTimeout(() => {
         if (!resolved) {
           resolved = true;
+          isStartingTunnel = false;
+          if (child && !child.killed) {
+            try { killTree(child); } catch {}
+          }
+          tunnelProcess = null;
+          tunnelStatus = 'inactive';
           resolve({ running: false, error: 'Tunnel startup timed out (30s)', status: tunnelStatus, pin: appState.settings.mobilePin });
+          if (!tunnelManuallyStopped && appState.settings.autoStartTunnel !== false && !tunnelRestartTimer) {
+            tunnelRestartTimer = setTimeout(() => {
+              tunnelRestartTimer = null;
+              startCloudflareTunnel().catch(() => {});
+            }, 5000);
+          }
         }
       }, 30000);
     } catch (e) {
       tunnelStatus = 'error';
       tunnelError = e.message;
+      isStartingTunnel = false;
       resolve({ running: false, error: e.message, status: tunnelStatus, pin: appState.settings.mobilePin });
     }
   });
@@ -3707,6 +3750,7 @@ function stopCloudflareTunnel() {
   tunnelUrl = null;
   tunnelHostname = null;
   tunnelStatus = 'inactive';
+  isStartingTunnel = false;
   return { running: false, status: 'inactive', pin: appState.settings.mobilePin };
 }
 
@@ -3727,19 +3771,79 @@ async function registerWithGateway(url) {
   // 2. Register with Cloudflare Gateway Worker if active
   const gatewayUrl = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
   const gatewaySecret = '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
-  try {
-    const res = await fetch(`${gatewayUrl}/_gateway/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${gatewaySecret}`
-      },
-      body: JSON.stringify({ url })
-    });
-    if (res.ok) {
-      console.log(`[AI Hub] 🌟 Permanent Gateway registered: ${gatewayUrl}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${gatewayUrl}/_gateway/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${gatewaySecret}`
+        },
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(6000)
+      });
+      if (res.ok) {
+        console.log(`[AI Hub] 🌟 Permanent Gateway registered: ${gatewayUrl}`);
+        break;
+      }
+    } catch {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
     }
-  } catch {}
+  }
+}
+
+// Proactive self-healing tunnel watchdog: catches silent Cloudflare drops, laptop wake-up & network transitions
+async function checkTunnelWatchdog() {
+  if (tunnelManuallyStopped || appState.settings.autoStartTunnel === false) return;
+  const now = Date.now();
+
+  // If tunnel is missing or died, immediately trigger reconnection
+  if (!tunnelProcess || !tunnelUrl || tunnelStatus !== 'active') {
+    if (!tunnelRestartTimer && !isStartingTunnel) {
+      console.log('[AI Hub] 🛡️ Tunnel watchdog: Tunnel inactive/missing — starting Cloudflare Tunnel...');
+      startCloudflareTunnel().catch(() => {});
+    }
+    return;
+  }
+
+  // Probe active tunnel every 30s to verify Cloudflare edge is still routing traffic to this PC
+  if (now - lastTunnelProbeAt < 30000) return;
+  lastTunnelProbeAt = now;
+
+  try {
+    const probeRes = await fetch(`${tunnelUrl}/api/tunnel/status`, {
+      headers: { 'X-Hub-Token': HUB_TOKEN },
+      signal: AbortSignal.timeout(7000)
+    });
+    if (probeRes.ok) {
+      tunnelProbeFailCount = 0;
+    } else {
+      tunnelProbeFailCount++;
+      console.warn(`[AI Hub] ⚠️ Tunnel probe returned HTTP ${probeRes.status} (${tunnelProbeFailCount}/2)`);
+    }
+  } catch (err) {
+    tunnelProbeFailCount++;
+    console.warn(`[AI Hub] ⚠️ Tunnel probe unreachable: ${err.message} (${tunnelProbeFailCount}/2)`);
+  }
+
+  // If 2 consecutive probes fail (meaning Cloudflare dropped the tunnel or computer woke from sleep)
+  if (tunnelProbeFailCount >= 2) {
+    console.log('[AI Hub] 🔄 Tunnel watchdog: Tunnel unresponsive after 2 probes — restarting with fresh URL...');
+    tunnelProbeFailCount = 0;
+    if (tunnelProcess) {
+      try { killTree(tunnelProcess); } catch {}
+      tunnelProcess = null;
+    }
+    if (tunnelHostname) {
+      ALLOWED_HOSTS.delete(tunnelHostname);
+      ALLOWED_ORIGINS.delete(`https://${tunnelHostname}`);
+      ALLOWED_ORIGINS.delete(`http://${tunnelHostname}`);
+    }
+    tunnelUrl = null;
+    tunnelHostname = null;
+    tunnelStatus = 'inactive';
+    startCloudflareTunnel().catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -6281,6 +6385,11 @@ server.listen(PORT, '127.0.0.1', () => {
       checkMuseNotifications();
     } catch (e) {
       console.error('[AI Hub] Muse notification watcher:', e.message);
+    }
+    try {
+      checkTunnelWatchdog().catch(() => {});
+    } catch (e) {
+      console.error('[AI Hub] Tunnel watchdog error:', e.message);
     }
     // Auto hot-reload when server.js on disk is updated and no turns are active
     try {
