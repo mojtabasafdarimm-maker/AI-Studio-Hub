@@ -254,7 +254,124 @@ function isCodexSessionOpen(id) {
 // ---------------------------------------------------------------------------
 // 4. Discover All Existing Projects & Chats (Antigravity + Codex Desktop + VS Code)
 // ---------------------------------------------------------------------------
-const TEST_PROMPT_RE = /^Reply with the single word [A-Z]+$/;
+const TEST_PROMPT_RE = /^(Reply with the single word [A-Z]+|You are MUSE, the user's sharp|\/plan You are MUSE)/i;
+
+function readHandoffBranchSnippet(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return { branchFrom: null, originalGoal: null };
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(131072); // scan first 128KB for handoff header
+    const bytesRead = fs.readSync(fd, buf, 0, 131072, 0);
+    fs.closeSync(fd);
+    const chunk = buf.toString('utf8', 0, bytesRead);
+    let branchFrom = null;
+    let originalGoal = null;
+    const mb = chunk.match(/branched from \\?["'“]([^\\"'”\r\n]+)\\?["'”]/i);
+    if (mb) branchFrom = mb[1];
+    const mg = chunk.match(/Original Conversation (?:Objective|Goal):\s*([^\r\n\\]+)/i);
+    if (mg) originalGoal = mg[1];
+    return { branchFrom, originalGoal };
+  } catch {
+    return { branchFrom: null, originalGoal: null };
+  }
+}
+
+function getThreadFamilyKey(thread) {
+  if (!thread) return null;
+  let branchFrom = null;
+  let originalGoal = null;
+
+  if (thread.deckPreview && thread.deckPreview.lastUserText) {
+    const txt = thread.deckPreview.lastUserText;
+    const mb = txt.match(/branched from ["'“]([^"'”\r\n]+)["'”]/i);
+    if (mb) branchFrom = mb[1];
+    const mg = txt.match(/Original Conversation (?:Objective|Goal):\s*([^\r\n]+)/i);
+    if (mg) originalGoal = mg[1];
+  }
+
+  if (!branchFrom && thread.parentThreadTitle) {
+    branchFrom = thread.parentThreadTitle;
+  }
+
+  if (!branchFrom && thread.nativeSource) {
+    let targetFile = null;
+    if (thread.nativeSource.type === 'codex' && thread.nativeSource.rolloutPath) {
+      targetFile = thread.nativeSource.rolloutPath;
+    } else if (thread.nativeSource.type === 'agy') {
+      const convId = thread.agyConversationId || thread.id.replace(/^agy-/, '');
+      targetFile = path.join(HOME, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+    }
+    const snippet = readHandoffBranchSnippet(targetFile);
+    if (snippet.branchFrom) branchFrom = snippet.branchFrom;
+    if (snippet.originalGoal) originalGoal = snippet.originalGoal;
+  }
+
+  const rawTitle = String(thread.title || '').trim();
+  const source = branchFrom || rawTitle;
+
+  let clean = source
+    .replace(/^\[(?:Token-Wise Continuation Session|Cross-Engine Context Sync|Compacted Checkpoint Session)[^\]]*\]\s*/i, '')
+    .replace(/[\(\[\{]?token-wise.*$/i, '')
+    .trim()
+    .toLowerCase();
+
+  if ((!clean || /^(codex session|antigravity session|new unified session|untitled session)$/i.test(clean)) && originalGoal) {
+    clean = originalGoal.replace(/[\(\[\{]?token-wise.*$/i, '').trim().toLowerCase();
+  }
+
+  return clean && clean.length >= 4 ? clean : null;
+}
+
+function computeSupersededThreadIds(allThreads) {
+  const claimedSessionIds = new Set();
+  for (const t of allThreads || []) {
+    if (t.origin === 'hub' && /token-wise/i.test(t.title || '')) {
+      for (const sid of t.hubSessionIds || []) claimedSessionIds.add(sid);
+      if (t.codexSessionId) claimedSessionIds.add(t.codexSessionId);
+      if (t.agyConversationId) claimedSessionIds.add(t.agyConversationId);
+    }
+  }
+
+  const superseded = new Set();
+  for (const t of allThreads || []) {
+    if (t.movedTo) {
+      superseded.add(t.id);
+      continue;
+    }
+    if (t.origin !== 'hub') {
+      const rawId = t.id.replace(/^(agy-|codex-)/, '');
+      if (
+        claimedSessionIds.has(rawId) ||
+        (t.codexSessionId && claimedSessionIds.has(t.codexSessionId)) ||
+        (t.agyConversationId && claimedSessionIds.has(t.agyConversationId))
+      ) {
+        superseded.add(t.id);
+        continue;
+      }
+    }
+  }
+
+  const clusters = {};
+  for (const t of allThreads || []) {
+    if (superseded.has(t.id)) continue;
+    const key = getThreadFamilyKey(t);
+    if (key) {
+      clusters[key] = clusters[key] || [];
+      clusters[key].push(t);
+    }
+  }
+
+  for (const [key, list] of Object.entries(clusters)) {
+    if (list.length > 1) {
+      list.sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+      for (let i = 1; i < list.length; i++) {
+        superseded.add(list[i].id);
+      }
+    }
+  }
+
+  return superseded;
+}
 
 function discoverAllProjectsAndChats(existingState) {
   const projectMap = new Map(); // lowerPath -> project
@@ -4915,8 +5032,9 @@ function summarizeThreadForCard(t, matchSnippet = '') {
 
 function buildMuseRadar() {
   const now = Date.now();
+  const supersededIds = computeSupersededThreadIds(appState.threads || []);
   const threads = (appState.threads || [])
-    .filter((t) => !t.supersededByThreadId)
+    .filter((t) => !t.supersededByThreadId && !supersededIds.has(t.id))
     .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
 
   // Ensure recent 35 threads have their messages loaded so Muse knows their exact contents
@@ -5005,7 +5123,8 @@ function searchAllConversations(query, limit = 6) {
     .split(/\s+/)
     .filter((w) => w.length >= 2 && !STOP.has(w));
 
-  const threads = (appState.threads || []).filter((t) => !t.supersededByThreadId);
+  const supersededIds = computeSupersededThreadIds(appState.threads || []);
+  const threads = (appState.threads || []).filter((t) => !t.supersededByThreadId && !supersededIds.has(t.id));
   for (const t of threads.slice(0, 65)) {
     try { loadThreadHistory(t, false); } catch {}
   }
