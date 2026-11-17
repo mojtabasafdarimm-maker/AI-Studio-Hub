@@ -1,0 +1,78 @@
+import { existsSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+export class SearchUnavailable extends Error {
+    status = 503;
+}
+export class MessageSearchWorker {
+    worker;
+    stopping = Promise.resolve();
+    sequence = 0;
+    pending = new Map();
+    file;
+    timeoutMs;
+    constructor(file, timeoutMs = 30_000) {
+        this.file = file;
+        this.timeoutMs = timeoutMs;
+    }
+    search(query, limit, threadId) {
+        if (this.pending.size >= 8)
+            return Promise.reject(new SearchUnavailable("Search is busy. Try again shortly."));
+        if (!this.worker) {
+            const source = new URL("./message-search.worker.ts", import.meta.url);
+            const worker = new Worker(existsSync(source) ? source : new URL("./message-search.worker.js", import.meta.url), {
+                workerData: { file: this.file },
+                // Do not inherit test loaders or inspector ports into the worker.
+                execArgv: [],
+            });
+            this.worker = worker;
+            worker.on("message", (reply) => {
+                if (this.worker !== worker)
+                    return;
+                const request = this.pending.get(reply.id);
+                if (!request)
+                    return;
+                clearTimeout(request.timer);
+                this.pending.delete(reply.id);
+                if (reply.failed)
+                    request.reject(new SearchUnavailable("Search could not finish. Try again shortly."));
+                else
+                    request.resolve(reply.hits ?? []);
+                if (!this.pending.size)
+                    worker.unref();
+            });
+            worker.on("error", () => {
+                if (this.worker === worker)
+                    void this.close();
+            });
+            worker.on("exit", () => {
+                if (this.worker === worker)
+                    void this.close();
+            });
+        }
+        const worker = this.worker;
+        worker.ref();
+        const id = ++this.sequence;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { void this.close(); }, this.timeoutMs);
+            this.pending.set(id, { resolve, reject, timer });
+            try {
+                worker.postMessage({ id, query, limit, threadId });
+            }
+            catch {
+                void this.close();
+            }
+        });
+    }
+    async close() {
+        const worker = this.worker;
+        this.worker = undefined;
+        for (const request of this.pending.values()) {
+            clearTimeout(request.timer);
+            request.reject(new SearchUnavailable("Search was interrupted. Try again shortly."));
+        }
+        this.pending.clear();
+        if (worker)
+            this.stopping = Promise.all([this.stopping, worker.terminate()]).then(() => { });
+        await this.stopping;
+    }
+}

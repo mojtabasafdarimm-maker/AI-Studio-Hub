@@ -1,0 +1,55 @@
+// MausBot's follow-up after its first look around, under its intro (HelperIntro). The server writes it once, in English,
+// as a real message the model and the sidebar's preview read; clients say it in the viewer's language from its facts.
+// ENGLISH mirrors src/locales/en.json helperIntro.followup.*. It never names the AI it thinks with.
+/** At most this many app names; the rest are counted. */
+export const FOLLOWUP_APP_NAMES = 3;
+export const FOLLOWUP_ENGLISH = {
+    "helperIntro.followup.found": "I looked around and nothing's waiting on you yet.",
+    "helperIntro.followup.empty": "There's no unfinished work, no other bots or routines, and no apps are connected so far.",
+    "helperIntro.followup.counts": "You have {bots} and {routines}, and no apps are connected so far.",
+    "helperIntro.followup.botsNone": "no other bots",
+    "helperIntro.followup.botOne": "1 other bot",
+    "helperIntro.followup.bots": "{count} other bots",
+    "helperIntro.followup.routinesNone": "no routines",
+    "helperIntro.followup.routineOne": "1 routine",
+    "helperIntro.followup.routines": "{count} routines",
+    "helperIntro.followup.offer": "If you'd like me to keep an eye on your day, I can connect your email and calendar so I can flag what matters each morning. Just say the word, or hand me whatever's on your plate today.",
+    "helperIntro.followup.apps": "I can already use {apps}. Hand me whatever's on your plate today, or ask me to set up a bot for something you do every week.",
+    "helperIntro.followup.more": "{count} more",
+    "helperIntro.followup.noAi": "I looked around. Before I can do real work, I need an AI to think with. Sign in with an account you already have, like Claude or ChatGPT, and I'll take it from there.",
+    "helperIntro.followup.backup": "I looked around. For now I'm thinking with a free backup model. Sign in with an account you already have, like Claude or ChatGPT, and I'll take it from there.",
+    "helperIntro.followup.noAiOwner": "I looked around. Before I can do real work, I need an AI to think with. {name} connects that for the team, and I'll take it from there.",
+    "helperIntro.followup.noAiTeamOwner": "I looked around. Before I can do real work, I need an AI to think with. The team's owner connects that, and I'll take it from there.",
+    "helperIntro.followup.backupOwner": "I looked around. For now I'm thinking with a free backup model. {name} can connect a better one for the team.",
+    "helperIntro.followup.backupTeamOwner": "I looked around. For now I'm thinking with a free backup model. The team's owner can connect a better one.",
+};
+function counted(say, count, none, one, many) {
+    return count <= 0 ? say(none) : count === 1 ? say(one) : say(many, { count });
+}
+/** The follow-up in `say`'s language; `list` joins app names as that language does. */
+export function followupText(facts, say, list) {
+    if (facts.ai !== "own") {
+        const none = facts.ai === "none", connects = facts.connects;
+        if (connects === undefined)
+            return say(none ? "helperIntro.followup.noAi" : "helperIntro.followup.backup");
+        if (connects)
+            return say(none ? "helperIntro.followup.noAiOwner" : "helperIntro.followup.backupOwner", { name: connects });
+        return say(none ? "helperIntro.followup.noAiTeamOwner" : "helperIntro.followup.backupTeamOwner");
+    }
+    const found = say("helperIntro.followup.found");
+    if (facts.apps.length) {
+        const shown = facts.apps.slice(0, FOLLOWUP_APP_NAMES);
+        const rest = facts.apps.length - shown.length;
+        return `${found} ${say("helperIntro.followup.apps", { apps: list(rest > 0 ? [...shown, say("helperIntro.followup.more", { count: rest })] : shown) })}`;
+    }
+    const middle = facts.bots <= 0 && facts.routines <= 0 ? say("helperIntro.followup.empty") : say("helperIntro.followup.counts", {
+        bots: counted(say, facts.bots, "helperIntro.followup.botsNone", "helperIntro.followup.botOne", "helperIntro.followup.bots"),
+        routines: counted(say, facts.routines, "helperIntro.followup.routinesNone", "helperIntro.followup.routineOne", "helperIntro.followup.routines"),
+    });
+    return `${found} ${middle} ${say("helperIntro.followup.offer")}`;
+}
+/** The English the server stores, which the model reads. */
+export function englishFollowup(facts) {
+    const fill = (key, params) => FOLLOWUP_ENGLISH[key].replace(/\{(\w+)\}/g, (match, name) => (params && name in params ? String(params[name]) : match));
+    return followupText(facts, fill, (items) => new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(items));
+}

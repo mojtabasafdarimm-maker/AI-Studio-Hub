@@ -1,0 +1,38 @@
+{
+  "name": "openmausbot",
+  "version": "0.1.165",
+  "description": "Run the OpenMausBot server anywhere and pair your devices to it",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "openmausbot": "cli.js"
+  },
+  "dependencies": {
+    "@1password/sdk": "0.5.0",
+    "@duckdb/node-api": "1.5.6-r.1",
+    "@resvg/resvg-js": "2.6.2"
+  },
+  "files": [
+    "cli.js",
+    "dist-server",
+    "dist",
+    "skills",
+    "enterprise",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/milind-soni/OpenMausBot.git"
+  },
+  "homepage": "https://github.com/milind-soni/OpenMausBot#readme",
+  "keywords": [
+    "openmausbot",
+    "agents",
+    "self-hosted",
+    "server"
+  ]
+}

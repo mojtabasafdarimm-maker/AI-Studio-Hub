@@ -1,0 +1,212 @@
+// A Boat this installation runs is on only while something uses it: a turn or a person wakes it, and it goes to sleep once
+// it has been idle for CLOUD_COMPUTER_IDLE_MS and no routine that uses it is due within ROUTINE_DUE_SOON_MS. Boat bills
+// while a computer is on, up to its own eight-hour auto-stop.
+import * as boat from "../boat.js";
+import { boatCreateRecoverySnapshot } from "../boat-create-idempotency.js";
+import { BOAT_DELETING, BOAT_DELETION_FINISHED, hasPendingBoatDeletionForBot } from "../boat-delete-journal.js";
+import { boatReadiness } from "../boat-ready.js";
+import { backgroundCommandRunning } from "../cloud-computer-background.js";
+import { ComputerIdleTimer } from "../computer-idle.js";
+import { redactSecretsInText } from "../redact.js";
+export const CLOUD_COMPUTER_IDLE_MS = Math.max(1_000, Number(process.env.OMB_CLOUD_COMPUTER_IDLE_MS) || 10 * 60_000);
+/** A computer stays on while a routine that uses it is due this soon. Longer than the idle window, so a routine every 30
+ * minutes or more often never waits on a wake: each wake spends one start from the Boat account's pool, shared by every customer. */
+export const ROUTINE_DUE_SOON_MS = 30 * 60_000;
+const MAX_LISTING_RETRY_MS = 60 * 60_000;
+/** Above a slow first start; Boat's own ready wait is 90 seconds. */
+export const CLOUD_COMPUTER_START_BUDGET_MS = Math.max(1_000, Number(process.env.OMB_CLOUD_COMPUTER_START_BUDGET_MS) || 150_000);
+export const CLOUD_COMPUTER_STARTING = "The cloud computer is still starting. This call was not performed. Take a fresh screenshot in a moment.";
+export const CLOUD_COMPUTER_DID_NOT_START = "the cloud computer didn't start in time";
+/** The provider says ready and the computer is silent. Worded apart from a start that failed, and passing: three runs in
+ * a row that fail on a start turn their routine off, and a computer that is only slow to answer must not count as one. */
+export const CLOUD_COMPUTER_NOT_ANSWERING_YET = "the cloud computer is awake but is not answering yet";
+export const CLOUD_COMPUTER_DISK_NOT_BACK_YET = "the cloud computer is awake but still restoring its disk";
+const REMOVAL_POLL_MS = 3_000;
+export function createCloudComputerPower(deps) {
+    const { cfg, broadcast } = deps;
+    const timers = new Map();
+    const turnOwners = new Map();
+    /** A start can outlive the turn that asked for it; stopping a computer mid-create would make provisionBoat delete it. */
+    const starting = new Map();
+    const readiness = deps.readiness ?? boatReadiness;
+    /** Computers this process created or woke and has not yet heard answer. */
+    const unheard = new Set();
+    let listingRetry = null;
+    let closed = false;
+    /** A paused routine, or one whose next run cannot be worked out, has no next run and keeps nothing on. */
+    const routineDueSoon = (owner) => deps.routines().some(routine => routine.enabled && routine.nextRunAt !== null &&
+        routine.nextRunAt - Date.now() <= ROUTINE_DUE_SOON_MS && deps.routineComputer(routine) === owner);
+    const busy = (owner) => (starting.get(owner) ?? 0) > 0 || deps.busy(owner) || routineDueSoon(owner);
+    function forget(owner) {
+        timers.get(owner)?.cancel();
+        timers.delete(owner);
+    }
+    /** The claim is the last step before the stop, after every await: work that arrived meanwhile keeps the computer on. */
+    async function sleepIfIdle(owner) {
+        if (!boat.boatConfigured(cfg) || hasPendingBoatDeletionForBot(owner))
+            return forget(owner);
+        if (boatCreateRecoverySnapshot().some((entry) => entry.botId === owner && !entry.resolved))
+            return "busy";
+        const machine = await boat.findBoat(cfg, owner);
+        if (closed)
+            return;
+        const state = typeof machine?.state === "string" ? machine.state : null;
+        if (!state || boat.SLEEPING_BOAT_STATES.has(state))
+            return forget(owner);
+        if (boat.boatTurnLifecycleAction(state) !== "attach" || busy(owner))
+            return "busy";
+        if (typeof machine?.id === "string" && await backgroundCommandRunning(cfg, machine.id))
+            return "busy";
+        if (closed)
+            return;
+        let release;
+        try {
+            release = deps.claim(owner);
+        }
+        catch {
+            return "busy";
+        }
+        try {
+            await boat.sleepBoat(cfg, owner);
+        }
+        finally {
+            release();
+        }
+        forget(owner);
+        deps.log(`cloud computer ${owner}: asleep after ${Math.round(CLOUD_COMPUTER_IDLE_MS / 1_000)}s idle`);
+    }
+    /** Starts, or restarts, this owner's idle window. */
+    function used(owner) {
+        if (closed || !boat.boatConfigured(cfg))
+            return;
+        let timer = timers.get(owner);
+        if (!timer) {
+            timer = new ComputerIdleTimer(CLOUD_COMPUTER_IDLE_MS, () => busy(owner), () => sleepIfIdle(owner), (error, retryInMs) => {
+                const reason = redactSecretsInText(error instanceof Error ? error.message : String(error));
+                deps.log(`cloud computer ${owner}: could not go to sleep, retrying in ${Math.ceil(retryInMs / 60_000)} min: ${reason}`);
+            });
+            timers.set(owner, timer);
+        }
+        timer.touch();
+    }
+    /** Before the wake, so a start that fails or outlives its turn still leaves the computer timed. */
+    function attached(turn, owner) {
+        turnOwners.set(turn.threadId, { generation: turn.generation, owner });
+        used(owner);
+    }
+    function released(turn) {
+        const held = turnOwners.get(turn.threadId);
+        if (held?.generation !== turn.generation)
+            return;
+        turnOwners.delete(turn.threadId);
+        used(held.owner);
+    }
+    /** `existingOnly`: wake or attach the bot's computer, but never create one (null when it has none). Every wait inside
+     * fits `budgetMs`. */
+    async function start(bot, turn, opts = {}) {
+        attached(turn, bot.id);
+        starting.set(bot.id, (starting.get(bot.id) ?? 0) + 1);
+        try {
+            return await startBotBoat(bot, opts.existingOnly === true, Date.now() + (opts.budgetMs ?? CLOUD_COMPUTER_START_BUDGET_MS));
+        }
+        finally {
+            const left = (starting.get(bot.id) ?? 1) - 1;
+            if (left > 0)
+                starting.set(bot.id, left);
+            else
+                starting.delete(bot.id);
+        }
+    }
+    async function startBotBoat(bot, existingOnly, deadline) {
+        let b = await boat.findBoat(cfg, bot.id);
+        const lifecycleOf = () => boat.boatTurnLifecycleAction(typeof b?.state === "string" ? b.state : null);
+        let lifecycle = lifecycleOf();
+        if (lifecycle === "provision" && existingOnly)
+            return null;
+        if (lifecycle === "provision") {
+            broadcast({ kind: "computer", botId: bot.id, state: "provisioning", place: "cloud" });
+            await provisionOnceRemoved(bot, deadline);
+            b = await boat.findBoat(cfg, bot.id);
+            lifecycle = lifecycleOf();
+            if (typeof b?.id === "string")
+                unheard.add(b.id);
+        }
+        // An archived Boat answers every action with an error until it resumes: wake it once here.
+        if (lifecycle === "wake") {
+            broadcast({ kind: "computer", botId: bot.id, state: "waking", place: "cloud" });
+            b = (await boat.readyBoat(cfg, bot.id, Math.max(1_000, deadline - Date.now()))) ?? b;
+            lifecycle = lifecycleOf();
+            if (typeof b?.id === "string")
+                unheard.add(b.id);
+        }
+        return b && lifecycle === "attach" ? b : null;
+    }
+    /** A start that failed removes the computer it created, so the next one can meet that removal still under way. */
+    async function provisionOnceRemoved(bot, deadline) {
+        for (;;) {
+            try {
+                await boat.provisionBoat(cfg, bot.id, bot.name);
+                return;
+            }
+            catch (error) {
+                const code = error?.code;
+                if ((code !== BOAT_DELETING && code !== BOAT_DELETION_FINISHED) || closed || Date.now() + REMOVAL_POLL_MS >= deadline)
+                    throw error;
+                if (code === BOAT_DELETING)
+                    await new Promise(resolve => setTimeout(resolve, REMOVAL_POLL_MS));
+            }
+        }
+    }
+    /** At startup: what a previous run left on gets the same window. Orphans (no owner left) stay for Settings → Computers. */
+    async function armRunning(retryInMs = CLOUD_COMPUTER_IDLE_MS) {
+        if (closed || !boat.boatConfigured(cfg))
+            return;
+        const inventory = await boat.listManagedBoats(cfg, deps.owners(), { adoptLegacy: false }).catch(() => null);
+        if (closed)
+            return;
+        if (!inventory?.available) {
+            deps.log(`cloud computers: could not list them to time the ones left on, retrying in ${Math.ceil(retryInMs / 60_000)} min: ${inventory?.problem ?? "listing failed"}`);
+            listingRetry = setTimeout(() => void armRunning(Math.min(retryInMs * 2, MAX_LISTING_RETRY_MS)), retryInMs);
+            listingRetry.unref?.();
+            return;
+        }
+        for (const instance of inventory.instances) {
+            if (instance.ownerBotId && !boat.SLEEPING_BOAT_STATES.has(instance.state) && instance.state !== "removing")
+                used(instance.ownerBotId);
+        }
+    }
+    /** After a start, before the turn's first call is sent: the computer has to answer a command, not only be reported
+     * ready. One that answered moments ago is not asked again. The failure is passing, so the turn's next call tries again. */
+    async function answering(boxId, opts = {}) {
+        const answer = await readiness.awaitAnswer(cfg, boxId, {
+            woke: opts.woke === true || unheard.has(boxId),
+            onPhase: (phase) => { if (phase === "restoring")
+                opts.onRestoring?.(); },
+        });
+        if (!answer.ok) {
+            throw Object.assign(new Error(answer.phase === "restoring" ? CLOUD_COMPUTER_DISK_NOT_BACK_YET : CLOUD_COMPUTER_NOT_ANSWERING_YET), { status: 503, transient: true });
+        }
+        unheard.delete(boxId);
+    }
+    return {
+        start,
+        answering,
+        attached,
+        released,
+        used,
+        /** A computer is on (its idle window runs here) or starting: a Cloud home on a plan that sleeps stays awake for it,
+         * since its idle timer lives in this process. */
+        awake: () => timers.size > 0 || starting.size > 0,
+        /** For activity that only matters to a computer already on, such as a person handing back control. */
+        renew: (owner) => timers.get(owner)?.touch(),
+        armRunning,
+        close() {
+            closed = true;
+            if (listingRetry)
+                clearTimeout(listingRetry);
+            for (const timer of timers.values())
+                timer.cancel();
+            timers.clear();
+        },
+    };
+}

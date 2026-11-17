@@ -1,0 +1,315 @@
+// A Cloud home's health for the Admin's signed poll (server/routes/cloud-signed.ts). Privacy invariant: the report carries
+// only fixed codes, counts, times, versions, engine kinds, random ids, connector slugs, booleans and machine numbers. Never
+// a failure's words, a bot's name, a thread's title, a prompt, a URL, an address, a token or an engine's account.
+import { accessSync, constants, readFileSync, statfsSync } from "node:fs";
+import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
+import { failedTurnCause } from "../shared/failed-turn.js";
+import { PLACE_STATES } from "../shared/place-view.js";
+import { trialCreditKind } from "../shared/trial-credit.js";
+import { createCloudSpeed } from "./cloud-speed.js";
+import { classifyError } from "./drivers/retry.js";
+/** The report's largest JSON body; incidents past it wait for the next poll. */
+export const CLOUD_HEALTH_MAX_BYTES = 64 * 1024;
+export const HEALTH_BUCKET_CAP = 200;
+const ROUTINE_CAP = 100, CONNECTOR_CAP = 100, THREAD_CAP = 2_000, PENDING_CAP = 500;
+/** A failed row waits this long for its turn's stop reason before it is filed under its own cause. */
+const PENDING_SETTLE_MS = 5_000;
+/** A turn that ends in an engine stop with no failed row of its own counts once, unless its thread just wrote one. */
+const ROW_DEDUPE_MS = 60_000;
+const CONNECTORS_TTL_MS = 30 * 60_000, LOOKUP_TIMEOUT_MS = 30_000;
+const MINUTE = 60_000, WINDOW_15M = 15, WINDOW_24H = 24 * 60;
+const CODE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
+const KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+const VERSION = /^[\w.+-]{1,64}$/;
+const IMAGE = /^[\w./:@+-]{1,300}$/;
+const match = (pattern, value) => typeof value === "string" && pattern.test(value) ? value : null;
+/** Stop reasons a driver settles a failed turn with. Free text never becomes a code. */
+const STOP_CODES = new Set(["auth_required", "rpc_error", "shutdown_timeout", "provider_safety", "update_required", "spawn_error", "quota",
+    "tool_error", "exit_before_result", "error_during_execution", "error", "failed"]);
+/** Stops that say only that something failed: the cause's own class, when known, says more. */
+const GENERIC_STOPS = new Set(["rpc_error", "error", "failed", "error_during_execution", "exit_before_result"]);
+/** Engine stops that count as a failure even when no failed row was written for them. */
+const ROWLESS_STOPS = new Set(["shutdown_timeout", "auth_required", "update_required", "spawn_error", "rpc_error"]);
+/** Causes the server writes itself, by fixed code. */
+const FIXED_CAUSES = [
+    [/ran out of memory while \d+ tasks? ran at once/, "out_of_memory"],
+    [/^Ran out of room, so I (closed the browser|stopped this task) to keep everything else running\./, "out_of_memory"],
+    [/^no activity for \d+ minutes — the turn was stopped$/, "stalled"],
+    [/^turn interrupted — OpenMausBot restarted$/, "restart"],
+    [/could not start — /, "could_not_start"],
+    [/^the problem report could not reach /, "incident_undelivered"],
+    [/^could not deliver approval to the provider/, "approval_undelivered"],
+    [/^Canonical event history is incomplete/, "event_log"],
+];
+const PLACES = new Set(PLACE_STATES);
+/** A cause the server words itself, or the trial credit's refusal: its code needs no stop reason. */
+export function fixedCode(cause) {
+    for (const [pattern, code] of FIXED_CAUSES)
+        if (pattern.test(cause))
+            return code;
+    const trial = trialCreditKind(cause);
+    return trial ? `trial_${trial}` : null;
+}
+export const classifiedCode = (cause) => match(CODE, classifyError({ text: cause }).reason) ?? "unknown";
+/** A specific stop reason wins; a generic one only when the cause has no known class. */
+export function stoppedCode(stopReason, fallback) {
+    const stop = stopReason && STOP_CODES.has(stopReason) ? stopReason : null;
+    if (stop && !GENERIC_STOPS.has(stop))
+        return stop;
+    return fallback !== "unknown" ? fallback : stop ?? "unknown";
+}
+const remember = (map, key, value, cap) => {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > cap)
+        map.delete(map.keys().next().value);
+};
+/**
+ * Failed turns since boot, bucketed by kind, code and engine. Fed by one tap on the store (every failed-turn row, the one
+ * place they are written) and the runtime bus (turn starts, stop reasons, engine kinds).
+ */
+export function createCloudHealthLedger(options = {}) {
+    const now = options.now ?? Date.now;
+    const bootedAt = now();
+    let seq = 0;
+    const buckets = new Map();
+    const pending = new Map();
+    const lastRowAt = new Map();
+    const engines = new Map();
+    const minutes = new Map();
+    const tally = (at, field) => {
+        const minute = Math.floor(at / MINUTE);
+        const slot = minutes.get(minute) ?? { started: 0, failed: 0 };
+        slot[field] += 1;
+        minutes.set(minute, slot);
+        for (const key of minutes.keys())
+            if (key <= Math.floor(now() / MINUTE) - WINDOW_24H)
+                minutes.delete(key);
+    };
+    const record = (kind, code, engine, at, botId, threadId) => {
+        const key = `${kind}\u0000${code}\u0000${engine ?? ""}`;
+        let bucket = buckets.get(key);
+        if (!bucket) {
+            if (buckets.size >= HEALTH_BUCKET_CAP) {
+                const oldest = [...buckets.entries()].reduce((a, b) => (b[1].lastAt < a[1].lastAt ? b : a));
+                buckets.delete(oldest[0]);
+            }
+            bucket = { kind, code, engine, count: 0, firstAt: at, lastAt: at, botId: null, threadId: null, seq: 0 };
+            buckets.set(key, bucket);
+        }
+        bucket.count += 1;
+        bucket.firstAt = Math.min(bucket.firstAt, at);
+        bucket.lastAt = Math.max(bucket.lastAt, at);
+        bucket.botId = match(ID, botId);
+        bucket.threadId = match(ID, threadId);
+        bucket.seq = ++seq;
+        tally(at, "failed");
+    };
+    const settle = (threadId, stopReason) => {
+        const row = pending.get(threadId);
+        if (!row)
+            return;
+        pending.delete(threadId);
+        record("turn", stoppedCode(stopReason, row.fallback), row.engine, row.at, row.botId, threadId);
+    };
+    const settleStale = () => {
+        const before = now() - PENDING_SETTLE_MS;
+        for (const [threadId, row] of pending)
+            if (row.at <= before)
+                settle(threadId);
+    };
+    return {
+        bootedAt,
+        /** Every message the store appends; only failed-turn rows count. */
+        noteMessage(threadId, message) {
+            const cause = message.tool?.ok === false ? failedTurnCause(message.tool.name) : null;
+            if (cause === null)
+                return;
+            settle(threadId);
+            const botId = message.from?.botId ?? options.botOf?.(threadId) ?? null, engine = engines.get(threadId) ?? null;
+            remember(lastRowAt, threadId, message.at, THREAD_CAP);
+            const place = message.tool?.place?.state;
+            if (place && PLACES.has(place))
+                return record("place", place, engine, message.at, botId, threadId);
+            const fixed = fixedCode(cause);
+            if (fixed)
+                return record("turn", fixed, engine, message.at, botId, threadId);
+            if (pending.size >= PENDING_CAP)
+                settle(pending.keys().next().value);
+            pending.set(threadId, { at: message.at, botId, engine, fallback: classifiedCode(cause) });
+        },
+        noteEvent(event) {
+            if (event.type === "turn.started") {
+                settle(event.threadId);
+                const kind = match(KIND, event.provider);
+                if (kind)
+                    remember(engines, event.threadId, kind, THREAD_CAP);
+                tally(now(), "started");
+            }
+            else if (event.type === "turn.completed") {
+                if (pending.has(event.threadId))
+                    return settle(event.threadId, event.stopReason);
+                if (event.ok || !event.stopReason || !ROWLESS_STOPS.has(event.stopReason))
+                    return;
+                const at = now();
+                if (at - (lastRowAt.get(event.threadId) ?? -Infinity) < ROW_DEDUPE_MS)
+                    return;
+                remember(lastRowAt, event.threadId, at, THREAD_CAP);
+                record("turn", event.stopReason, engines.get(event.threadId) ?? match(KIND, event.provider), at, options.botOf?.(event.threadId) ?? null, event.threadId);
+            }
+        },
+        /** Buckets changed after `after` (a cursor from an earlier read of this boot; anything else reads from the start), oldest change first. */
+        read(after) {
+            settleStale();
+            const cursor = /^(\d{1,15})\.(\d{1,15})$/.exec(after ?? "");
+            const since = cursor && Number(cursor[1]) === bootedAt && Number(cursor[2]) <= seq ? Number(cursor[2]) : 0;
+            const incidents = [...buckets.values()].filter((bucket) => bucket.seq > since).sort((a, b) => a.seq - b.seq).map((bucket) => ({ ...bucket }));
+            const current = Math.floor(now() / MINUTE);
+            const turns = { started15m: 0, failed15m: 0, started24h: 0, failed24h: 0 };
+            for (const [minute, slot] of minutes) {
+                if (minute <= current - WINDOW_24H)
+                    continue;
+                turns.started24h += slot.started;
+                turns.failed24h += slot.failed;
+                if (minute > current - WINDOW_15M) {
+                    turns.started15m += slot.started;
+                    turns.failed15m += slot.failed;
+                }
+            }
+            return { since, seq, incidents, turns };
+        },
+        cursor: (at) => `${bootedAt}.${at}`,
+    };
+}
+/** A lookup that may be slow (a provider call): the last answer at once, refreshed in the background when stale. */
+function backgroundLookup(load, ttlMs, now) {
+    let value = null, checkedAt = null, failed = false, running = false;
+    return () => {
+        if (!running && (checkedAt === null || now() - checkedAt >= ttlMs)) {
+            const started = load();
+            if (started) {
+                running = true;
+                let timer;
+                const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), LOOKUP_TIMEOUT_MS); timer.unref?.(); });
+                void Promise.race([started, timeout]).then((answer) => { value = answer; failed = false; }, () => { failed = true; })
+                    .finally(() => { clearTimeout(timer); checkedAt = now(); running = false; });
+            }
+        }
+        return { value, checkedAt, failed };
+    };
+}
+function memoryBytes() {
+    const totalBytes = totalmem();
+    try {
+        const available = /^MemAvailable:\s+(\d+) kB$/m.exec(readFileSync("/proc/meminfo", "utf8"))?.[1];
+        if (available)
+            return { totalBytes, availableBytes: Number(available) * 1024 };
+    }
+    catch { }
+    return { totalBytes, availableBytes: freemem() };
+}
+function diskBytes(dir) {
+    try {
+        const stats = statfsSync(dir);
+        return { totalBytes: stats.blocks * stats.bsize, freeBytes: stats.bavail * stats.bsize };
+    }
+    catch {
+        return null;
+    }
+}
+function writable(dir) {
+    try {
+        accessSync(dir, constants.W_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/** Fixed codes and counts only: the box kind, why it is off, and the self-check's `passed/total` with the failed check ids. */
+export function boxSummary(report) {
+    if (!report)
+        return null;
+    const failed = report.checks?.failed.filter((id) => CODE.test(id)).slice(0, 50) ?? [];
+    const broker = { ...report.broker, unbrokered: report.broker.unbrokered.filter((name) => KIND.test(name)).slice(0, 50) };
+    return { box: report.box, reason: report.reason, checks: report.checks ? `${report.checks.passed}/${report.checks.total}` : null, failed, boxed: report.boxed, refused: report.refused, broker, hardening: report.hardening };
+}
+/** What the scheduler says of itself, or `fallback` when asking it throws: the rest of the report is still answered. The log names no cause, which could quote a routine. */
+function guarded(read, fallback) {
+    try {
+        return read();
+    }
+    catch {
+        console.error("cloud health: the scheduler's part of the report could not be read");
+        return fallback;
+    }
+}
+/** The report's body, at most CLOUD_HEALTH_MAX_BYTES of JSON. */
+export function createCloudHealth(deps) {
+    const now = deps.now ?? Date.now;
+    const ledger = createCloudHealthLedger({ botOf: (threadId) => deps.store.botByThread(threadId)?.id ?? null, now });
+    const speed = deps.speed ?? createCloudSpeed({ now });
+    deps.store.onChange((change) => { if (change.type === "message") {
+        ledger.noteMessage(change.threadId, change.message);
+        speed.noteMessage(change.threadId, change.message);
+    } });
+    deps.bus.subscribe((event) => { ledger.noteEvent(event); speed.noteEvent(event); });
+    const connectors = backgroundLookup(deps.connectors, CONNECTORS_TTL_MS, now);
+    const version = match(VERSION, deps.version) ?? "unknown", image = match(IMAGE, deps.image);
+    let perfWarnedAt = -Infinity;
+    const perf = () => {
+        try {
+            return deps.perf?.() ?? null;
+        }
+        catch (error) {
+            if (now() - perfWarnedAt >= 60_000) {
+                perfWarnedAt = now();
+                (deps.log ?? console.warn)(`cloud health: perf left out: ${error instanceof Error ? error.name : "error"}`);
+            }
+            return null;
+        }
+    };
+    const engines = () => {
+        const used = new Set(deps.store.bots.flatMap((bot) => bot.modelSelection ? [bot.modelSelection.instanceId] : []));
+        return deps.engines().flatMap(({ instanceId, driverKind, snapshot }) => {
+            const kind = match(KIND, driverKind);
+            return kind ? [{ kind, used: used.has(instanceId), available: snapshot ? snapshot.state === "available" : null,
+                    authenticated: typeof snapshot?.authenticated === "boolean" ? snapshot.authenticated : null, version: match(VERSION, snapshot?.version) }] : [];
+        });
+    };
+    const connectorState = () => {
+        const { value, checkedAt, failed } = connectors();
+        if (checkedAt === null && value === null)
+            return null;
+        const items = Object.entries(value ?? {}).flatMap(([slug, state]) => match(KIND, slug) && !state.pending ? [{ slug, connected: state.connected === true }] : []);
+        return { checkedAt, failed, items: items.slice(0, CONNECTOR_CAP) };
+    };
+    return {
+        ledger,
+        speed,
+        report(after) {
+            const read = ledger.read(after);
+            const memory = memoryBytes(), browser = deps.browser(), first = deps.firstHour?.();
+            const base = {
+                v: 1, version, image, bootedAt: ledger.bootedAt, at: now(),
+                turns: read.turns, routines: guarded(() => deps.routines?.(ROUTINE_CAP) ?? [], []).filter((routine) => match(ID, routine.routineId)), schedule: guarded(() => deps.schedule?.() ?? null, null),
+                engines: engines(), connectors: connectorState(),
+                browser: { available: browser.available, installing: browser.installing, interrupted: browser.interrupted },
+                box: boxSummary(deps.box?.()),
+                firstHour: first?.firstHour ?? null, value: first?.value ?? null, room: deps.room?.() ?? null, speed: speed.report(), perf: perf(),
+                system: { ...memory, rssBytes: process.memoryUsage.rss(), load1: loadavg()[0] ?? 0, cpus: availableParallelism(), disk: diskBytes(deps.dataDir), eventLogWritable: writable(deps.eventsDir) },
+            };
+            let budget = CLOUD_HEALTH_MAX_BYTES - JSON.stringify({ ...base, cursor: ledger.cursor(read.seq), truncated: true, incidents: [] }).length;
+            const incidents = [];
+            for (const incident of read.incidents) {
+                budget -= JSON.stringify(incident).length + 1;
+                if (budget < 0)
+                    break;
+                incidents.push(incident);
+            }
+            const truncated = incidents.length < read.incidents.length;
+            return { ...base, cursor: ledger.cursor(truncated ? incidents.at(-1)?.seq ?? read.since : read.seq), truncated, incidents };
+        },
+    };
+}

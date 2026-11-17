@@ -1,0 +1,17 @@
+export { acquireDataDirLease, acquireDataDirLeaseForProcess, clearRecordsFromEarlierRunOfThisContainer, clearRecordsFromOtherMachines, DataDirLeaseError, } from "../electron/data-dir-lease.mjs";
+/** The server's release for every exit path (process exit, graceful close, crash guard): the first call releases, later
+ * calls do nothing, and a failure is logged, never thrown, so exiting is never stopped by the lease. */
+export function releaseOnceAtExit(lease) {
+    let attempted = false;
+    return () => {
+        if (attempted)
+            return;
+        attempted = true;
+        try {
+            lease.release();
+        }
+        catch (error) {
+            console.error(`[data-directory] lease release failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+}

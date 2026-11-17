@@ -1,7 +1,8 @@
 {
   "name": "ai-studio-hub",
-  "version": "1.0.0",
-  "description": "Unified Desktop/Web GUI Hub for Google Antigravity and OpenAI Codex with Live Credit Tracking, Drag-and-Drop Attachments, Project Manager, and Automatic Cross-Engine Context Handoff",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "AI Studio Hub powered by OpenMausBot with Antigravity & Codex Native Chat Sync, Quota Auto-Pilot, Stalled-Task Radar, and Self-Healing Cloudflare Gateway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

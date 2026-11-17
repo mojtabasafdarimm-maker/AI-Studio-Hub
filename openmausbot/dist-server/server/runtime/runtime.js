@@ -1,0 +1,1052 @@
+// The store is the only state: tick() is the only place work is admitted or dispatched, and no timer lives here.
+import { randomUUID } from "node:crypto";
+import { redactSecretsInText } from "../../shared/redact.js";
+import { hostFaultOf, retryCannotFix } from "../host-fault.js";
+import { composeEnvelope } from "./envelope.js";
+import { assignmentLevel } from "./level.js";
+import { answersSender, asking, awaited, childrenSince, settledSince, clip, continuations, CUT_TWICE, duration, isTerminal, loopStop, nextGuard, outwardDetail, ownsConversation, ownThread, path, restartNote, wakeOwner } from "./tree.js";
+import { DEFAULT_LIMITS } from "./types.js";
+/** After a restart, the first RERUN_BURST turns it cut start again at once and the rest one at a time this far apart: a
+ * server that fell under the load of many turns does not meet it again in its first second, and a fall during the
+ * reruns cuts only those already started (a turn cut twice fails; one still waiting here was not cut again). Of 34 cut
+ * turns, the last starts 15 s after the first. */
+export const RERUN_GAP_MS = 500;
+export const RERUN_BURST = 4;
+export const RERUN_HELD = "waiting its turn to start again after the restart";
+/** A cut turn is not run again once newer work in its conversation started first: it would answer out of order. */
+export const RERUN_SUPERSEDED = "cut by a restart; newer work in this conversation started before it could run again, so it was not run again";
+const BRIEF_MAX = 12_000;
+const RESULT_MAX = 12_000;
+const STOPPED_WITH_REQUEST = "Stopped with the request it was for";
+const DETAIL_MAX = 400;
+/** progress() runs once per runtime event; lastActivityAt catches up at this cadence, not per event. */
+export const PROGRESS_WRITE_MS = 10_000;
+const defaultClock = { now: () => Date.now(), monotonic: () => performance.now() };
+/** Work nobody is waiting on (a routine's, a webhook's): the caps that only failures in a row or a total can end apply to
+ * it alone. A person's request always gets its requester's turn to react. */
+const unattendedRoot = (root) => root !== undefined && root.origin.kind !== "person";
+export class Runtime {
+    limits;
+    store;
+    runner;
+    clock;
+    level;
+    log;
+    bootAt;
+    opened = false;
+    closing = false;
+    ticking = false;
+    turns = new Map();
+    rootActivity = new Map();
+    heldFor = new Map();
+    reportDue = new Set();
+    batch = null;
+    lastThrew = false;
+    rerunGapMs;
+    /** Monotonic: no turn a restart cut starts before this. */
+    nextRerunAt = Number.NEGATIVE_INFINITY;
+    rerunsStarted = 0;
+    constructor(store, runner, options = {}) {
+        this.store = store;
+        this.runner = runner;
+        this.clock = options.clock ?? defaultClock;
+        this.limits = { ...DEFAULT_LIMITS, ...options.limits };
+        this.level = options.level ?? assignmentLevel;
+        this.log = options.log ?? (line => console.error("runtime:", line));
+        this.bootAt = this.clock.now();
+        this.rerunGapMs = options.rerunGapMs ?? RERUN_GAP_MS;
+    }
+    /** Restart reconciliation and re-park of needs_input, from stored data only. Idempotent; runs before the first tick. */
+    open() {
+        if (this.opened)
+            return;
+        this.opened = true;
+        const now = this.clock.now();
+        // Deepest first: a child's fate marks its parent before the parent's own turn is judged.
+        const live = this.store.all({ nonTerminal: true }).sort((a, b) => b.depth - a.depth);
+        this.withBatch(() => {
+            for (const snapshot of live) {
+                const n = this.store.get(snapshot.id);
+                if (!n || isTerminal(n))
+                    continue;
+                if (n.status === "needs_input") {
+                    this.store.update(n, { kind: "restart_reconciled", at: now, detail: "needs_input: parked again" });
+                    this.touch(n);
+                    this.safe("park", () => this.runner.park(n, n.question ?? "", true));
+                    continue;
+                }
+                if (n.status !== "running")
+                    continue;
+                const carried = n.carrying ?? [];
+                const handedOut = childrenSince(this.store, n).length > 0;
+                const outward = handedOut ? [] : this.outwardOf(n);
+                if (handedOut) {
+                    n.status = "waiting";
+                    n.restart = "cut";
+                    n.lastActivityAt = now;
+                    this.store.update(n, { kind: "restart_reconciled", at: now, detail: "waiting: cut after handing out work" });
+                    this.touch(n);
+                }
+                else if (outward.length > 0) {
+                    this.store.update(n, { kind: "restart_reconciled", at: now, detail: "failed: outward action done" });
+                    this.settle(n, "failed", "interrupted", outwardDetail(outward));
+                }
+                else if (n.restart === "rerun") {
+                    this.store.update(n, { kind: "restart_reconciled", at: now, detail: "failed: cut twice" });
+                    this.settle(n, "failed", "interrupted", CUT_TWICE);
+                }
+                else {
+                    n.restart = "rerun";
+                    n.restarts += 1;
+                    n.lastActivityAt = now;
+                    n.status = this.store.children(n.id).length ? "resume" : "queued";
+                    this.store.update(n, { kind: "restart_reconciled", at: now, detail: `${n.status}: rerun ${n.restarts}` });
+                    this.touch(n);
+                }
+                if (n.restart !== "rerun")
+                    this.decideCarried(carried);
+                const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+                if (parent && !isTerminal(parent) && !parent.restart) {
+                    parent.restart = "teammates";
+                    this.store.update(parent, { kind: "restart_reconciled", at: now, detail: `${parent.status}: teammates cut` });
+                    this.touch(parent);
+                }
+            }
+            for (const n of this.store.all())
+                if (isTerminal(n) && n.reportedAt === undefined)
+                    this.reportDue.add(n.id);
+        });
+    }
+    /** A requesting turn starts: the root, already running. The host runs that turn and ends it with end(). */
+    begin(req) {
+        const now = this.clock.now();
+        const id = req.id ?? randomUUID();
+        const root = {
+            id, rootId: id, depth: 0, origin: req.origin, requester: req.requester, assignee: req.assignee,
+            mode: "work", reply: req.reply ?? "resume", brief: clip(req.brief, BRIEF_MAX), status: "running",
+            level: req.level, levelSource: "own", executions: 1, restarts: 0, createdAt: now, startedAt: now, lastActivityAt: now,
+            result: "", rework: false, budgets: { since: now, requests: 0, executions: 1, wakes: 0, total: 1 }, version: 1,
+            ...(req.goalRunId ? { goalRunId: req.goalRunId } : {}),
+        };
+        this.store.transaction(() => {
+            this.store.insert(root, { kind: "enqueued", at: now, detail: "queued: root" });
+            this.store.update(root, { kind: "started", at: now, detail: `running: turn 1 (host), level ${root.level}` });
+        });
+        this.touch(root);
+        return root;
+    }
+    /** Never throws: an unknown id, a child or a root that is not running is logged and left alone. */
+    end(rootId, result) {
+        const n = this.store.get(rootId);
+        if (!n || n.parentId !== undefined || n.status !== "running") {
+            this.log(`end(${rootId}): not a running root`);
+            return;
+        }
+        if (!result.ok && !result.needsInput && !result.continue && this.closing)
+            return;
+        const live = this.turns.get(rootId);
+        // Dropping the handle without an abort makes turnEnded ignore the run() result that follows.
+        this.turns.delete(rootId);
+        const evidence = result.evidence ? { evidence: result.evidence } : {};
+        const outcome = result.needsInput
+            ? { kind: "needs_input", question: result.needsInput.question, ...(result.needsInput.cards ? { cards: result.needsInput.cards } : {}), ...evidence }
+            : result.continue
+                ? { kind: "continue", text: result.text, note: result.continue.note, ...(result.continue.handoffPath ? { handoffPath: result.continue.handoffPath } : {}), ...evidence }
+                : result.ok
+                    ? { kind: "completed", text: result.text, ...evidence }
+                    : { kind: "failed", outcome: result.stalled ? "stalled" : "provider_error", text: result.text, ...evidence };
+        try {
+            this.withBatch(() => this.finishTurn(n, outcome, live));
+        }
+        catch (error) {
+            this.log(`end(${rootId}) failed: ${String(error)}`);
+        }
+    }
+    /** Remove terminal trees that finished before `before`. Returns rows removed. */
+    prune(before) {
+        return this.store.prune(before);
+    }
+    /** Hand work to a teammate from a running node. Never throws. */
+    enqueue(req) {
+        try {
+            return this.withBatch(() => this.admit(req));
+        }
+        catch (error) {
+            this.log(`enqueue failed: ${String(error)}`);
+            return { ok: false, reason: `The request could not be recorded: ${String(error)}`, outcome: "refused" };
+        }
+    }
+    admit(req) {
+        const refuse = (reason, outcome = "refused") => ({ ok: false, reason, outcome });
+        const now = this.clock.now();
+        const parent = req.parentId ? this.store.get(req.parentId) : undefined;
+        if (req.parentId && !parent)
+            return refuse("The requesting turn no longer exists");
+        if (parent && parent.status !== "running")
+            return refuse("The requesting turn is not running");
+        const brief = clip(req.brief, BRIEF_MAX);
+        const mode = req.mode ?? "work";
+        const lineage = parent ? path(this.store, parent) : [];
+        const root = lineage[0];
+        const target = req.assignee;
+        let sameCall = false;
+        const ancestors = ownThread(lineage, target, req.ownThread) ? lineage.slice(0, -1) : lineage;
+        if (!answersSender(parent, mode, { botId: target.botId, ...target.destination }) && ancestors.some(a => a.assignee.botId === target.botId &&
+            (!a.assignee.destination.groupId || !target.destination.groupId || a.assignee.destination.groupId === target.destination.groupId))) {
+            return refuse("Cannot assign work back to an ancestor; results return automatically");
+        }
+        if (parent) {
+            const siblings = this.store.children(parent.id);
+            const existing = siblings.findLast(c => c.brief === brief && c.mode === mode && c.assignee.botId === target.botId &&
+                c.assignee.destination.threadId === target.destination.threadId && c.assignee.destination.groupId === target.destination.groupId);
+            if (existing && !(req.rework && isTerminal(existing)))
+                return { ok: true, assignment: existing, duplicate: true };
+            if (parent.depth + 1 > this.limits.depth)
+                return refuse(`Assignment depth limit reached (${this.limits.depth})`);
+            sameCall = req.fanOut !== undefined && siblings.some(c => c.fanOut === req.fanOut);
+            if (!sameCall && unattendedRoot(root) && root?.budgets && (root.budgets.total ?? 0) >= this.limits.totalExecutions) {
+                this.store.update(root, { kind: "budget", at: now, detail: `turns: ${root.budgets.total} in all` });
+                return refuse(`Request budget exhausted: ${this.limits.totalExecutions} turns in all`, "budget");
+            }
+            if (!sameCall && root?.budgets && root.budgets.requests + 1 > this.limits.requests) {
+                this.store.update(root, { kind: "budget", at: now, detail: `requests: ${root.budgets.requests} since last progress` });
+                return refuse(`Request budget exhausted: ${this.limits.requests} requests without progress`, "budget");
+            }
+        }
+        const chiefLineage = Boolean(req.requester.chief) || lineage.some(a => a.requester.chief === true);
+        const { level, source } = this.level({ own: req.levels.own, chief: req.levels.chief, origin: (root ?? req).origin.kind, chiefLineage,
+            driverKind: req.driverKind });
+        const node = {
+            id: randomUUID(), rootId: parent ? parent.rootId : "", ...(parent ? { parentId: parent.id } : {}), depth: parent ? parent.depth + 1 : 0,
+            origin: root ? root.origin : req.origin, requester: req.requester, assignee: target, mode,
+            reply: req.reply ?? (mode === "notify" ? "none" : "resume"), brief, ...(req.doneWhen ? { doneWhen: req.doneWhen } : {}),
+            status: "queued", level, levelSource: source, executions: 0, restarts: 0, createdAt: now, lastActivityAt: now, result: "",
+            rework: Boolean(req.rework), ...(req.approved !== undefined ? { approved: req.approved } : {}),
+            ...(req.batchKey !== undefined ? { batchKey: req.batchKey } : {}), ...(req.fanOut !== undefined ? { fanOut: req.fanOut } : {}), version: 1,
+        };
+        if (!parent) {
+            node.rootId = node.id;
+            node.budgets = { since: now, requests: 0, executions: 0, wakes: 0 };
+        }
+        const problem = this.safe("validate", () => this.runner.validate(node, parent));
+        if (this.lastThrew)
+            return refuse("The host could not validate the request now");
+        if (problem)
+            return refuse(problem);
+        this.store.transaction(() => {
+            this.store.insert(node, { kind: "enqueued", at: now, detail: "queued" });
+            if (root?.budgets && !sameCall) {
+                root.budgets.requests += 1;
+                this.store.update(root);
+            }
+        });
+        this.touch(node, ...root ? [root] : []);
+        return { ok: true, assignment: node, duplicate: false };
+    }
+    /** How soon the next tick() matters: "busy" while work may move without a call in here (a turn, a queued or resumable
+     * assignment, a report to send); "parked" while live assignments only wait on a person, a teammate or a time limit. */
+    pace() {
+        if (!this.opened)
+            this.open();
+        if (this.reportDue.size > 0)
+            return "busy";
+        const live = this.store.all({ nonTerminal: true });
+        if (live.some(n => n.status === "resume" || ((n.status === "queued" || n.status === "running") && !this.away(n))))
+            return "busy";
+        if ([...this.turns.keys()].some(id => !live.some(n => n.id === id)))
+            return "busy";
+        return live.length > 0 ? "parked" : "idle";
+    }
+    /** Never overlaps itself; does nothing after close(). */
+    tick() {
+        if (!this.opened)
+            this.open();
+        if (this.closing || this.ticking)
+            return;
+        this.ticking = true;
+        try {
+            this.withBatch(() => this.tickBody());
+        }
+        finally {
+            this.ticking = false;
+        }
+    }
+    /** When each node was last seen held for a place that could not be reached, queued for it or running there, or first
+     * seen with that place back: no window counts time up to then. */
+    heldAway = new Map();
+    /** The nodes whose place was away when last asked. */
+    awayNow = new Set();
+    away(n) {
+        if ((n.status !== "queued" && n.status !== "running") || this.runner.away === undefined)
+            return false;
+        if (this.safe("away", () => this.runner.away(n)) !== true) {
+            // The place is back: its windows start when that is first seen, not when it was last seen away. However long this
+            // look took to come (a slow disk, a busy host), the node is not expired by the look that finds its place again.
+            if (this.awayNow.delete(n.id))
+                this.heldAway.set(n.id, this.clock.now());
+            return false;
+        }
+        this.heldAway.set(n.id, this.clock.now());
+        this.awayNow.add(n.id);
+        return true;
+    }
+    tickBody() {
+        const now = this.clock.now();
+        const mono = this.clock.monotonic();
+        const live = this.store.all({ nonTerminal: true });
+        if (this.heldAway.size > 0) {
+            const ids = new Set(live.map(n => n.id));
+            for (const id of this.heldAway.keys())
+                if (!ids.has(id)) {
+                    this.heldAway.delete(id);
+                    this.awayNow.delete(id);
+                }
+        }
+        // Deepest first, so each node fails with its own reason.
+        for (const snapshot of [...live].sort((a, b) => b.depth - a.depth)) {
+            const n = this.store.get(snapshot.id);
+            if (!n || isTerminal(n))
+                continue;
+            if (n.status === "queued" && !n.continuation && !this.away(n) && now - Math.max(this.since(n.lastActivityAt), this.heldAway.get(n.id) ?? 0) > this.limits.queueMs) {
+                this.cancelTree(n, n.executions > 0 ? "not resumed" : "never started", "failed", "expired");
+            }
+            else if (n.status === "needs_input" && this.inputExpires(n)) {
+                this.chaseParked(n, now);
+            }
+            else if (n.status === "running") {
+                const turn = this.turns.get(n.id);
+                if (turn && this.away(n))
+                    turn.activeAt = mono;
+                else if (turn && mono - turn.activeAt > this.limits.turnStallMs) {
+                    this.cancelTree(n, `no activity for ${duration(this.limits.turnStallMs)}`, "failed", "stalled");
+                }
+            }
+        }
+        // Access is rechecked every tick, not only at dispatch, so no result crosses a boundary that closed under it.
+        for (const snapshot of [...live].sort((a, b) => b.depth - a.depth)) {
+            const n = this.store.get(snapshot.id);
+            if (!n || isTerminal(n))
+                continue;
+            const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+            const problem = this.safe("validate", () => this.runner.validate(n, parent));
+            if (this.lastThrew || !problem)
+                continue;
+            this.cancelTree(n, problem, "failed", "refused");
+        }
+        for (const rootId of new Set(live.map(n => n.rootId))) {
+            const root = this.store.get(rootId);
+            if (!root || isTerminal(root))
+                continue;
+            const anchor = Math.max(this.since(root.lastActivityAt), this.rootActivity.get(rootId) ?? 0);
+            if (now - anchor <= this.limits.stallMs)
+                continue;
+            const tree = this.store.all({ rootId });
+            if (tree.some(n => n.status === "needs_input" || (n.status === "queued" && (n.continuation !== undefined || this.away(n))) || (n.status === "running" && this.away(n))))
+                continue;
+            if (now - Math.max(anchor, ...tree.map(n => this.heldAway.get(n.id) ?? 0)) <= this.limits.stallMs)
+                continue;
+            this.store.update(root, { kind: "stalled", at: now, detail: `no progress for ${duration(now - anchor)}` });
+            this.cancelTree(root, `no progress for ${duration(this.limits.stallMs)}`, "failed", "stalled");
+        }
+        for (const id of Array.from(this.reportDue)) {
+            const n = this.store.get(id);
+            if (!n || !isTerminal(n)) {
+                this.reportDue.delete(id);
+                continue;
+            }
+            this.report(n, false);
+        }
+        for (const snapshot of live) {
+            if (snapshot.status !== "waiting")
+                continue;
+            const n = this.store.get(snapshot.id);
+            if (!n || n.status !== "waiting")
+                continue;
+            const due = this.resumeReason(n);
+            if (!due)
+                continue;
+            if (due === "settled" && !n.parentId && (n.reply === "poll" || this.nothingToAnswer(n))) {
+                this.settle(n, "completed", "done");
+            }
+            else {
+                n.status = "resume";
+                this.store.update(n, { kind: "resume_due", at: now, detail: due === "settled" ? "resume" : "resume: a teammate asks" });
+                this.touch(n);
+            }
+        }
+        this.dispatchDue();
+    }
+    dispatchDue() {
+        const live = this.store.all({ nonTerminal: true });
+        const busyThreads = new Set(live.filter(n => n.status === "running").map(n => n.assignee.destination.threadId));
+        for (const snapshot of live) {
+            if (snapshot.status !== "queued" && snapshot.status !== "resume")
+                continue;
+            const n = this.store.get(snapshot.id);
+            if (!n || (n.status !== "queued" && n.status !== "resume"))
+                continue;
+            if (n.status === "resume" && n.restart !== "rerun" && !this.resumeReason(n)) {
+                n.status = "waiting";
+                this.store.update(n, { kind: "waiting", at: this.clock.now(), detail: "waiting: nothing left to resume for" });
+                this.touch(n);
+                continue;
+            }
+            const thread = n.assignee.destination.threadId;
+            if (n.restart === "rerun" && this.newerWorkIn(thread, n)) {
+                this.cancelTree(n, RERUN_SUPERSEDED, "failed", "interrupted");
+                continue;
+            }
+            // Same-conversation turns never overlap; same-room speakers take turns.
+            if (busyThreads.has(thread)) {
+                this.heldBehindTurn(n, "an earlier turn in its conversation is running");
+                continue;
+            }
+            const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+            const group = n.assignee.destination.groupId;
+            if (parent?.status === "running" && group !== undefined && parent.assignee.destination.groupId === group) {
+                this.heldBehindTurn(n, "its requester's turn in the room is running");
+                continue;
+            }
+            const rerun = n.restart === "rerun";
+            if (rerun && this.clock.monotonic() < this.nextRerunAt) {
+                this.held(n.id, RERUN_HELD);
+                busyThreads.add(thread);
+                continue;
+            }
+            const resumed = n.status === "resume";
+            const root = n.parentId ? this.store.get(n.rootId) : n;
+            // The root's own resume is let through: it wraps up what came back, and can start nothing more.
+            if (unattendedRoot(root) && !(resumed && root?.id === n.id) && root?.budgets && (root.budgets.total ?? 0) + 1 > this.limits.totalExecutions) {
+                this.cancelTree(root, `${this.limits.totalExecutions} turns in all, the most one request may take`, "failed", "budget");
+                continue;
+            }
+            if (!resumed) {
+                if (root?.budgets && root.budgets.executions + 1 > this.limits.executions) {
+                    this.cancelTree(n, `${this.limits.executions} turns without progress`, "failed", "budget");
+                    continue;
+                }
+            }
+            const problem = this.safe("validate", () => this.runner.validate(n, parent));
+            if (this.lastThrew)
+                continue;
+            if (problem) {
+                this.cancelTree(n, problem, "failed", "refused");
+                continue;
+            }
+            const can = this.safe("canStart", () => this.runner.canStart(n));
+            if (can !== true) {
+                if (typeof can === "string")
+                    this.held(n.id, can);
+                continue;
+            }
+            if (!this.dispatch(n, parent, resumed))
+                continue;
+            busyThreads.add(thread);
+            if (rerun && ++this.rerunsStarted >= RERUN_BURST)
+                this.nextRerunAt = this.clock.monotonic() + this.rerunGapMs;
+        }
+    }
+    /** Work in this conversation from another request, begun since this start. */
+    newerWorkIn(threadId, n) {
+        return this.store.all({ assigneeThreadId: threadId }).some(other => other.rootId !== n.rootId && other.createdAt >= this.bootAt);
+    }
+    dispatch(n, parent, resumed) {
+        const now = this.clock.now();
+        const root = n.parentId ? this.store.get(n.rootId) : n;
+        if (!root) {
+            this.log(`dispatch(${n.id}): root ${n.rootId} is missing`);
+            return false;
+        }
+        let input;
+        let delivered;
+        let carrying;
+        let carried;
+        let interruption;
+        try {
+            const children = this.store.children(n.id);
+            // Every settled result, not only new ones: the host keeps reports out of the transcript it replays.
+            const settled = awaited(children).filter(isTerminal);
+            const ids = new Set(children.map(c => c.id));
+            const inbox = this.store.inbox({ threadId: n.assignee.destination.threadId }, true).filter(i => ids.has(i.assignmentId));
+            const fresh = new Set(inbox.filter(i => i.kind === "needs_input").map(i => i.assignmentId));
+            const again = new Set(n.restart === "rerun" ? n.carrying : undefined);
+            const asked = awaited(children).filter(c => asking(c) && (fresh.has(c.id) || again.has(c.id)));
+            interruption = resumed && n.restart !== "rerun" && asked.length > 0;
+            const names = this.names(n, parent);
+            const turn = resumed ? "resume" : n.restart === "rerun" ? "rerun" : n.answer !== undefined ? "answered"
+                : n.continuation ? "continued" : "first";
+            input = {
+                turn,
+                resumed: turn !== "first",
+                restartNote: interruption ? "" : restartNote(n, children, child => this.names(child, n).assignee),
+                envelope: composeEnvelope(n, names, parent),
+                ...(n.answer !== undefined ? { answer: n.answer } : {}),
+                ...(n.continuation ? { continuation: { note: n.continuation.note, ...(n.continuation.handoffPath ? { handoffPath: n.continuation.handoffPath } : {}) } } : {}),
+                ...(settled.length ? { settled } : {}),
+                ...(asked.length ? { asked } : {}),
+                level: n.level, mode: n.mode,
+            };
+            delivered = inbox.map(i => i.id);
+            carrying = asked.map(c => c.id);
+            carried = new Set(settled.map(c => c.id));
+        }
+        catch (error) {
+            this.log(`dispatch(${n.id}) could not compose the turn: ${String(error)}`);
+            return false;
+        }
+        n.status = "running";
+        n.startedAt = now;
+        n.executions += 1;
+        n.lastActivityAt = now;
+        delete n.continuation;
+        delete n.cards;
+        if (carrying.length)
+            n.carrying = carrying;
+        else
+            delete n.carrying;
+        if (root.id !== n.id)
+            root.lastActivityAt = now;
+        if (root.budgets) {
+            root.budgets.executions += 1;
+            root.budgets.total = (root.budgets.total ?? 0) + 1;
+        }
+        try {
+            this.store.transaction(() => {
+                this.store.update(n, { kind: "admitted", at: now, detail: "admitted" });
+                this.store.update(n, { kind: "started", at: now, detail: `running: turn ${n.executions}${resumed ? " (resume)" : ""}, level ${n.level}` });
+                if (root.id !== n.id)
+                    this.store.update(root);
+                this.store.markDelivered(delivered, now);
+            });
+        }
+        catch (error) {
+            this.log(`dispatch(${n.id}) not written, nothing started: ${String(error)}`);
+            return false;
+        }
+        this.heldFor.delete(n.id);
+        this.touch(n, root);
+        const controller = new AbortController();
+        const live = { controller, rootId: root.id, activeAt: this.clock.monotonic(), interruption, carried };
+        this.turns.set(n.id, live);
+        this.rootActivity.set(root.id, now);
+        let turn;
+        try {
+            turn = Promise.resolve(this.runner.run(n, input, controller.signal));
+        }
+        catch (error) {
+            turn = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+        void turn.then(result => this.turnEnded(n.id, live, result), error => {
+            this.log(`run(${n.id}) threw: ${String(error)}`);
+            this.turnEnded(n.id, live, { kind: "failed", outcome: "provider_error", text: clip(String(error), 1000), failure: { text: clip(String(error), 1000) } });
+        }).finally(() => { if (this.turns.get(n.id) === live)
+            this.turns.delete(n.id); });
+        return true;
+    }
+    /** Only the live handle's result settles the node: an ended, cancelled or stalled turn has no handle. */
+    turnEnded(id, live, result) {
+        try {
+            if (this.turns.get(id) !== live)
+                return;
+            const n = this.store.get(id);
+            if (!n || n.status !== "running")
+                return;
+            if (this.closing && result.kind === "failed")
+                return;
+            this.withBatch(() => this.finishTurn(n, result, live));
+        }
+        catch (error) {
+            this.log(`settling ${id} failed: ${String(error)}`);
+        }
+    }
+    /** `live`: the handle of the dispatched turn ending; a host turn begun with begin() has none. A question this turn
+     * carried for its requester to decide, and left unanswered, goes on with its default. */
+    finishTurn(n, result, live) {
+        const carried = n.carrying ?? [];
+        this.settleTurn(n, result, live);
+        this.decideCarried(carried);
+    }
+    settleTurn(n, result, live) {
+        const now = this.clock.now();
+        if (!live?.interruption)
+            delete n.restart;
+        delete n.answer;
+        delete n.answeredBy;
+        delete n.carrying;
+        // Access is rechecked as the turn ends: a reply that lands after the route closed is never retained.
+        const parentRow = n.parentId ? this.store.get(n.parentId) : undefined;
+        const problem = this.safe("validate", () => this.runner.validate(n, parentRow));
+        if (!this.lastThrew && problem) {
+            this.settle(n, "failed", "refused", problem);
+            return;
+        }
+        if (result.evidence)
+            n.evidence = result.evidence;
+        const root = n.parentId ? this.store.get(n.rootId) : n;
+        if (result.kind === "continue") {
+            // The count comes from events because dispatch deletes n.continuation.
+            n.result = clip(result.text, RESULT_MAX);
+            n.guard = nextGuard(n.guard, result.evidence);
+            const stop = loopStop(n.guard, result.text);
+            if (stop) {
+                this.store.update(n, { kind: "stalled", at: now, detail: `no progress: ${stop.reason}` });
+                this.settle(n, "failed", "stalled", stop.detail);
+                return;
+            }
+            n.status = "queued";
+            n.lastActivityAt = now;
+            n.continuation = { note: result.note, ...(result.handoffPath ? { handoffPath: result.handoffPath } : {}), count: continuations(this.store, n.id) + 1 };
+            if (root && root.id !== n.id)
+                root.lastActivityAt = now;
+            this.store.transaction(() => {
+                this.store.update(n, { kind: "continued", at: now, detail: `queued: ${clip(result.note, DETAIL_MAX)}` });
+                if (root && root.id !== n.id)
+                    this.store.update(root);
+            });
+            this.touch(n, ...root && root.id !== n.id ? [root] : []);
+            return;
+        }
+        delete n.guard;
+        if (result.kind === "needs_input") {
+            n.status = "needs_input";
+            n.question = clip(result.question, BRIEF_MAX);
+            n.lastActivityAt = now;
+            delete n.remindedAt;
+            if (result.cards?.length)
+                n.cards = result.cards;
+            else
+                delete n.cards;
+            const choice = result.decide?.default?.trim();
+            if (result.decide && n.parentId && !n.cards)
+                n.decide = choice ? { default: clip(choice, BRIEF_MAX) } : {};
+            else
+                delete n.decide;
+            this.store.update(n, { kind: "parked", at: now, detail: `needs_input${n.decide ? " (its requester decides)" : ""}: ${clip(result.question, DETAIL_MAX)}` });
+            this.touch(n);
+            this.safe("park", () => this.runner.park(n, n.question ?? ""));
+            if (n.decide && !this.decidable(n)) {
+                this.decideDefault(n);
+                return;
+            }
+            if (n.parentId && this.wake(n, "needs_input") && root && !isTerminal(root)) {
+                this.cancelTree(root, `${this.limits.wakes} wakes without progress`, "failed", "budget");
+            }
+            return;
+        }
+        n.result = clip(result.text, RESULT_MAX);
+        if (result.kind === "completed" && result.statusOnly)
+            n.statusOnly = true;
+        const kids = awaited(this.store.children(n.id));
+        const unseen = live !== undefined && kids.some(c => isTerminal(c) && !live.carried.has(c.id));
+        const outstanding = unseen || kids.some(c => !isTerminal(c)) || awaited(childrenSince(this.store, n)).length > 0;
+        if (outstanding) {
+            n.status = "waiting";
+            n.lastActivityAt = now;
+            if (root && unattendedRoot(root))
+                root.lastActivityAt = now;
+            else if (root)
+                this.renew(root, now);
+            this.store.transaction(() => {
+                this.store.update(n, { kind: "waiting", at: now, detail: result.kind === "failed" ? `waiting: turn ${result.outcome}` : "waiting" });
+                if (root && root.id !== n.id)
+                    this.store.update(root);
+            });
+            this.touch(n, ...root && root.id !== n.id ? [root] : []);
+            return;
+        }
+        const ownTurn = !n.parentId;
+        const fault = result.kind === "failed" && result.failure ? hostFaultOf(result.failure.text, result.failure.stopReason) : null;
+        if (fault && retryCannotFix(fault))
+            n.fault = fault;
+        if (result.kind === "completed")
+            this.settle(n, "completed", "done", undefined, ownTurn);
+        else
+            this.settle(n, "failed", result.outcome, undefined, ownTurn);
+    }
+    /** Held by a turn this tick already knows of: the host's words for it when it has any, as it may know more. */
+    heldBehindTurn(n, otherwise) {
+        const can = this.safe("canStart", () => this.runner.canStart(n));
+        this.held(n.id, typeof can === "string" ? can : otherwise);
+    }
+    /** Why this assignment is not moving now, recorded each time the reason changes. */
+    held(id, why) {
+        const n = this.store.get(id);
+        if (!n || isTerminal(n) || this.heldFor.get(id) === why)
+            return;
+        this.heldFor.set(id, why);
+        this.store.update(n, { kind: "held", at: this.clock.now(), detail: clip(why, DETAIL_MAX) });
+    }
+    /** The host saw activity on this running turn: its stall window restarts, and lastActivityAt
+     * catches up on the PROGRESS_WRITE_MS cadence so the stored row reads as live, not frozen at dispatch. */
+    progress(id) {
+        const now = this.clock.now();
+        const turn = this.turns.get(id);
+        if (turn) {
+            turn.activeAt = this.clock.monotonic();
+            this.rootActivity.set(turn.rootId, now);
+        }
+        try {
+            const n = this.store.get(id);
+            if (!turn && n?.status === "running")
+                this.rootActivity.set(n.rootId, now);
+            if (!n || n.status !== "running" || now - n.lastActivityAt < PROGRESS_WRITE_MS)
+                return;
+            n.lastActivityAt = now;
+            const root = n.rootId === n.id ? undefined : this.store.get(n.rootId);
+            this.store.transaction(() => {
+                this.store.update(n);
+                if (root && !isTerminal(root) && now - root.lastActivityAt >= PROGRESS_WRITE_MS) {
+                    root.lastActivityAt = now;
+                    this.store.update(root);
+                }
+            });
+        }
+        catch (error) {
+            // Bookkeeping only: a failed read or stamp never ends the turn or the caller that reported progress.
+            this.log(`progress(${id}) failed: ${String(error)}`);
+        }
+    }
+    /** A parked question is answered, by the person unless `by` says otherwise; the next turn carries it. */
+    answer(id, text, by) {
+        const n = this.store.get(id);
+        if (!n || n.status !== "needs_input")
+            return false;
+        const now = this.clock.now();
+        // Mask secrets before an over-long answer is clipped, so the cut can never leave part of one that redaction no longer matches.
+        n.answer = clip(text.length > BRIEF_MAX ? redactSecretsInText(text) : text, BRIEF_MAX);
+        delete n.question;
+        delete n.decide;
+        n.status = "queued";
+        n.lastActivityAt = now;
+        if (by)
+            n.answeredBy = by;
+        else
+            delete n.answeredBy;
+        const root = n.parentId ? this.store.get(n.rootId) : undefined;
+        this.store.transaction(() => {
+            this.store.update(n, { kind: "answered", at: now, detail: `queued: answered${by ? by.kind === "bot" ? ` by ${by.botId}` : " with its default" : ""}` });
+            if (root && !isTerminal(root)) {
+                root.lastActivityAt = now;
+                this.store.update(root);
+            }
+        });
+        this.touch(n, ...root ? [root] : []);
+        return true;
+    }
+    /** A newer card replaced one this parked turn waits on: it waits on the newer one. */
+    followCard(id, from, to) {
+        const n = this.store.get(id);
+        if (!n || n.status !== "needs_input" || !n.cards?.includes(from))
+            return;
+        n.cards = [...new Set(n.cards.map(card => card === from ? to : card))];
+        this.store.update(n);
+        this.touch(n);
+    }
+    /** Cancel this node and everything under it; abort running turns. */
+    cancel(id, reason = "Stopped by user", outcome = "stopped") {
+        const n = this.store.get(id);
+        if (!n)
+            return;
+        this.withBatch(() => outcome === "failed" ? this.cancelTree(n, reason, "failed", "interrupted") : this.cancelTree(n, reason, "cancelled", "stopped"));
+    }
+    /** The person stopped the requester's conversation, and stop means stop: everything it handed out ends with it, work
+     * that never started and teammates mid-turn alike (and what they handed on), and nothing resumes the stopped
+     * conversation. */
+    stopRequester(owner, reason = "Stopped by user") {
+        this.withBatch(() => {
+            for (const snapshot of this.store.all({ nonTerminal: true })) {
+                if (!ownsConversation(snapshot, owner))
+                    continue;
+                const n = this.store.get(snapshot.id);
+                if (!n || isTerminal(n))
+                    continue;
+                for (const child of this.store.children(n.id)) {
+                    if (isTerminal(child))
+                        continue;
+                    const unstarted = child.status === "queued" && (child.executions === 0 || child.restart === "rerun");
+                    this.cancelTree(child, !unstarted ? STOPPED_WITH_REQUEST : child.restart === "rerun" ? "Stopped before it resumed" : "Stopped before it started", "cancelled", "stopped");
+                }
+                this.settle(n, "cancelled", "stopped", reason);
+            }
+        });
+    }
+    status(id) {
+        const assignment = this.store.get(id);
+        if (!assignment)
+            return undefined;
+        const children = this.store.children(id);
+        const about = new Set([id, ...children.map(c => c.id)]);
+        const lanes = new Map([assignment, ...children].map(a => [JSON.stringify(wakeOwner(a)), wakeOwner(a)]));
+        const inbox = new Map();
+        for (const lane of lanes.values()) {
+            for (const item of this.store.inbox(lane))
+                if (about.has(item.assignmentId))
+                    inbox.set(item.id, item);
+        }
+        return { assignment, children, inbox: [...inbox.values()].sort((a, b) => a.createdAt - b.createdAt) };
+    }
+    /** Non-terminal work this owner's nodes are waiting on. */
+    outstanding(owner) {
+        const live = this.store.all({ nonTerminal: true });
+        if (owner.threadId === undefined && owner.runId !== undefined)
+            return live.filter(n => ownsConversation(n, owner));
+        const mine = new Set(live.filter(n => ownsConversation(n, owner)).map(n => n.id));
+        return live.filter(n => n.parentId !== undefined && mine.has(n.parentId) && n.reply !== "none");
+    }
+    liveEdges() {
+        const edges = [];
+        for (const n of this.store.all({ nonTerminal: true })) {
+            if (!n.parentId)
+                continue;
+            const parent = this.store.get(n.parentId);
+            if (!parent || parent.assignee.botId === n.assignee.botId)
+                continue;
+            const state = n.status === "resume" ? "waiting" : n.status;
+            edges.push({ sourceBotId: parent.assignee.botId, targetBotId: n.assignee.botId, state, threadId: n.assignee.destination.threadId,
+                ...(n.assignee.destination.groupId ? { groupId: n.assignee.destination.groupId } : {}) });
+        }
+        return edges;
+    }
+    /** Undelivered inbox items for this owner, marked delivered now. */
+    poll(owner) {
+        const now = this.clock.now();
+        const items = this.store.inbox(owner, true);
+        this.store.markDelivered(items.map(i => i.id), now);
+        for (const item of items)
+            item.deliveredAt = now;
+        const assignments = items.flatMap(i => { const a = this.store.get(i.assignmentId); return a ? [a] : []; });
+        return { items, assignments };
+    }
+    /** Shutdown began: dispatch nothing more; running turns are left for the
+     * next open() to find cut. */
+    close() {
+        this.closing = true;
+    }
+    cancelTree(n, reason, status, outcome) {
+        for (const child of this.store.children(n.id)) {
+            if (isTerminal(child))
+                continue;
+            const fresh = this.store.get(child.id);
+            if (fresh && !isTerminal(fresh))
+                this.cancelTree(fresh, STOPPED_WITH_REQUEST, status, outcome);
+        }
+        const fresh = this.store.get(n.id);
+        if (fresh && !isTerminal(fresh))
+            this.settle(fresh, status, outcome, reason);
+    }
+    settle(n, status, outcome, detail, ownTurn = false) {
+        if (isTerminal(n))
+            return;
+        const now = this.clock.now();
+        n.status = status;
+        n.outcome = outcome;
+        n.finishedAt = now;
+        n.lastActivityAt = now;
+        if (detail !== undefined)
+            n.outcomeDetail = clip(detail, DETAIL_MAX);
+        else
+            delete n.outcomeDetail;
+        if (status !== "completed" && detail !== undefined && n.result === "")
+            n.result = clip(detail, RESULT_MAX);
+        if (outcome === "refused" && detail !== undefined) {
+            n.result = clip(detail, RESULT_MAX);
+            delete n.evidence;
+        }
+        if (outcome === "budget" && detail !== undefined && detail !== STOPPED_WITH_REQUEST)
+            n.result = clip(detail, RESULT_MAX);
+        delete n.question;
+        delete n.decide;
+        delete n.answer;
+        delete n.answeredBy;
+        delete n.restart;
+        delete n.carrying;
+        const kind = status === "cancelled" ? "cancelled" : outcome === "refused" ? "refused" : "settled";
+        const root = n.parentId ? this.store.get(n.rootId) : n;
+        this.store.transaction(() => {
+            this.store.update(n, { kind, at: now, detail: `${status}: ${outcome}${detail ? ` — ${clip(detail, DETAIL_MAX)}` : ""}` });
+            if (root && root.id !== n.id && !isTerminal(root)) {
+                if (status === "completed" || !unattendedRoot(root))
+                    this.renew(root, now);
+                else {
+                    root.lastActivityAt = now;
+                    if (status === "failed" && outcome !== "budget" && outcome !== "stopped" && detail !== STOPPED_WITH_REQUEST && root.budgets)
+                        root.budgets.failed = (root.budgets.failed ?? 0) + 1;
+                }
+                this.store.update(root);
+            }
+        });
+        this.turns.get(n.id)?.controller.abort();
+        this.turns.delete(n.id);
+        this.heldFor.delete(n.id);
+        if (root?.id === n.id)
+            this.rootActivity.delete(n.id);
+        this.touch(n, ...root && root.id !== n.id ? [root] : []);
+        this.report(n, ownTurn);
+        const failed = root && root.id !== n.id ? this.store.get(root.id)?.budgets?.failed ?? 0 : 0;
+        if (failed >= this.limits.failedInARow) {
+            const last = n.outcomeDetail ?? n.result;
+            this.cancelTree(this.store.get(root.id), `${failed} hand-offs in a row failed, so this request was stopped${last ? `. The last one: ${clip(last, DETAIL_MAX / 2)}` : ""}`, "failed", "budget");
+        }
+    }
+    report(n, ownTurn) {
+        if (n.reportedAt !== undefined)
+            return;
+        const now = this.clock.now();
+        const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+        if (!ownTurn) {
+            this.safe("report", () => this.runner.report(n, parent));
+            if (this.lastThrew) {
+                this.reportDue.add(n.id);
+                return;
+            }
+        }
+        n.reportedAt = now;
+        this.store.update(n, { kind: "reported", at: now, detail: ownTurn ? "own turn" : "reported" });
+        this.reportDue.delete(n.id);
+        this.touch(n);
+        if (n.parentId)
+            this.wake(n, n.outcome === "stalled" ? "stalled" : "settled");
+    }
+    wake(n, kind) {
+        if (n.reply === "none")
+            return false;
+        const now = this.clock.now();
+        const owner = wakeOwner(n);
+        const item = { id: randomUUID(), assignmentId: n.id, kind, createdAt: now };
+        if (owner.botId !== undefined)
+            item.ownerBotId = owner.botId;
+        if (owner.threadId !== undefined)
+            item.ownerThreadId = owner.threadId;
+        if (owner.runId !== undefined)
+            item.ownerRunId = owner.runId;
+        const root = n.parentId ? this.store.get(n.rootId) : n;
+        let over = false;
+        this.store.transaction(() => {
+            this.store.addInbox(item);
+            if (root?.budgets) {
+                root.budgets.wakes += 1;
+                over = root.budgets.wakes > this.limits.wakes;
+                if (root.id !== n.id)
+                    this.store.update(root, over ? { kind: "budget", at: now, detail: `wakes: ${root.budgets.wakes}` } : undefined);
+            }
+            this.store.update(n, { kind: "woken", at: now, detail: kind });
+            if (over && root?.id === n.id)
+                this.store.update(n, { kind: "budget", at: now, detail: `wakes: ${n.budgets?.wakes ?? 0}` });
+        });
+        this.touch(n, ...root && root.id !== n.id ? [root] : []);
+        return over;
+    }
+    renew(root, now) {
+        root.lastActivityAt = now;
+        if (root.budgets)
+            root.budgets = { since: now, requests: 0, executions: 0, wakes: 0, ...(root.budgets.total === undefined ? {} : { total: root.budgets.total }) };
+    }
+    since(at) {
+        return Math.max(at, this.bootAt);
+    }
+    /** Each needs_input inbox item resumes its waiting requester at most once: dispatch marks it delivered in the
+     * same transaction that starts the turn, and a delivered item never counts again, across restarts too. */
+    /** A root's teammates only said "noted": a turn would read that and do nothing, and no assignment above it waits on its answer.
+     * A routine's run and an outside runtime always take their turn: their last words are what they report. */
+    nothingToAnswer(n) {
+        if (n.requester.kind !== "person" && n.requester.kind !== "bot_turn")
+            return false;
+        const news = settledSince(this.store, n);
+        return news.length > 0 && news.every(c => c.status === "completed" && c.statusOnly === true);
+    }
+    resumeReason(n) {
+        const kids = awaited(this.store.children(n.id));
+        if (kids.length === 0)
+            return undefined;
+        if (kids.every(c => isTerminal(c) && c.reportedAt !== undefined))
+            return "settled";
+        if (!n.parentId && n.reply === "poll")
+            return undefined;
+        const parked = new Set(kids.filter(asking).map(c => c.id));
+        if (parked.size === 0)
+            return undefined;
+        const items = this.store.inbox({ threadId: n.assignee.destination.threadId }, true);
+        return items.some(i => i.kind === "needs_input" && parked.has(i.assignmentId)) ? "asked" : undefined;
+    }
+    inputExpires(n) {
+        return Number.isFinite(this.limits.inputWaitMs) && n.parentId !== undefined;
+    }
+    /** One reminder, then expiry. Not on this.since(): a window every boot reopened would never close on a host that restarts. A
+     * question its requester decides asks the person nothing, so it gets no reminder. */
+    chaseParked(n, now) {
+        const { inputWaitMs, inputRemindMs } = this.limits;
+        const closesAt = n.lastActivityAt + inputWaitMs;
+        if (n.remindedAt === undefined && Number.isFinite(inputRemindMs) && !n.decide) {
+            if (now - n.lastActivityAt <= inputRemindMs)
+                return;
+            n.remindedAt = now;
+            this.store.update(n, { kind: "reminded", at: now, detail: "waiting on the person" });
+            this.touch(n);
+            this.safe("remind", () => this.runner.remind?.(n, Math.max(closesAt, now + inputWaitMs - inputRemindMs)));
+            return;
+        }
+        const notBefore = n.remindedAt === undefined ? closesAt : Math.max(closesAt, n.remindedAt + inputWaitMs - inputRemindMs);
+        if (now > notBefore)
+            this.cancelTree(n, "the person did not answer", "failed", "expired");
+    }
+    /** Whether its requester takes a turn for its question: a one-way notice's never does, nor a `poll` root. */
+    decidable(n) {
+        const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+        return n.reply !== "none" && parent !== undefined && !isTerminal(parent) && !(!parent.parentId && parent.reply === "poll");
+    }
+    decideDefault(n) {
+        if (n.status === "needs_input" && n.decide)
+            this.answer(n.id, n.decide.default ?? "", { kind: "default" });
+    }
+    decideCarried(ids) {
+        for (const id of ids) {
+            const child = this.store.get(id);
+            if (child)
+                this.decideDefault(child);
+        }
+    }
+    outwardOf(n) {
+        const port = this.runner.outward;
+        if (!port)
+            return [];
+        const labels = this.safe("outward", () => port.call(this.runner, n));
+        return Array.isArray(labels) ? labels.filter(label => typeof label === "string" && label.trim() !== "") : [];
+    }
+    names(n, parent) {
+        const names = this.safe("names", () => this.runner.names(n, parent));
+        return names ?? { requester: n.requester.botId ?? n.requester.kind, assignee: n.assignee.botId };
+    }
+    safe(what, fn) {
+        this.lastThrew = false;
+        try {
+            return fn();
+        }
+        catch (error) {
+            this.lastThrew = true;
+            this.log(`${what} threw: ${String(error)}`);
+            return undefined;
+        }
+    }
+    withBatch(fn) {
+        if (this.batch)
+            return fn();
+        this.batch = new Map();
+        try {
+            return fn();
+        }
+        finally {
+            const rows = [...this.batch.values()];
+            this.batch = null;
+            if (rows.length)
+                this.safe("changed", () => this.runner.changed(rows));
+        }
+    }
+    touch(...rows) {
+        if (this.batch) {
+            for (const row of rows)
+                this.batch.set(row.id, row);
+            return;
+        }
+        this.safe("changed", () => this.runner.changed(rows));
+    }
+}

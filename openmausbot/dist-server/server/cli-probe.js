@@ -1,0 +1,51 @@
+// Settings → engines "Test": run a CLI's `--version` with only PATH, never inherited credentials.
+import { PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "./config.js";
+import { clientInstall } from "./contracts.js";
+import { notThisCli } from "./drivers/acp/version-probe.js";
+import { augmentedPath } from "./env-path.js";
+import { describeSpawnFailure, execCli } from "./procs.js";
+export async function testCliBinary(cli, driver) {
+    return new Promise((resolve) => {
+        execCli(cli, ["--version"], {
+            timeout: 10_000,
+            // SIGKILL, not SIGTERM: a child that traps TERM would never fire the callback and would pin the HTTP socket.
+            killSignal: "SIGKILL",
+            maxBuffer: 1024 * 64,
+            env: cliProbeEnvironment(),
+        }, (err, stdout) => {
+            if (err) {
+                const e = err;
+                // Node's err.code is an errno string only for spawn failures; a non-zero exit gives the status, a timeout null with killed.
+                const exceededBuffer = e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+                const isSpawnError = typeof e.code === "string" && !exceededBuffer;
+                const message = exceededBuffer
+                    ? "CLI test produced more than 64 KiB of output"
+                    : isSpawnError
+                        ? describeSpawnFailure(e, cli).message
+                        : e.killed
+                            ? "CLI test timed out after 10s"
+                            : `CLI exited with error ${String(e.code)}: ${(stderrOf(err) || "").slice(0, 200) || err.message.split("\n")[0]}`;
+                resolve({ ok: false, message, ...(driver?.install && isSpawnError ? { install: clientInstall(driver.install) } : {}) });
+                return;
+            }
+            const version = stdout.trim().split("\n")[0];
+            // An install command pasted as the path runs curl, which answers --version too: that is not this engine.
+            const expected = driver?.metadata.cliVersion;
+            if (expected && !expected.test(version))
+                return resolve({ ok: false, message: notThisCli(cli, driver.metadata.displayName) });
+            resolve({ ok: true, version });
+        });
+    });
+}
+/** Only PATH: never hand inherited credentials to an arbitrary wrapper selected through Settings. */
+export function cliProbeEnvironment() {
+    const env = { ...process.env, PATH: augmentedPath() };
+    stripWorkspaceCredentialEnv(env);
+    for (const key of PROVIDER_CREDENTIAL_ENV)
+        delete env[key];
+    return env;
+}
+function stderrOf(err) {
+    const s = err.stderr;
+    return typeof s === "string" ? s : Buffer.isBuffer(s) ? s.toString("utf8") : "";
+}

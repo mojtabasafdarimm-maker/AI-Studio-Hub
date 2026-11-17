@@ -1,0 +1,12 @@
+/** The conversation the same trigger's latest earlier run for this bot worked in; null for its first run. `runs` newest first (listRuns). */
+export function previousEventThread(runs, run) {
+    if (!run.routineId)
+        return null;
+    return runs.find((other) => other.id !== run.id && other.routineId === run.routineId && other.botId === run.botId && other.threadId)?.threadId ?? null;
+}
+/** The conversation a run that keeps one conversation joins. Gone (deleted) or never there: null, so this run starts a
+ *  new conversation and the next run continues that one. */
+export function continuedConversation(runs, run, exists) {
+    const previous = run.target === "bot" ? previousEventThread(runs, run) : null;
+    return previous && exists(previous) ? previous : null;
+}

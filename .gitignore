@@ -11,6 +11,8 @@ scratch/
 
 # Node modules
 node_modules/
+openmausbot/node_modules/
+openmausbot/package-lock.json
 
 # Local state
 hub_token.txt
