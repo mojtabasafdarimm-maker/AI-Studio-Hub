@@ -68,6 +68,35 @@ function ensureOmbConfig() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 1b. Auto-Authentication / Pairing Bypass (Master Session Token)
+// ---------------------------------------------------------------------------
+let masterTokenCache = null;
+function getMasterToken() {
+  if (masterTokenCache) return masterTokenCache;
+  const tokenFile = path.join(OMB_DIR, 'master-token.txt');
+  if (fs.existsSync(tokenFile)) {
+    try {
+      const t = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (t) { masterTokenCache = t; return t; }
+    } catch {}
+  }
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(OMB_DIR, 'cli.js'), 'token', 'create', 'AutoPass', '--out', 'master-token.txt', '--scope', 'admin', '--expires', '180d', '--force'],
+      { cwd: OMB_DIR, encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    if (fs.existsSync(tokenFile)) {
+      masterTokenCache = fs.readFileSync(tokenFile, 'utf8').trim();
+      return masterTokenCache;
+    }
+  } catch (err) {
+    console.warn('[AI Hub] Could not create master token:', err.message);
+  }
+  return null;
+}
+
 // Clear stale OpenMausBot lease if its PID is no longer alive
 function clearStaleOmbLease() {
   const leasePath = path.join(OMB_DATA_DIR, 'openmausbot-server.lease');
@@ -306,6 +335,18 @@ const server = http.createServer(async (req, res) => {
   const pathname = urlObj.pathname;
 
   try {
+    const masterToken = getMasterToken();
+    const cookieName = 'omb_session_' + OMB_PORT + '_33ce60cb46e1';
+
+    // 0. Frictionless Auto-Pairing: If visiting /pair, redirect directly to / with valid session cookie
+    if (pathname === '/pair' || pathname.startsWith('/pair/')) {
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': masterToken ? `${cookieName}=${masterToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=315360000; Secure` : ''
+      });
+      return res.end();
+    }
+
     // 1. Hub Overlay Script
     if (pathname === '/hub-overlay.js' && req.method === 'GET') {
       const p = path.join(PUBLIC_DIR, 'hub-overlay.js');
@@ -437,6 +478,17 @@ const server = http.createServer(async (req, res) => {
     const proxyHeaders = { ...req.headers };
     delete proxyHeaders['accept-encoding']; // avoid gzip so we can cleanly inject <script> into HTML
 
+    // Seamless auto-authentication: Pass master session so user is never prompted for pairing
+    if (masterToken) {
+      if (!proxyHeaders['authorization']) {
+        proxyHeaders['authorization'] = `Bearer ${masterToken}`;
+      }
+      const existingCookie = proxyHeaders['cookie'] || '';
+      if (!existingCookie.includes(cookieName)) {
+        proxyHeaders['cookie'] = existingCookie ? `${existingCookie}; ${cookieName}=${masterToken}` : `${cookieName}=${masterToken}`;
+      }
+    }
+
     const proxyReq = http.request(
       {
         hostname: '127.0.0.1',
@@ -448,6 +500,23 @@ const server = http.createServer(async (req, res) => {
       (proxyRes) => {
         const ct = String(proxyRes.headers['content-type'] || '').toLowerCase();
         const isRootHtml = ct.includes('text/html') && (pathname === '/' || pathname === '/index.html');
+
+        const outHeaders = { ...proxyRes.headers };
+
+        // Ensure browser receives the persistent session cookie
+        if (masterToken && !req.headers.cookie?.includes(cookieName)) {
+          const autoCookie = `${cookieName}=${masterToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=315360000; Secure`;
+          if (outHeaders['set-cookie']) {
+            if (Array.isArray(outHeaders['set-cookie'])) {
+              outHeaders['set-cookie'].push(autoCookie);
+            } else {
+              outHeaders['set-cookie'] = [outHeaders['set-cookie'], autoCookie];
+            }
+          } else {
+            outHeaders['set-cookie'] = autoCookie;
+          }
+        }
+
         if (isRootHtml) {
           const chunks = [];
           proxyRes.on('data', (c) => chunks.push(c));
@@ -456,13 +525,12 @@ const server = http.createServer(async (req, res) => {
             if (!html.includes('/hub-overlay.js')) {
               html = html.replace('</body>', '<script src="/hub-overlay.js" defer></script></body>');
             }
-            const outHeaders = { ...proxyRes.headers };
             delete outHeaders['content-length'];
             res.writeHead(proxyRes.statusCode || 200, outHeaders);
             res.end(html);
           });
         } else {
-          res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+          res.writeHead(proxyRes.statusCode || 200, outHeaders);
           proxyRes.pipe(res);
         }
       }
@@ -481,12 +549,28 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// Forward WebSocket upgrades directly to OpenMausBot
+// Forward WebSocket upgrades directly to OpenMausBot with auto-authentication
 server.on('upgrade', (req, socket, head) => {
+  const masterToken = getMasterToken();
+  const cookieName = 'omb_session_' + OMB_PORT + '_33ce60cb46e1';
+
   const upstream = net.connect(OMB_PORT, '127.0.0.1', () => {
+    const headers = { ...req.headers };
+    if (masterToken) {
+      if (!headers['authorization']) headers['authorization'] = `Bearer ${masterToken}`;
+      const existingCookie = headers['cookie'] || '';
+      if (!existingCookie.includes(cookieName)) {
+        headers['cookie'] = existingCookie ? `${existingCookie}; ${cookieName}=${masterToken}` : `${cookieName}=${masterToken}`;
+      }
+    }
+
     const headerLines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
-    for (let i = 0; i < req.rawHeaders.length; i += 2) {
-      headerLines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    for (const [k, v] of Object.entries(headers)) {
+      if (Array.isArray(v)) {
+        for (const item of v) headerLines.push(`${k}: ${item}`);
+      } else if (v !== undefined) {
+        headerLines.push(`${k}: ${v}`);
+      }
     }
     upstream.write(headerLines.join('\r\n') + '\r\n\r\n');
     if (head && head.length) upstream.write(head);
