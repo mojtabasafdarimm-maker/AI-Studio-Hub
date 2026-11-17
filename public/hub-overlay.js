@@ -7,29 +7,35 @@
   style.textContent = `
     #ash-pill {
       position: fixed;
-      top: 10px;
-      right: 14px;
+      bottom: 24px;
+      left: 20px;
       z-index: 9998;
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 5px 11px;
+      padding: 6px 12px;
       border-radius: 999px;
       border: 1px solid rgba(148, 163, 184, 0.28);
-      background: rgba(17, 24, 39, 0.78);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
+      background: rgba(17, 24, 39, 0.88);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       color: #f8fafc;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 12px;
       font-weight: 600;
-      cursor: pointer;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
-      transition: transform 0.15s, background 0.15s;
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      transition: box-shadow 0.15s, background 0.15s;
+    }
+    #ash-pill:active {
+      cursor: grabbing;
     }
     #ash-pill:hover {
-      transform: translateY(-1px);
-      background: rgba(30, 41, 59, 0.92);
+      background: rgba(30, 41, 59, 0.96);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
     }
     #ash-pill-dot {
       width: 7px;
@@ -404,7 +410,102 @@
     }
   }
 
-  pill.addEventListener('click', () => {
+  // Restore saved position
+  try {
+    const savedPos = localStorage.getItem('ash_pill_pos');
+    if (savedPos) {
+      const { x, y } = JSON.parse(savedPos);
+      if (typeof x === 'number' && typeof y === 'number') {
+        const maxW = window.innerWidth - 80;
+        const maxH = window.innerHeight - 40;
+        const safeX = Math.max(8, Math.min(x, maxW));
+        const safeY = Math.max(8, Math.min(y, maxH));
+        pill.style.left = safeX + 'px';
+        pill.style.top = safeY + 'px';
+        pill.style.bottom = 'auto';
+        pill.style.right = 'auto';
+      }
+    }
+  } catch {}
+
+  let isDragging = false;
+  let startX = 0, startY = 0;
+  let pillStartX = 0, pillStartY = 0;
+  let hasMoved = false;
+
+  function onDragStart(clientX, clientY) {
+    isDragging = true;
+    hasMoved = false;
+    startX = clientX;
+    startY = clientY;
+    const rect = pill.getBoundingClientRect();
+    pillStartX = rect.left;
+    pillStartY = rect.top;
+  }
+
+  function onDragMove(clientX, clientY) {
+    if (!isDragging) return;
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+      hasMoved = true;
+    }
+    if (!hasMoved) return;
+    const maxW = window.innerWidth - pill.offsetWidth - 8;
+    const maxH = window.innerHeight - pill.offsetHeight - 8;
+    const newX = Math.max(8, Math.min(pillStartX + dx, maxW));
+    const newY = Math.max(8, Math.min(pillStartY + dy, maxH));
+    pill.style.left = newX + 'px';
+    pill.style.top = newY + 'px';
+    pill.style.bottom = 'auto';
+    pill.style.right = 'auto';
+  }
+
+  function onDragEnd() {
+    if (!isDragging) return;
+    isDragging = false;
+    if (hasMoved) {
+      const rect = pill.getBoundingClientRect();
+      try {
+        localStorage.setItem('ash_pill_pos', JSON.stringify({ x: rect.left, y: rect.top }));
+      } catch {}
+    }
+  }
+
+  pill.addEventListener('mousedown', (e) => {
+    onDragStart(e.clientX, e.clientY);
+    const moveHandler = (ev) => onDragMove(ev.clientX, ev.clientY);
+    const upHandler = () => {
+      onDragEnd();
+      window.removeEventListener('mousemove', moveHandler);
+      window.removeEventListener('mouseup', upHandler);
+    };
+    window.addEventListener('mousemove', moveHandler);
+    window.addEventListener('mouseup', upHandler);
+  });
+
+  pill.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) {
+      onDragStart(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, { passive: true });
+
+  pill.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 1 && isDragging) {
+      onDragMove(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, { passive: true });
+
+  pill.addEventListener('touchend', () => {
+    onDragEnd();
+  });
+
+  pill.addEventListener('click', (e) => {
+    if (hasMoved) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     backdrop.classList.add('open');
     loadHubState(true);
   });
