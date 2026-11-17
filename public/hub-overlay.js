@@ -383,8 +383,9 @@
           <div style="font-weight:700; font-size:13px;">📱 Pair Phone or Browser</div>
           <div style="font-size:12px; color:#cbd5e1;">Generate a single-use pairing link to sign in to OpenMausBot from your phone via the Permanent Gateway:</div>
           <button id="ash-pair-btn" class="ash-btn primary">Generate 1-Tap Pairing Link</button>
-          ${pairInfo ? `<div style="margin-top:6px; padding:8px; border-radius:8px; background:rgba(15,23,42,0.8); font-size:12px; word-break:break-all;">
-            ${pairInfo.link ? `<a href="${esc(pairInfo.link)}" target="_blank" style="color:#38bdf8;">${esc(pairInfo.link)}</a>` : esc(pairInfo.raw || pairInfo.error)}
+          ${pairInfo ? `<div style="margin-top:8px; padding:10px; border-radius:8px; background:rgba(15,23,42,0.85); font-size:12px; border:1px solid rgba(56,189,248,0.3);">
+            ${pairInfo.code ? `<div style="margin-bottom:6px;"><span style="color:#94a3b8; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">Pairing Code (24h):</span> <code style="font-size:16px; font-weight:800; color:#38bdf8; background:rgba(56,189,248,0.15); padding:2px 8px; border-radius:4px; letter-spacing:0.1em;">${esc(pairInfo.code)}</code></div>` : ''}
+            ${pairInfo.link ? `<div style="word-break:break-all;"><span style="color:#94a3b8; font-size:11px;">1-Tap Link:</span> <a href="${esc(pairInfo.link)}" target="_blank" style="color:#38bdf8; text-decoration:underline;">${esc(pairInfo.link)}</a></div>` : esc(pairInfo.raw || pairInfo.error)}
           </div>` : ''}
         </div>
       `;

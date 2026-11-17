@@ -3,7 +3,7 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   OMB_DATA_DIR,
@@ -357,19 +357,37 @@ const server = http.createServer(async (req, res) => {
     // 6. Generate 1-Tap OpenMausBot Phone Pairing Link
     if (pathname === '/api/hub/pair-link' && req.method === 'POST') {
       try {
-        const out = execFileSync(
-          process.execPath,
-          [path.join(OMB_DIR, 'cli.js'), 'pair', '--label', 'Phone / Remote Browser'],
-          {
-            cwd: OMB_DIR,
-            env: { ...process.env, OMB_PORT: String(OMB_PORT), OMB_DATA_DIR: OMB_DATA_DIR },
-            encoding: 'utf8',
-            timeout: 10000,
-            windowsHide: true
-          }
-        );
-        const m = out.match(/https?:\/\/[^\s]+/i);
-        return sendJson(res, 200, { ok: true, link: m ? m[0] : null, raw: out.trim() });
+        const out = await new Promise((resolve, reject) => {
+          execFile(
+            process.execPath,
+            [
+              path.join(OMB_DIR, 'cli.js'),
+              'pair',
+              '--label', 'Phone / Remote Browser',
+              '--ttl', '24h',
+              '--public-url', GATEWAY_URL
+            ],
+            {
+              cwd: OMB_DIR,
+              env: { ...process.env, OMB_PORT: String(OMB_PORT), OMB_DATA_DIR: OMB_DATA_DIR },
+              encoding: 'utf8',
+              timeout: 15000,
+              windowsHide: true
+            },
+            (err, stdout, stderr) => {
+              if (err) return reject(new Error(stderr || err.message));
+              resolve(stdout);
+            }
+          );
+        });
+        const linkMatch = out.match(/https?:\/\/[^\s]+/i);
+        const codeMatch = out.match(/Pairing code\s+([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})/i);
+        return sendJson(res, 200, {
+          ok: true,
+          link: linkMatch ? linkMatch[0] : null,
+          code: codeMatch ? codeMatch[1] : null,
+          raw: out.trim()
+        });
       } catch (e) {
         return sendJson(res, 500, { ok: false, error: e.message });
       }
