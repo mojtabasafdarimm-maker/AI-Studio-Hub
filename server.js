@@ -97,6 +97,66 @@ function getMasterToken() {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// 1c. Google Drive Cloud Sync & Persistence
+// ---------------------------------------------------------------------------
+const CLOUD_SYNC_DIR = path.join(__dirname, 'cloud-sync');
+
+function restoreDataFromCloudDrive() {
+  try {
+    if (!fs.existsSync(CLOUD_SYNC_DIR)) return;
+    if (!fs.existsSync(OMB_DATA_DIR)) fs.mkdirSync(OMB_DATA_DIR, { recursive: true });
+    const essentialFiles = ['bots.json', 'config.json', 'sessions.json', 'routines.json', 'default-bot.json'];
+    for (const f of essentialFiles) {
+      const src = path.join(CLOUD_SYNC_DIR, f);
+      const dst = path.join(OMB_DATA_DIR, f);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        fs.copyFileSync(src, dst);
+        console.log(`[Cloud Sync] Restored ${f} from Google Drive sync`);
+      }
+    }
+    const dbSrc = path.join(CLOUD_SYNC_DIR, 'messages-backup.db');
+    const dbDst = path.join(OMB_DATA_DIR, 'messages.db');
+    if (fs.existsSync(dbSrc) && !fs.existsSync(dbDst)) {
+      fs.copyFileSync(dbSrc, dbDst);
+      console.log('[Cloud Sync] Restored messages.db from Google Drive backup');
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync Restore Warning]', err.message);
+  }
+}
+
+function syncDataToCloudDrive() {
+  try {
+    if (!fs.existsSync(CLOUD_SYNC_DIR)) fs.mkdirSync(CLOUD_SYNC_DIR, { recursive: true });
+    const filesToSync = ['bots.json', 'config.json', 'sessions.json', 'routines.json', 'default-bot.json'];
+    for (const f of filesToSync) {
+      const src = path.join(OMB_DATA_DIR, f);
+      const dst = path.join(CLOUD_SYNC_DIR, f);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dst);
+      }
+    }
+    const dbSrc = path.join(OMB_DATA_DIR, 'messages.db');
+    const dbDst = path.join(CLOUD_SYNC_DIR, 'messages-backup.db');
+    if (fs.existsSync(dbSrc)) {
+      try { fs.copyFileSync(dbSrc, dbDst); } catch {}
+    }
+    const liveSharedSrc = path.join(process.env.LOCALAPPDATA || '', 'AIStudioHub', 'LIVE_SHARED_CONTEXT.md');
+    if (fs.existsSync(liveSharedSrc)) {
+      try { fs.copyFileSync(liveSharedSrc, path.join(CLOUD_SYNC_DIR, 'LIVE_SHARED_CONTEXT.md')); } catch {}
+    }
+    const manifest = {
+      syncedAt: new Date().toISOString(),
+      location: CLOUD_SYNC_DIR,
+      status: 'active'
+    };
+    fs.writeFileSync(path.join(CLOUD_SYNC_DIR, 'sync-manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Cloud Sync Backup Warning]', err.message);
+  }
+}
+
 // Clear stale OpenMausBot lease if its PID is no longer alive
 function clearStaleOmbLease() {
   const leasePath = path.join(OMB_DATA_DIR, 'openmausbot-server.lease');
@@ -127,6 +187,7 @@ let ombProcess = null;
 let ombReady = false;
 
 function startOpenMausBot() {
+  restoreDataFromCloudDrive();
   ensureOmbConfig();
   clearStaleOmbLease();
 
@@ -238,7 +299,8 @@ function startCloudflareTunnel() {
       tunnelProcess = child;
       let resolved = false;
       const handleOut = (chunk) => {
-        const m = chunk.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+        const text = chunk.toString();
+        const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
         if (m && !resolved) {
           resolved = true;
           isStartingTunnel = false;
@@ -249,6 +311,9 @@ function startCloudflareTunnel() {
           console.log(`[AI Hub] 📱 Cloudflare Tunnel Live: ${tunnelUrl}`);
           registerWithGateway(tunnelUrl).catch(() => {});
           resolve({ running: true, url: tunnelUrl, status: tunnelStatus });
+        }
+        if (text.includes('ERR') || text.includes('error') || text.includes('failed') || text.includes('closed')) {
+          console.warn('[cloudflared log]', text.trim());
         }
       };
       child.stdout.on('data', handleOut);
@@ -333,6 +398,9 @@ function sendJson(res, status, data) {
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://127.0.0.1:${HUB_PORT}`);
   const pathname = urlObj.pathname;
+  if (pathname.startsWith('/api/') || pathname === '/') {
+    console.log(`[REQ] ${req.method} ${pathname}`);
+  }
 
   try {
     const masterToken = getMasterToken();
@@ -517,6 +585,38 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
+        const isSse = ct.includes('text/event-stream') || pathname === '/api/events';
+        if (isSse) {
+          console.log('[SSE] Client connected to SSE stream:', pathname);
+          outHeaders['cache-control'] = 'no-cache, no-transform';
+          outHeaders['x-accel-buffering'] = 'no';
+          outHeaders['connection'] = 'keep-alive';
+          delete outHeaders['content-length'];
+          res.socket?.setNoDelay(true);
+          res.writeHead(proxyRes.statusCode || 200, outHeaders);
+          if (typeof res.flushHeaders === 'function') res.flushHeaders();
+          // Flush 128KB comment padding immediately to defeat Cloudflare/Safari edge buffering
+          res.write(': ' + ' '.repeat(131072) + '\n\n');
+          proxyRes.on('data', (chunk) => {
+            console.log('[SSE Chunk from 8799]', chunk.length, 'bytes');
+            res.write(chunk);
+            if (typeof res.flush === 'function') res.flush();
+          });
+          proxyRes.on('end', () => {
+            console.log('[SSE End]');
+            res.end();
+          });
+          proxyRes.on('error', (err) => {
+            console.warn('[SSE Error]', err.message);
+            res.end();
+          });
+          req.on('close', () => {
+            console.log('[SSE Request Closed by client]');
+            proxyReq.destroy();
+          });
+          return;
+        }
+
         if (isRootHtml) {
           const chunks = [];
           proxyRes.on('data', (c) => chunks.push(c));
@@ -582,6 +682,7 @@ server.on('upgrade', (req, socket, head) => {
 
 process.on('SIGINT', () => {
   tunnelManuallyStopped = true;
+  syncDataToCloudDrive();
   if (tunnelProcess) killTree(tunnelProcess);
   if (ombProcess) killTree(ombProcess);
   process.exit(0);
@@ -591,7 +692,11 @@ server.listen(HUB_PORT, '127.0.0.1', () => {
   console.log(`\n⚡ AI Studio Hub v2 (OpenMausBot Base) running → http://127.0.0.1:${HUB_PORT}`);
   startOpenMausBot();
   startCloudflareTunnel().catch(() => {});
+  syncDataToCloudDrive();
   setInterval(() => {
     checkTunnelWatchdog().catch(() => {});
   }, 15000);
+  setInterval(() => {
+    syncDataToCloudDrive();
+  }, 180000); // sync every 3 minutes
 });

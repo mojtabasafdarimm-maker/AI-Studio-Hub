@@ -64,6 +64,14 @@ export default {
       proxyReq.headers.set('X-Forwarded-Host', url.host);
 
       const response = await fetch(proxyReq);
+      const ct = response.headers.get("content-type") || "";
+      if (ct.includes("text/event-stream") || url.pathname === "/api/events") {
+        const headers = new Headers(response.headers);
+        headers.set("Cache-Control", "no-cache, no-transform");
+        headers.set("X-Accel-Buffering", "no");
+        headers.set("Connection", "keep-alive");
+        return new Response(response.body, { status: response.status, headers });
+      }
       return response;
     } catch (err) {
       return new Response(renderOfflineHtml(err.message), {

@@ -522,4 +522,116 @@
 
   setTimeout(() => loadHubState(false), 1500);
   setInterval(() => loadHubState(false), 60000);
+
+  // ---------------------------------------------------------------------------
+  // Mobile Live-Sync Engine (SSE Buffer Bypass & Real-time Update Loop)
+  // ---------------------------------------------------------------------------
+  let activeSyncUntil = 0;
+  let syncIntervalTimer = null;
+  let isCheckingBusy = false;
+
+  function setPillActiveState(isGenerating) {
+    const dot = document.getElementById('ash-pill-dot');
+    if (isGenerating) {
+      if (dot) {
+        dot.style.display = 'inline-block';
+        dot.style.background = '#38bdf8';
+      }
+      pill.style.borderColor = 'rgba(56, 189, 248, 0.6)';
+    } else {
+      if (dot && (!hubState || (hubState.radar?.stalledTasks?.length || 0) === 0)) {
+        dot.style.display = 'none';
+      }
+      pill.style.borderColor = 'rgba(148, 163, 184, 0.28)';
+    }
+  }
+
+  function triggerLiveSync(durationMs = 45000) {
+    activeSyncUntil = Math.max(activeSyncUntil, Date.now() + durationMs);
+    setPillActiveState(true);
+    if (!syncIntervalTimer) {
+      syncIntervalTimer = setInterval(runLiveSyncTick, 1400);
+    }
+    window.dispatchEvent(new Event('omb:retry-live-events'));
+  }
+
+  async function runLiveSyncTick() {
+    if (document.hidden) return; // Don't burn phone battery in background
+    const now = Date.now();
+    const isActive = now < activeSyncUntil;
+
+    // Dispatches OpenMausBot's internal hot-hydrate re-sync
+    window.dispatchEvent(new Event('omb:retry-live-events'));
+
+    if (isActive && !isCheckingBusy) {
+      isCheckingBusy = true;
+      try {
+        const res = await origFetch('/api/bots');
+        if (res.ok) {
+          const data = await res.json();
+          const anyBusy = (data.bots || []).some((b) => b.busy || (b.tasks || []).some((t) => t.busy));
+          if (anyBusy) {
+            activeSyncUntil = Date.now() + 15000;
+            setPillActiveState(true);
+          } else if (now > activeSyncUntil - 25000) {
+            activeSyncUntil = 0;
+            setPillActiveState(false);
+          }
+        }
+      } catch {} finally {
+        isCheckingBusy = false;
+      }
+    }
+
+    if (!isActive && syncIntervalTimer) {
+      clearInterval(syncIntervalTimer);
+      syncIntervalTimer = null;
+      setPillActiveState(false);
+    }
+  }
+
+  // Intercept fetch calls so sending a prompt instantly activates live streaming
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async function(...args) {
+    const url = String(args[0] || '');
+    const opts = args[1] || {};
+    const method = String(opts.method || 'GET').toUpperCase();
+    if (method === 'POST' && (url.includes('/messages') || url.includes('/tasks') || url.includes('/turns'))) {
+      triggerLiveSync(45000);
+    }
+    return origFetch.apply(this, args);
+  };
+
+  // Intercept keyboard Enter & Submit clicks
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && e.target && e.target.tagName === 'TEXTAREA') {
+      triggerLiveSync(45000);
+    }
+  }, true);
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (btn && (btn.type === 'submit' || btn.getAttribute('aria-label')?.toLowerCase().includes('send'))) {
+      triggerLiveSync(45000);
+    }
+  }, true);
+
+  // Resume on screen unlock / tab focus
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      window.dispatchEvent(new Event('omb:retry-live-events'));
+      triggerLiveSync(10000);
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    window.dispatchEvent(new Event('omb:retry-live-events'));
+  });
+
+  // Background gentle sync (every 6s) to catch unprompted notifications or bot replies
+  setInterval(() => {
+    if (!document.hidden && !syncIntervalTimer) {
+      window.dispatchEvent(new Event('omb:retry-live-events'));
+    }
+  }, 6000);
 })();

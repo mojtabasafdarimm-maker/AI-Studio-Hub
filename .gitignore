@@ -16,3 +16,8 @@ openmausbot/package-lock.json
 
 # Local state
 hub_token.txt
+master-token.txt
+.wrangler/
+cloud-sync/*.db
+cloud-sync/*.json
+
