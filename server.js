@@ -98,27 +98,50 @@ function getMasterToken() {
 }
 
 // ---------------------------------------------------------------------------
-// 1c. Google Drive Cloud Sync & Persistence
+// 1c. Google Drive Cloud Sync & Persistence (Full Agent State + History)
 // ---------------------------------------------------------------------------
 const CLOUD_SYNC_DIR = path.join(__dirname, 'cloud-sync');
+const CLOUD_SYNC_SKIP_DIRS = new Set(['tools', 'agent-browser-profiles', 'browser', 'events']);
+
+function copyDirRecursive(srcDir, dstDir, { overwrite = true, skipDirs = new Set() } = {}) {
+  if (!fs.existsSync(srcDir)) return 0;
+  if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+  let count = 0;
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (entry.name === 'openmausbot-server.lease' || entry.name.startsWith('config.json.bak.')) continue;
+    const srcPath = path.join(srcDir, entry.name);
+    const dstPath = path.join(dstDir, entry.name);
+    if (entry.isDirectory()) {
+      if (skipDirs.has(entry.name)) continue;
+      count += copyDirRecursive(srcPath, dstPath, { overwrite });
+    } else {
+      try {
+        if (!overwrite && fs.existsSync(dstPath)) continue;
+        fs.copyFileSync(srcPath, dstPath);
+        count++;
+      } catch {}
+    }
+  }
+  return count;
+}
 
 function restoreDataFromCloudDrive() {
   try {
     if (!fs.existsSync(CLOUD_SYNC_DIR)) return;
     if (!fs.existsSync(OMB_DATA_DIR)) fs.mkdirSync(OMB_DATA_DIR, { recursive: true });
-    const essentialFiles = ['bots.json', 'config.json', 'sessions.json', 'routines.json', 'default-bot.json'];
-    for (const f of essentialFiles) {
-      const src = path.join(CLOUD_SYNC_DIR, f);
-      const dst = path.join(OMB_DATA_DIR, f);
-      if (fs.existsSync(src) && !fs.existsSync(dst)) {
-        fs.copyFileSync(src, dst);
-        console.log(`[Cloud Sync] Restored ${f} from Google Drive sync`);
-      }
+
+    // Restore full agent directory tree if local files are missing (e.g., new PC / fresh install)
+    const restored = copyDirRecursive(CLOUD_SYNC_DIR, OMB_DATA_DIR, {
+      overwrite: false,
+      skipDirs: new Set(['sync-manifest.json'])
+    });
+    if (restored > 0) {
+      console.log(`[Cloud Sync] Restored ${restored} agent files from Google Drive (${CLOUD_SYNC_DIR})`);
     }
-    const dbSrc = path.join(CLOUD_SYNC_DIR, 'messages-backup.db');
+    const dbBackup = path.join(CLOUD_SYNC_DIR, 'messages-backup.db');
     const dbDst = path.join(OMB_DATA_DIR, 'messages.db');
-    if (fs.existsSync(dbSrc) && !fs.existsSync(dbDst)) {
-      fs.copyFileSync(dbSrc, dbDst);
+    if (fs.existsSync(dbBackup) && !fs.existsSync(dbDst)) {
+      fs.copyFileSync(dbBackup, dbDst);
       console.log('[Cloud Sync] Restored messages.db from Google Drive backup');
     }
   } catch (err) {
@@ -129,26 +152,31 @@ function restoreDataFromCloudDrive() {
 function syncDataToCloudDrive() {
   try {
     if (!fs.existsSync(CLOUD_SYNC_DIR)) fs.mkdirSync(CLOUD_SYNC_DIR, { recursive: true });
-    const filesToSync = ['bots.json', 'config.json', 'sessions.json', 'routines.json', 'default-bot.json'];
-    for (const f of filesToSync) {
-      const src = path.join(OMB_DATA_DIR, f);
-      const dst = path.join(CLOUD_SYNC_DIR, f);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dst);
-      }
-    }
+    const fileCount = copyDirRecursive(OMB_DATA_DIR, CLOUD_SYNC_DIR, {
+      overwrite: true,
+      skipDirs: CLOUD_SYNC_SKIP_DIRS
+    });
+
+    // Keep explicit messages-backup.db copy as well
     const dbSrc = path.join(OMB_DATA_DIR, 'messages.db');
-    const dbDst = path.join(CLOUD_SYNC_DIR, 'messages-backup.db');
     if (fs.existsSync(dbSrc)) {
-      try { fs.copyFileSync(dbSrc, dbDst); } catch {}
+      try { fs.copyFileSync(dbSrc, path.join(CLOUD_SYNC_DIR, 'messages-backup.db')); } catch {}
+    }
+
+    // Also mirror master-token.txt & LIVE_SHARED_CONTEXT.md so login & cross-app context never break
+    const tokenSrc = path.join(OMB_DIR, 'master-token.txt');
+    if (fs.existsSync(tokenSrc)) {
+      try { fs.copyFileSync(tokenSrc, path.join(CLOUD_SYNC_DIR, 'master-token.txt')); } catch {}
     }
     const liveSharedSrc = path.join(process.env.LOCALAPPDATA || '', 'AIStudioHub', 'LIVE_SHARED_CONTEXT.md');
     if (fs.existsSync(liveSharedSrc)) {
       try { fs.copyFileSync(liveSharedSrc, path.join(CLOUD_SYNC_DIR, 'LIVE_SHARED_CONTEXT.md')); } catch {}
     }
+
     const manifest = {
       syncedAt: new Date().toISOString(),
       location: CLOUD_SYNC_DIR,
+      fileCount,
       status: 'active'
     };
     fs.writeFileSync(path.join(CLOUD_SYNC_DIR, 'sync-manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');

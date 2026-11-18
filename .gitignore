@@ -18,6 +18,5 @@ openmausbot/package-lock.json
 hub_token.txt
 master-token.txt
 .wrangler/
-cloud-sync/*.db
-cloud-sync/*.json
+cloud-sync/
 
