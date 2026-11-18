@@ -21,7 +21,7 @@ export const OMB_DATA_DIR = path.join(DATA_DIR, 'openmausbot-data');
 export const MUSE_STATE_FILE = path.join(DATA_DIR, 'muse_state.json');
 export const MUSE_CAL_DIR = path.join(DATA_DIR, 'calendars');
 
-export const AGY_DB_PATH = path.join(HOME, '.gemini', 'antigravity', 'conversations', 'conversations.db');
+export const AGY_DB_PATH = path.join(HOME, '.gemini', 'antigravity', 'conversation_summaries.db');
 export const AGY_BRAIN_DIR = path.join(HOME, '.gemini', 'antigravity', 'brain');
 export const CODEX_DB_PATH = path.join(HOME, '.codex', 'state_5.sqlite');
 
@@ -367,7 +367,7 @@ export function listNativeConversations(limit = 60) {
       const rows = db.prepare(`
         SELECT conversation_id, title, preview, step_count, last_modified_time, workspace_uris
         FROM conversation_summaries
-        WHERE nesting_depth = 0
+        WHERE nesting_depth = 0 AND (title != '' OR preview != '')
         ORDER BY last_modified_time DESC
         LIMIT ?
       `).all(limit);
@@ -432,11 +432,31 @@ export function listNativeConversations(limit = 60) {
 export function readNativeTranscript(threadId, maxMsgs = 30) {
   const all = listNativeConversations(120);
   const item = all.find((x) => x.id === threadId || x.nativeId === threadId);
-  if (!item) return null;
-  const messages = item.origin === 'antigravity'
-    ? parseAgyTranscript(item.nativeId, maxMsgs)
-    : parseCodexTranscript(item.rolloutPath, maxMsgs);
-  return { ...item, messages };
+  if (item) {
+    const messages = item.origin === 'antigravity'
+      ? parseAgyTranscript(item.nativeId, maxMsgs)
+      : parseCodexTranscript(item.rolloutPath, maxMsgs);
+    return { ...item, messages };
+  }
+  // Fallback: direct Antigravity brain lookup by UUID for older conversations
+  const rawId = String(threadId || '').replace(/^agy-/, '');
+  if (rawId && fs.existsSync(path.join(AGY_BRAIN_DIR, rawId))) {
+    const messages = parseAgyTranscript(rawId, maxMsgs);
+    if (messages.length > 0) {
+      return {
+        id: `agy-${rawId}`,
+        nativeId: rawId,
+        origin: 'antigravity',
+        title: `Antigravity Session (${rawId.slice(0, 8)})`,
+        projectPath: '',
+        projectName: 'Workspace',
+        updatedAt: new Date().toISOString(),
+        updatedMs: Date.now(),
+        messages
+      };
+    }
+  }
+  return null;
 }
 
 export function buildStalledRadar() {
@@ -514,7 +534,63 @@ export function searchNativeConversations(query, limit = 10) {
   const threads = listNativeConversations(80);
   if (tokens.length === 0) return threads.slice(0, limit);
 
-  const scored = [];
+  const scoredMap = new Map();
+
+  // 1. Full-history Antigravity FTS5 search
+  if (fs.existsSync(AGY_DB_PATH) && tokens.length > 0) {
+    try {
+      const db = new DatabaseSync(AGY_DB_PATH, { open: true, readOnly: true, readBigInts: true, timeout: 2000 });
+      const ftsQuery = tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
+      const ftsRows = db.prepare(`
+        SELECT f.conversation_id, s.title, s.preview, s.last_modified_time, s.workspace_uris,
+               f.user_body, f.agent_body
+        FROM conversations_fts f
+        LEFT JOIN conversation_summaries s ON s.conversation_id = f.conversation_id
+        WHERE conversations_fts MATCH ?
+        ORDER BY s.last_modified_time DESC
+        LIMIT 30
+      `).all(ftsQuery);
+      db.close();
+
+      for (const r of ftsRows) {
+        const id = `agy-${r.conversation_id}`;
+        const combined = `${r.title || ''} ${r.user_body || ''} ${r.agent_body || ''}`;
+        const low = combined.toLowerCase();
+        let score = 0;
+        for (const tok of tokens) {
+          if (String(r.title || '').toLowerCase().includes(tok)) score += 12;
+          if (low.includes(tok)) score += 4;
+        }
+        const firstTok = tokens.find((tk) => low.includes(tk));
+        const idx = firstTok ? low.indexOf(firstTok) : 0;
+        const start = Math.max(0, idx - 40);
+        const snippet = (start > 0 ? '…' : '') + truncate(combined.slice(start), 160);
+        let wsPath = '';
+        try {
+          const uris = r.workspace_uris ? JSON.parse(r.workspace_uris) : [];
+          if (Array.isArray(uris) && uris[0]) wsPath = normalizeWinPath(uris[0]) || '';
+        } catch {}
+        const updatedAt = r.last_modified_time ? new Date(String(r.last_modified_time).replace(' ', 'T')).toISOString() : new Date().toISOString();
+        const prev = scoredMap.get(id);
+        if (!prev || score > prev.score) {
+          scoredMap.set(id, {
+            id,
+            nativeId: r.conversation_id,
+            origin: 'antigravity',
+            title: truncate(r.title || r.preview || 'Antigravity Session', 80),
+            projectPath: wsPath,
+            projectName: wsPath ? path.basename(wsPath) : 'Workspace',
+            updatedAt,
+            updatedMs: Date.parse(updatedAt) || 0,
+            score,
+            snippet
+          });
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Recent transcripts across Antigravity, Codex, and VS Code
   for (const t of threads) {
     let score = 0;
     let snippet = '';
@@ -542,9 +618,13 @@ export function searchNativeConversations(query, limit = 10) {
     }
     if (score > 0) {
       const { rolloutPath: _rp, ...clean } = t;
-      scored.push({ ...clean, score, snippet });
+      const prev = scoredMap.get(t.id);
+      if (!prev || score > prev.score) {
+        scoredMap.set(t.id, { ...clean, score, snippet: snippet || prev?.snippet || '' });
+      }
     }
   }
+  const scored = Array.from(scoredMap.values());
   scored.sort((a, b) => b.score - a.score || b.updatedMs - a.updatedMs);
   return scored.slice(0, limit);
 }
