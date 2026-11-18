@@ -5,9 +5,13 @@
 // • hub_quota_status: Real-time Antigravity & Codex 5h/7d quotas + Auto-Pilot recommendation
 // • hub_calendar_and_reminders: Check upcoming calendar events & reminders, or add a reminder
 import readline from 'node:readline';
+import fs from 'node:fs';
+import { execFile } from 'node:child_process';
 import {
   buildStalledRadar,
+  findAgyBin,
   getAutoPilotRecommendation,
+  getBestCodexBin,
   loadMuseState,
   readNativeTranscript,
   saveMuseState,
@@ -46,6 +50,18 @@ const TOOLS = [
     }
   },
   {
+    name: 'hub_send_prompt',
+    description: 'Send a prompt directly into an existing native Antigravity, Codex, or VS Code conversation by its thread ID and return the reply.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        threadId: { type: 'string', description: 'Thread ID (e.g. agy-... or codex-... or vscode-...) from hub_search_conversations' },
+        prompt: { type: 'string', description: 'The prompt/message to send into that conversation' }
+      },
+      required: ['threadId', 'prompt']
+    }
+  },
+  {
     name: 'hub_quota_status',
     description: 'Get real-time Antigravity and Codex 5-hour / 7-day remaining quotas plus the Auto-Pilot engine recommendation.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
@@ -81,6 +97,36 @@ async function handleToolCall(name, args = {}) {
     const conv = readNativeTranscript(args.threadId || '', Math.min(40, Number(args.maxMessages || 20)));
     if (!conv) return { content: [{ type: 'text', text: `Conversation not found: ${args.threadId}` }], isError: true };
     return { content: [{ type: 'text', text: JSON.stringify(conv, null, 2) }] };
+  }
+  if (name === 'hub_send_prompt') {
+    const threadId = String(args.threadId || '').trim();
+    const prompt = String(args.prompt || '').trim();
+    if (!threadId || !prompt) {
+      return { content: [{ type: 'text', text: 'threadId and prompt are required.' }], isError: true };
+    }
+    const conv = readNativeTranscript(threadId, 1);
+    if (!conv) {
+      return { content: [{ type: 'text', text: `Conversation not found: ${threadId}` }], isError: true };
+    }
+    const cwd = conv.projectPath && fs.existsSync(conv.projectPath) ? conv.projectPath : process.cwd();
+    const isAgy = conv.origin === 'antigravity';
+    const bin = isAgy ? findAgyBin() : getBestCodexBin();
+    const cliArgs = isAgy
+      ? ['--conversation', conv.nativeId, '--print', prompt, '--dangerously-skip-permissions']
+      : ['exec', 'resume', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', conv.nativeId, prompt];
+
+    const output = await new Promise((resolve, reject) => {
+      execFile(
+        bin,
+        cliArgs,
+        { cwd, encoding: 'utf8', timeout: 300000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+        (err, stdout, stderr) => {
+          if (err && !stdout) return reject(new Error(stderr || err.message));
+          resolve((stdout || stderr || '').trim());
+        }
+      );
+    });
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, origin: conv.origin, threadId: conv.id, title: conv.title, reply: output }, null, 2) }] };
   }
   if (name === 'hub_quota_status') {
     const quota = await getAutoPilotRecommendation();
