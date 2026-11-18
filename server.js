@@ -378,6 +378,97 @@ async function checkTunnelWatchdog() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. Local Loopback SSE Tap (Captures live 8799 SSE events for JSON Mobile Polling)
+// ---------------------------------------------------------------------------
+let hubEventSeq = 0;
+let latestOmbCursor = 'hub:0';
+const hubEventHistory = [];
+let localSseTapActive = false;
+
+function processSseBlock(rawBlock) {
+  const lines = rawBlock.split(/\r?\n/);
+  let eventId = '';
+  const dataLines = [];
+  for (const line of lines) {
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('id:')) {
+      eventId = line.slice(3).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return;
+  const dataStr = dataLines.join('\n');
+  try {
+    const parsed = JSON.parse(dataStr);
+    if (parsed.kind === 'ping') return;
+    if (parsed.kind === 'hello') {
+      if (parsed.cursor) latestOmbCursor = parsed.cursor;
+      return;
+    }
+    if (eventId) latestOmbCursor = eventId;
+    hubEventSeq++;
+    hubEventHistory.push({
+      seq: hubEventSeq,
+      id: eventId || latestOmbCursor || `hub:${hubEventSeq}`,
+      data: dataStr,
+      at: Date.now()
+    });
+    if (hubEventHistory.length > 600) {
+      hubEventHistory.shift();
+    }
+  } catch {}
+}
+
+function startLocalSseTap() {
+  if (localSseTapActive) return;
+  if (!ombReady) {
+    setTimeout(startLocalSseTap, 1000);
+    return;
+  }
+  const masterToken = getMasterToken();
+  const cookieName = 'omb_session_' + OMB_PORT + '_33ce60cb46e1';
+  localSseTapActive = true;
+
+  const req = http.request(
+    {
+      hostname: '127.0.0.1',
+      port: OMB_PORT,
+      path: '/api/events?screens=off&window=1&frames=thread',
+      method: 'GET',
+      headers: {
+        ...(masterToken ? { Authorization: `Bearer ${masterToken}`, Cookie: `${cookieName}=${masterToken}` } : {})
+      }
+    },
+    (res) => {
+      let buf = '';
+      res.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          processSseBlock(block);
+        }
+      });
+      res.on('end', () => {
+        localSseTapActive = false;
+        setTimeout(startLocalSseTap, 1500);
+      });
+      res.on('error', () => {
+        localSseTapActive = false;
+        setTimeout(startLocalSseTap, 1500);
+      });
+    }
+  );
+  req.on('error', () => {
+    localSseTapActive = false;
+    setTimeout(startLocalSseTap, 1500);
+  });
+  req.end();
+}
+
+// ---------------------------------------------------------------------------
 // 4. Hub Bridge HTTP + WebSocket Reverse Proxy on Port 4747
 // ---------------------------------------------------------------------------
 function readBody(req) {
@@ -391,14 +482,14 @@ function readBody(req) {
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(body);
 }
 
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://127.0.0.1:${HUB_PORT}`);
   const pathname = urlObj.pathname;
-  if (pathname.startsWith('/api/') || pathname === '/') {
+  if (pathname.startsWith('/api/') && pathname !== '/api/hub/events-poll') {
     console.log(`[REQ] ${req.method} ${pathname}`);
   }
 
@@ -421,6 +512,40 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(p)) { res.writeHead(404); return res.end('Not found'); }
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
       return fs.createReadStream(p).pipe(res);
+    }
+
+    // 1b. Cloudflare-proof JSON Polling endpoint for real-time OpenMausBot events
+    if (pathname === '/api/hub/events-poll' && req.method === 'GET') {
+      const sinceParam = urlObj.searchParams.get('since');
+      const since = sinceParam !== null ? Number(sinceParam) : null;
+      const needsSnapshot =
+        since === null ||
+        !Number.isFinite(since) ||
+        since > hubEventSeq ||
+        (hubEventHistory.length > 0 && since < hubEventHistory[0].seq - 1);
+
+      if (needsSnapshot) {
+        return sendJson(res, 200, {
+          ok: true,
+          seq: hubEventSeq,
+          events: [
+            {
+              id: '',
+              data: JSON.stringify({ kind: 'hello', cursor: latestOmbCursor || 'hub:0', resumed: false })
+            }
+          ]
+        });
+      }
+
+      const fresh = hubEventHistory
+        .filter((e) => e.seq > since)
+        .map((e) => ({ id: e.id, data: e.data }));
+
+      return sendJson(res, 200, {
+        ok: true,
+        seq: hubEventSeq,
+        events: fresh
+      });
     }
 
     // 2. Hub Health
@@ -595,22 +720,47 @@ const server = http.createServer(async (req, res) => {
           res.socket?.setNoDelay(true);
           res.writeHead(proxyRes.statusCode || 200, outHeaders);
           if (typeof res.flushHeaders === 'function') res.flushHeaders();
-          // Flush 128KB comment padding immediately to defeat Cloudflare/Safari edge buffering
-          res.write(': ' + ' '.repeat(131072) + '\n\n');
+
+          // Cloudflare Quick Tunnels buffer chunked streams in 128KB blocks.
+          // By writing the real SSE data chunk FIRST and flushing a 128KB comment padding
+          // 40ms AFTER each event burst, Cloudflare immediately delivers every event to mobile!
+          const SSE_PAD = ': ' + ' '.repeat(131072) + '\n\n';
+          let padTimer = null;
+          let lastPadAt = 0;
+          const schedulePadFlush = (delayMs = 40) => {
+            if (padTimer) return;
+            padTimer = setTimeout(() => {
+              padTimer = null;
+              if (!res.writableEnded && !res.destroyed) {
+                res.write(SSE_PAD);
+                lastPadAt = Date.now();
+              }
+            }, delayMs);
+          };
+
           proxyRes.on('data', (chunk) => {
-            console.log('[SSE Chunk from 8799]', chunk.length, 'bytes');
             res.write(chunk);
-            if (typeof res.flush === 'function') res.flush();
+            const text = chunk.toString('utf8');
+            const isPing = text.includes('"kind":"ping"');
+            if (!isPing) {
+              console.log('[SSE Event from 8799]', chunk.length, 'bytes -> flushing to edge');
+              schedulePadFlush(40);
+            } else if (Date.now() - lastPadAt > 20000) {
+              schedulePadFlush(40);
+            }
           });
           proxyRes.on('end', () => {
+            if (padTimer) clearTimeout(padTimer);
             console.log('[SSE End]');
             res.end();
           });
           proxyRes.on('error', (err) => {
+            if (padTimer) clearTimeout(padTimer);
             console.warn('[SSE Error]', err.message);
             res.end();
           });
           req.on('close', () => {
+            if (padTimer) clearTimeout(padTimer);
             console.log('[SSE Request Closed by client]');
             proxyReq.destroy();
           });
@@ -623,9 +773,11 @@ const server = http.createServer(async (req, res) => {
           proxyRes.on('end', () => {
             let html = Buffer.concat(chunks).toString('utf8');
             if (!html.includes('/hub-overlay.js')) {
-              html = html.replace('</body>', '<script src="/hub-overlay.js" defer></script></body>');
+              html = html.replace('<head>', `<head><script src="/hub-overlay.js?v=${Date.now()}"></script>`);
             }
+            outHeaders['cache-control'] = 'no-store, no-cache, must-revalidate';
             delete outHeaders['content-length'];
+            delete outHeaders['etag'];
             res.writeHead(proxyRes.statusCode || 200, outHeaders);
             res.end(html);
           });
@@ -691,6 +843,7 @@ process.on('SIGINT', () => {
 server.listen(HUB_PORT, '127.0.0.1', () => {
   console.log(`\n⚡ AI Studio Hub v2 (OpenMausBot Base) running → http://127.0.0.1:${HUB_PORT}`);
   startOpenMausBot();
+  startLocalSseTap();
   startCloudflareTunnel().catch(() => {});
   syncDataToCloudDrive();
   setInterval(() => {

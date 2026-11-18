@@ -1,9 +1,133 @@
-// hub-overlay.js — Calm-by-Default AI Studio Hub Drawer inside OpenMausBot
+// hub-overlay.js — Calm-by-Default AI Studio Hub Drawer + Cloudflare-Proof Live Event Stream
 (() => {
   if (window.__AI_STUDIO_HUB_OVERLAY__) return;
   window.__AI_STUDIO_HUB_OVERLAY__ = true;
 
-  const style = document.createElement('style');
+  // ---------------------------------------------------------------------------
+  // 0. Cloudflare-Proof JSON-Polled EventSource for /api/events
+  //    Cloudflare Quick Tunnels buffer chunked text/event-stream responses in
+  //    128KB blocks and cancel idle HTTP/2 streams on mobile. By routing
+  //    /api/events through fast 800ms JSON polling (/api/hub/events-poll),
+  //    every runtime, tool, and message frame arrives on mobile in real time!
+  // ---------------------------------------------------------------------------
+  const origFetch = window.fetch.bind(window);
+  const NativeEventSource = window.EventSource;
+  const activeEventSources = new Set();
+
+  class HubPolledEventSource {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0; // CONNECTING
+      this.onopen = null;
+      this.onerror = null;
+      this.onmessage = null;
+      this._closed = false;
+      this._seq = null;
+      this._timer = null;
+      this._inFlight = false;
+      activeEventSources.add(this);
+      this._start();
+    }
+
+    async _poll() {
+      if (this._closed || this._inFlight) return;
+      if (document.hidden) return;
+      this._inFlight = true;
+      try {
+        const q = this._seq === null ? '' : `?since=${this._seq}`;
+        const res = await origFetch(`/api/hub/events-poll${q}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const payload = await res.json();
+        if (this._closed) return;
+
+        if (this.readyState === 0) {
+          this.readyState = 1; // OPEN
+          if (typeof this.onopen === 'function') {
+            this.onopen(new Event('open'));
+          }
+        }
+
+        this._seq = payload.seq;
+        const events = payload.events || [];
+        if (events.length > 0) {
+          for (const ev of events) {
+            if (this._closed) return;
+            if (typeof this.onmessage === 'function') {
+              this.onmessage({ data: ev.data, lastEventId: ev.id || '' });
+            }
+          }
+        } else if (typeof this.onmessage === 'function') {
+          // Keep OpenMausBot's 40s stale timer alive
+          this.onmessage({ data: '{"kind":"ping"}', lastEventId: '' });
+        }
+      } catch {
+        if (!this._closed && typeof this.onerror === 'function') {
+          this.onerror(new Event('error'));
+        }
+      } finally {
+        this._inFlight = false;
+      }
+    }
+
+    _start() {
+      setTimeout(() => this._poll(), 5);
+      this._timer = setInterval(() => this._poll(), 800);
+    }
+
+    close() {
+      this._closed = true;
+      this.readyState = 2; // CLOSED
+      activeEventSources.delete(this);
+      if (this._timer) {
+        clearInterval(this._timer);
+        this._timer = null;
+      }
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+  }
+
+  window.EventSource = function(url, opts) {
+    if (String(url || '').includes('/api/events')) {
+      return new HubPolledEventSource(url);
+    }
+    return new NativeEventSource(url, opts);
+  };
+  window.EventSource.CONNECTING = 0;
+  window.EventSource.OPEN = 1;
+  window.EventSource.CLOSED = 2;
+
+  function nudgeAllEventSources() {
+    for (const es of activeEventSources) {
+      es._poll();
+    }
+  }
+
+  window.fetch = async function(...args) {
+    const url = String(args[0] || '');
+    const opts = args[1] || {};
+    const method = String(opts.method || 'GET').toUpperCase();
+    const p = origFetch.apply(this, args);
+    if (method === 'POST' && (url.includes('/messages') || url.includes('/tasks') || url.includes('/turns'))) {
+      p.then(() => {
+        nudgeAllEventSources();
+        setTimeout(nudgeAllEventSources, 250);
+        setTimeout(nudgeAllEventSources, 600);
+      }).catch(() => {});
+    }
+    return p;
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) nudgeAllEventSources();
+  });
+  window.addEventListener('focus', () => nudgeAllEventSources());
+
+  function mountHubOverlayDom() {
+    if (!document.body) return;
+
+    const style = document.createElement('style');
   style.textContent = `
     #ash-pill {
       position: fixed;
@@ -522,116 +646,11 @@
 
   setTimeout(() => loadHubState(false), 1500);
   setInterval(() => loadHubState(false), 60000);
-
-  // ---------------------------------------------------------------------------
-  // Mobile Live-Sync Engine (SSE Buffer Bypass & Real-time Update Loop)
-  // ---------------------------------------------------------------------------
-  let activeSyncUntil = 0;
-  let syncIntervalTimer = null;
-  let isCheckingBusy = false;
-
-  function setPillActiveState(isGenerating) {
-    const dot = document.getElementById('ash-pill-dot');
-    if (isGenerating) {
-      if (dot) {
-        dot.style.display = 'inline-block';
-        dot.style.background = '#38bdf8';
-      }
-      pill.style.borderColor = 'rgba(56, 189, 248, 0.6)';
-    } else {
-      if (dot && (!hubState || (hubState.radar?.stalledTasks?.length || 0) === 0)) {
-        dot.style.display = 'none';
-      }
-      pill.style.borderColor = 'rgba(148, 163, 184, 0.28)';
-    }
   }
 
-  function triggerLiveSync(durationMs = 45000) {
-    activeSyncUntil = Math.max(activeSyncUntil, Date.now() + durationMs);
-    setPillActiveState(true);
-    if (!syncIntervalTimer) {
-      syncIntervalTimer = setInterval(runLiveSyncTick, 1400);
-    }
-    window.dispatchEvent(new Event('omb:retry-live-events'));
+  if (document.body) {
+    mountHubOverlayDom();
+  } else {
+    window.addEventListener('DOMContentLoaded', mountHubOverlayDom, { once: true });
   }
-
-  async function runLiveSyncTick() {
-    if (document.hidden) return; // Don't burn phone battery in background
-    const now = Date.now();
-    const isActive = now < activeSyncUntil;
-
-    // Dispatches OpenMausBot's internal hot-hydrate re-sync
-    window.dispatchEvent(new Event('omb:retry-live-events'));
-
-    if (isActive && !isCheckingBusy) {
-      isCheckingBusy = true;
-      try {
-        const res = await origFetch('/api/bots');
-        if (res.ok) {
-          const data = await res.json();
-          const anyBusy = (data.bots || []).some((b) => b.busy || (b.tasks || []).some((t) => t.busy));
-          if (anyBusy) {
-            activeSyncUntil = Date.now() + 15000;
-            setPillActiveState(true);
-          } else if (now > activeSyncUntil - 25000) {
-            activeSyncUntil = 0;
-            setPillActiveState(false);
-          }
-        }
-      } catch {} finally {
-        isCheckingBusy = false;
-      }
-    }
-
-    if (!isActive && syncIntervalTimer) {
-      clearInterval(syncIntervalTimer);
-      syncIntervalTimer = null;
-      setPillActiveState(false);
-    }
-  }
-
-  // Intercept fetch calls so sending a prompt instantly activates live streaming
-  const origFetch = window.fetch.bind(window);
-  window.fetch = async function(...args) {
-    const url = String(args[0] || '');
-    const opts = args[1] || {};
-    const method = String(opts.method || 'GET').toUpperCase();
-    if (method === 'POST' && (url.includes('/messages') || url.includes('/tasks') || url.includes('/turns'))) {
-      triggerLiveSync(45000);
-    }
-    return origFetch.apply(this, args);
-  };
-
-  // Intercept keyboard Enter & Submit clicks
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && e.target && e.target.tagName === 'TEXTAREA') {
-      triggerLiveSync(45000);
-    }
-  }, true);
-
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest('button');
-    if (btn && (btn.type === 'submit' || btn.getAttribute('aria-label')?.toLowerCase().includes('send'))) {
-      triggerLiveSync(45000);
-    }
-  }, true);
-
-  // Resume on screen unlock / tab focus
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      window.dispatchEvent(new Event('omb:retry-live-events'));
-      triggerLiveSync(10000);
-    }
-  });
-
-  window.addEventListener('focus', () => {
-    window.dispatchEvent(new Event('omb:retry-live-events'));
-  });
-
-  // Background gentle sync (every 6s) to catch unprompted notifications or bot replies
-  setInterval(() => {
-    if (!document.hidden && !syncIntervalTimer) {
-      window.dispatchEvent(new Event('omb:retry-live-events'));
-    }
-  }, 6000);
 })();
