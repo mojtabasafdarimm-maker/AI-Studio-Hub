@@ -54,6 +54,9 @@ function ensureOmbConfig() {
   if (process.env.COMPOSIO_API_KEY && (!cfg.composio || !cfg.composio.apiKey)) {
     cfg.composio = { ...(cfg.composio || {}), apiKey: process.env.COMPOSIO_API_KEY };
   }
+  if (!cfg.everyBotRules) {
+    cfg.everyBotRules = 'You are running locally on the user\'s Windows PC (C:\\Users\\msafdari). You HAVE full local file and PowerShell (shell) access to this computer. The user\'s Google Drive is synced locally on disk at C:\\Users\\msafdari\\My Drive\\ (e.g., FrenchApp for Parlez, AI-Studio-Hub, MyPapers, Thesis, AKTUAL). Never tell the user you cannot see their files or ask them to enable "This computer" screen mode—use PowerShell/shell and file tools directly on C:\\Users\\msafdari\\My Drive\\ and C:\\Users\\msafdari\\.';
+  }
 
   const codexBin = getBestCodexBin();
   cfg.instances = cfg.instances || {};
