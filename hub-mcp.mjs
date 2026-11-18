@@ -104,7 +104,7 @@ async function handleToolCall(name, args = {}) {
     if (!threadId || !prompt) {
       return { content: [{ type: 'text', text: 'threadId and prompt are required.' }], isError: true };
     }
-    const conv = readNativeTranscript(threadId, 1);
+    const conv = readNativeTranscript(threadId, 16);
     if (!conv) {
       return { content: [{ type: 'text', text: `Conversation not found: ${threadId}` }], isError: true };
     }
@@ -115,18 +115,49 @@ async function handleToolCall(name, args = {}) {
       ? ['--conversation', conv.nativeId, '--print', prompt, '--dangerously-skip-permissions']
       : ['exec', 'resume', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', conv.nativeId, prompt];
 
-    const output = await new Promise((resolve, reject) => {
+    const runCli = (exe, args) => new Promise((resolve, reject) => {
       execFile(
-        bin,
-        cliArgs,
+        exe,
+        args,
         { cwd, encoding: 'utf8', timeout: 300000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
-          if (err && !stdout) return reject(new Error(stderr || err.message));
-          resolve((stdout || stderr || '').trim());
+          const out = (stdout || '').trim();
+          const errText = (stderr || err?.message || '').trim();
+          if (err && !out) return reject(new Error(errText || 'CLI execution failed'));
+          resolve(out || errText);
         }
       );
     });
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, origin: conv.origin, threadId: conv.id, title: conv.title, reply: output }, null, 2) }] };
+
+    try {
+      const output = await runCli(bin, cliArgs);
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode: 'direct-resume', origin: conv.origin, threadId: conv.id, title: conv.title, reply: output }, null, 2) }] };
+    } catch (firstErr) {
+      // Antigravity IDE conversations (.db) cannot always be attached directly via `agy --conversation`.
+      // Fall back to continuing with the conversation's recent transcript in the exact project workspace.
+      const historyText = (conv.messages || [])
+        .slice(-12)
+        .map((m) => `[${m.role.toUpperCase()}]: ${String(m.content || '').slice(0, 800)}`)
+        .join('\n\n');
+      const continuationPrompt = [
+        `Continue this ${conv.origin.toUpperCase()} conversation ("${conv.title}", workspace: ${cwd}).`,
+        historyText ? `\nRecent conversation context:\n${historyText}` : '',
+        `\nNew user instruction to execute now:\n${prompt}`
+      ].filter(Boolean).join('\n');
+
+      try {
+        const fallbackArgs = isAgy
+          ? ['--print', continuationPrompt, '--dangerously-skip-permissions']
+          : ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', continuationPrompt];
+        const output = await runCli(bin, fallbackArgs);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode: 'context-continuation', origin: conv.origin, threadId: conv.id, title: conv.title, reply: output }, null, 2) }] };
+      } catch (secondErr) {
+        // Final fallback to Codex CLI if agy CLI is unavailable or errored
+        const codexBin = getBestCodexBin();
+        const output = await runCli(codexBin, ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', continuationPrompt]);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode: 'codex-continuation', origin: conv.origin, threadId: conv.id, title: conv.title, reply: output }, null, 2) }] };
+      }
+    }
   }
   if (name === 'hub_quota_status') {
     const quota = await getAutoPilotRecommendation();
