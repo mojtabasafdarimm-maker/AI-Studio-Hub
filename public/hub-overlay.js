@@ -104,6 +104,46 @@
     }
   }
 
+  let lastBlankPopupBlocked = false;
+  const origWindowOpen = window.open.bind(window);
+
+  function showAuthLinkBanner(authUrl) {
+    if (!authUrl || !document.body) return;
+    let banner = document.getElementById('ash-auth-banner');
+    if (banner) banner.remove();
+    banner = document.createElement('div');
+    banner.id = 'ash-auth-banner';
+    banner.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;background:#0f172a;color:#f8fafc;border:1px solid #38bdf8;border-radius:14px;padding:12px 16px;box-shadow:0 12px 32px rgba(0,0,0,0.55);display:flex;align-items:center;gap:10px;max-width:min(92vw,420px);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;';
+    banner.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;color:#38bdf8;margin-bottom:2px;">🔗 Browser blocked pop-up</div>
+        <div style="font-size:11.5px;color:#cbd5e1;">Tap below to open the sign-in page:</div>
+      </div>
+      <a href="${String(authUrl).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer" id="ash-auth-open-link" style="padding:7px 12px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-weight:700;text-decoration:none;white-space:nowrap;">Sign In ↗</a>
+      <button id="ash-auth-dismiss" style="padding:6px 9px;border-radius:8px;border:1px solid rgba(148,163,184,0.3);background:transparent;color:#94a3b8;cursor:pointer;">✕</button>
+    `;
+    document.body.appendChild(banner);
+    banner.querySelector('#ash-auth-open-link')?.addEventListener('click', () => {
+      setTimeout(() => banner.remove(), 400);
+    });
+    banner.querySelector('#ash-auth-dismiss')?.addEventListener('click', () => banner.remove());
+  }
+
+  window.open = function(url, target, features) {
+    const win = origWindowOpen(url, target, features);
+    const u = String(url || '').trim();
+    if (!win) {
+      if (!u || u === 'about:blank') {
+        lastBlankPopupBlocked = true;
+      } else if (/^https?:\/\//i.test(u)) {
+        showAuthLinkBanner(u);
+      }
+    } else {
+      lastBlankPopupBlocked = false;
+    }
+    return win;
+  };
+
   window.fetch = async function(...args) {
     const url = String(args[0] || '');
     const opts = args[1] || {};
@@ -114,6 +154,17 @@
         nudgeAllEventSources();
         setTimeout(nudgeAllEventSources, 250);
         setTimeout(nudgeAllEventSources, 600);
+      }).catch(() => {});
+    }
+    if (method === 'POST' && (url.includes('/authorize') || url.includes('/auth/start'))) {
+      p.then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.clone().json().catch(() => null);
+        const authUrl = data?.url || data?.authorizationUrl || data?.auth?.authorizationUrl;
+        if (authUrl && lastBlankPopupBlocked) {
+          lastBlankPopupBlocked = false;
+          showAuthLinkBanner(authUrl);
+        }
       }).catch(() => {});
     }
     return p;
