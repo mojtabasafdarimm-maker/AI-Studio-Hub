@@ -135,6 +135,13 @@ function copyDirRecursive(srcDir, dstDir, { overwrite = true, skipDirs = new Set
     } else {
       try {
         if (!overwrite && fs.existsSync(dstPath)) continue;
+        const srcStat = fs.statSync(srcPath);
+        if (fs.existsSync(dstPath)) {
+          const dstStat = fs.statSync(dstPath);
+          if (srcStat.size === dstStat.size && Math.abs(srcStat.mtimeMs - dstStat.mtimeMs) < 2000) {
+            continue;
+          }
+        }
         fs.copyFileSync(srcPath, dstPath);
         count++;
       } catch {}
@@ -147,6 +154,10 @@ function restoreDataFromCloudDrive() {
   try {
     if (!fs.existsSync(CLOUD_SYNC_DIR)) return;
     if (!fs.existsSync(OMB_DATA_DIR)) fs.mkdirSync(OMB_DATA_DIR, { recursive: true });
+    // Skip slow Google Drive scan if local agent data is already present
+    if (fs.existsSync(path.join(OMB_DATA_DIR, 'bots.json')) && fs.existsSync(path.join(OMB_DATA_DIR, 'messages.db'))) {
+      return;
+    }
 
     // Restore full agent directory tree if local files are missing (e.g., new PC / fresh install)
     const restored = copyDirRecursive(CLOUD_SYNC_DIR, OMB_DATA_DIR, {
@@ -892,7 +903,7 @@ server.listen(HUB_PORT, '127.0.0.1', () => {
   startOpenMausBot();
   startLocalSseTap();
   startCloudflareTunnel().catch(() => {});
-  syncDataToCloudDrive();
+  setTimeout(() => syncDataToCloudDrive(), 5000);
   setInterval(() => {
     checkTunnelWatchdog().catch(() => {});
   }, 15000);
