@@ -29,6 +29,17 @@ const OMB_DIR = path.join(__dirname, 'openmausbot');
 const GATEWAY_URL = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
 const GATEWAY_SECRET = '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
 
+// Load local .env if present
+try {
+  const envFile = path.join(__dirname, '.env');
+  if (fs.existsSync(envFile)) {
+    for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+    }
+  }
+} catch {}
+
 // ---------------------------------------------------------------------------
 // 1. Ensure OpenMausBot config.json has Codex CLI & AI Studio Hub MCP mounted
 // ---------------------------------------------------------------------------
@@ -39,6 +50,10 @@ function ensureOmbConfig() {
   try {
     if (fs.existsSync(cfgPath)) cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   } catch {}
+
+  if (process.env.COMPOSIO_API_KEY && (!cfg.composio || !cfg.composio.apiKey)) {
+    cfg.composio = { ...(cfg.composio || {}), apiKey: process.env.COMPOSIO_API_KEY };
+  }
 
   const codexBin = getBestCodexBin();
   cfg.instances = cfg.instances || {};
@@ -224,7 +239,8 @@ function startOpenMausBot() {
     ...process.env,
     PATH: `${codexDir}${path.delimiter}${process.env.PATH || ''}`,
     OMB_PORT: String(OMB_PORT),
-    OMB_DATA_DIR: OMB_DATA_DIR
+    OMB_DATA_DIR: OMB_DATA_DIR,
+    COMPOSIO_API_KEY: process.env.COMPOSIO_API_KEY || ''
   };
 
   const child = spawn(
