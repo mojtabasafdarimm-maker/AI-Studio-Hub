@@ -606,6 +606,40 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // 1c. Local file links (e.g. /C:/Users/.../report.md) — served so links from bots open on phone/gateway too
+    if (/^\/[A-Za-z]:\//.test(pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
+      let filePath;
+      try { filePath = path.resolve(decodeURIComponent(pathname.slice(1))); } catch { filePath = null; }
+      const roots = [
+        path.resolve(OMB_DATA_DIR),
+        path.resolve(process.env.USERPROFILE || 'C:\\Users', 'My Drive'),
+        path.resolve(__dirname, '..')
+      ];
+      const allowed = filePath && roots.some((r) => filePath.toLowerCase().startsWith(r.toLowerCase() + path.sep));
+      if (!allowed) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Forbidden: outside shared folders'); }
+      let st;
+      try { st = fs.statSync(filePath); } catch { st = null; }
+      if (!st || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('File not found'); }
+      const ext = path.extname(filePath).toLowerCase();
+      const MIME = {
+        '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+        '.json': 'application/json; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.py': 'text/plain; charset=utf-8',
+        '.js': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.pdf': 'application/pdf',
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+        '.zip': 'application/zip', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      };
+      res.writeHead(200, {
+        'Content-Type': MIME[ext] || 'application/octet-stream',
+        'Content-Length': st.size,
+        'Cache-Control': 'no-store',
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(path.basename(filePath))}`
+      });
+      if (req.method === 'HEAD') return res.end();
+      return fs.createReadStream(filePath).pipe(res);
+    }
+
     // 2. Hub Health
     if (pathname === '/api/hub/health' && req.method === 'GET') {
       return sendJson(res, 200, { ok: true, ombReady, tunnelStatus, tunnelUrl, gatewayUrl: GATEWAY_URL });
