@@ -77,6 +77,38 @@ const TOOLS = [
         dueAt: { type: 'string', description: 'Optional ISO-8601 due date/time for the reminder' }
       }
     }
+  },
+  {
+    name: 'hub_outlook_emails',
+    description: 'Access the user\'s work/university Outlook (Classic Outlook on Windows) inbox without Microsoft cloud OAuth: list recent emails, search by keyword, read full email body, create a draft, or send an email.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'search', 'read', 'draft', 'send'], description: 'Action to perform (default list)' },
+        query: { type: 'string', description: 'Search text for subject, sender, or body (for action=search)' },
+        entryId: { type: 'string', description: 'Email EntryID returned by list/search (for action=read)' },
+        to: { type: 'string', description: 'Recipient email address(es), semicolon-separated (for draft/send)' },
+        subject: { type: 'string', description: 'Email subject (for draft/send)' },
+        body: { type: 'string', description: 'Email body text (for draft/send)' },
+        limit: { type: 'number', description: 'Max emails to return for list/search (default 15, max 40)' }
+      }
+    }
+  },
+  {
+    name: 'hub_outlook_calendar',
+    description: 'Read or create events in the user\'s work/university Classic Outlook calendar on Windows.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'create'], description: 'Action to perform (default list)' },
+        days: { type: 'number', description: 'Number of days ahead to list (default 7)' },
+        subject: { type: 'string', description: 'Event title (for action=create)' },
+        start: { type: 'string', description: 'Start date/time ISO or local string (for action=create)' },
+        end: { type: 'string', description: 'End date/time ISO or local string (for action=create)' },
+        location: { type: 'string', description: 'Optional event location' },
+        body: { type: 'string', description: 'Optional event description' }
+      }
+    }
   }
 ];
 
@@ -183,6 +215,123 @@ async function handleToolCall(name, args = {}) {
     const now = Date.now();
     const upcoming = (events || []).filter((e) => (e.endMs || 0) >= now - 1800000).slice(0, 15);
     return { content: [{ type: 'text', text: JSON.stringify({ upcomingEvents: upcoming, reminders: state.reminders || [] }, null, 2) }] };
+  }
+  if (name === 'hub_outlook_emails' || name === 'hub_outlook_calendar') {
+    const action = String(args.action || 'list');
+    const payloadB64 = Buffer.from(JSON.stringify(args), 'utf8').toString('base64');
+    const psHeader = `
+$ErrorActionPreference = 'Stop'
+$rawJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${payloadB64}'))
+$argsObj = $rawJson | ConvertFrom-Json
+try { $ol = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') } catch { $ol = New-Object -ComObject Outlook.Application }
+$ns = $ol.GetNamespace('MAPI')
+`;
+    const psBody = name === 'hub_outlook_emails' ? `
+$inbox = $ns.GetDefaultFolder(6)
+$act = if ($argsObj.action) { [string]$argsObj.action } else { 'list' }
+$limit = if ($argsObj.limit) { [Math]::Min(40, [Math]::Max(1, [int]$argsObj.limit)) } else { 15 }
+if ($act -eq 'read') {
+  $item = $ns.GetItemFromID([string]$argsObj.entryId)
+  $out = [ordered]@{
+    entryId = $item.EntryID
+    subject = $item.Subject
+    from = $item.SenderName
+    fromEmail = $item.SenderEmailAddress
+    to = $item.To
+    receivedAt = if ($item.ReceivedTime) { $item.ReceivedTime.ToString('o') } else { $null }
+    unread = [bool]$item.UnRead
+    body = $item.Body
+  }
+  $out | ConvertTo-Json -Depth 4
+} elseif ($act -eq 'draft' -or $act -eq 'send') {
+  $mail = $ol.CreateItem(0)
+  $mail.To = [string]$argsObj.to
+  $mail.Subject = [string]$argsObj.subject
+  $mail.Body = [string]$argsObj.body
+  if ($act -eq 'send') { $mail.Send(); $status = 'sent' } else { $mail.Save(); $status = 'saved_draft' }
+  [ordered]@{ ok = $true; status = $status; to = [string]$argsObj.to; subject = [string]$argsObj.subject } | ConvertTo-Json
+} else {
+  $items = $inbox.Items
+  $items.Sort('[ReceivedTime]', $true)
+  $q = if ($argsObj.query) { [string]$argsObj.query } else { '' }
+  $res = @()
+  $scanned = 0
+  foreach ($it in $items) {
+    if ($scanned -ge 250 -and $q) { break }
+    $scanned++
+    if ($it.Class -ne 43) { continue }
+    $subj = [string]$it.Subject
+    $sndr = [string]$it.SenderName
+    $sndEmail = [string]$it.SenderEmailAddress
+    if ($q) {
+      $bodySnippet = [string]$it.Body
+      if ($subj -notmatch [regex]::Escape($q) -and $sndr -notmatch [regex]::Escape($q) -and $sndEmail -notmatch [regex]::Escape($q) -and $bodySnippet -notmatch [regex]::Escape($q)) {
+        continue
+      }
+    }
+    $preview = ([string]$it.Body -replace '\s+', ' ').Trim()
+    if ($preview.Length -gt 220) { $preview = $preview.Substring(0, 220) + '...' }
+    $res += [ordered]@{
+      entryId = $it.EntryID
+      subject = $subj
+      from = $sndr
+      fromEmail = $sndEmail
+      receivedAt = if ($it.ReceivedTime) { $it.ReceivedTime.ToString('o') } else { $null }
+      unread = [bool]$it.UnRead
+      preview = $preview
+    }
+    if ($res.Count -ge $limit) { break }
+  }
+  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; count = $res.Count; emails = @($res) } | ConvertTo-Json -Depth 4
+}
+` : `
+$cal = $ns.GetDefaultFolder(9)
+$act = if ($argsObj.action) { [string]$argsObj.action } else { 'list' }
+if ($act -eq 'create') {
+  $appt = $ol.CreateItem(1)
+  $appt.Subject = [string]$argsObj.subject
+  $appt.Start = [datetime]::Parse([string]$argsObj.start)
+  $appt.End = if ($argsObj.end) { [datetime]::Parse([string]$argsObj.end) } else { $appt.Start.AddHours(1) }
+  if ($argsObj.location) { $appt.Location = [string]$argsObj.location }
+  if ($argsObj.body) { $appt.Body = [string]$argsObj.body }
+  $appt.Save()
+  [ordered]@{ ok = $true; subject = $appt.Subject; start = $appt.Start.ToString('o'); end = $appt.End.ToString('o') } | ConvertTo-Json
+} else {
+  $days = if ($argsObj.days) { [Math]::Min(60, [Math]::Max(1, [int]$argsObj.days)) } else { 7 }
+  $now = Get-Date
+  $endDt = $now.AddDays($days)
+  $items = $cal.Items
+  $items.IncludeRecurrences = $true
+  $items.Sort('[Start]')
+  $filter = "[Start] >= '" + $now.AddHours(-2).ToString('g') + "' AND [Start] <= '" + $endDt.ToString('g') + "'"
+  $restricted = $items.Restrict($filter)
+  $evts = @()
+  foreach ($e in $restricted) {
+    if ($e.Class -ne 26) { continue }
+    $evts += [ordered]@{
+      subject = [string]$e.Subject
+      start = $e.Start.ToString('o')
+      end = $e.End.ToString('o')
+      location = [string]$e.Location
+      organizer = [string]$e.Organizer
+    }
+    if ($evts.Count -ge 40) { break }
+  }
+  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; count = $evts.Count; events = @($evts) } | ConvertTo-Json -Depth 4
+}
+`;
+    const encoded = Buffer.from(psHeader + '\n' + psBody, 'utf16le').toString('base64');
+    try {
+      const out = await new Promise((resolve, reject) => {
+        execFile('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], { encoding: 'utf8', timeout: 25000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+          if (err && !stdout.trim()) return reject(new Error(stderr || err.message));
+          resolve(stdout.trim());
+        });
+      });
+      return { content: [{ type: 'text', text: out || '{}' }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Classic Outlook error (make sure Outlook Classic is open): ${err.message}` }], isError: true };
+    }
   }
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
 }
