@@ -88,6 +88,7 @@ const TOOLS = [
         query: { type: 'string', description: 'Search text for subject, sender, or body (for action=search)' },
         entryId: { type: 'string', description: 'Email EntryID returned by list/search (for action=read)' },
         to: { type: 'string', description: 'Recipient email address(es), semicolon-separated (for draft/send)' },
+        from: { type: 'string', description: 'Optional sender email address (e.g. msafdari@uoguelph.ca) to explicitly pick the Outlook sending account' },
         subject: { type: 'string', description: 'Email subject (for draft/send)' },
         body: { type: 'string', description: 'Email body text (for draft/send)' },
         limit: { type: 'number', description: 'Max emails to return for list/search (default 15, max 40)' }
@@ -245,11 +246,22 @@ if ($act -eq 'read') {
   $out | ConvertTo-Json -Depth 4
 } elseif ($act -eq 'draft' -or $act -eq 'send') {
   $mail = $ol.CreateItem(0)
+  $targetFrom = if ($argsObj.from) { [string]$argsObj.from } else { '' }
+  $chosenAcct = $null
+  foreach ($acct in $ns.Accounts) {
+    if ($targetFrom -and $acct.SmtpAddress -ieq $targetFrom) { $chosenAcct = $acct; break }
+    if (-not $targetFrom -and -not $chosenAcct) { $chosenAcct = $acct }
+  }
+  if ($targetFrom -and -not $chosenAcct) {
+    throw "Outlook account '$targetFrom' not found. Available: $(($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', ')"
+  }
+  if ($chosenAcct) { $mail.SendUsingAccount = $chosenAcct }
   $mail.To = [string]$argsObj.to
   $mail.Subject = [string]$argsObj.subject
   $mail.Body = [string]$argsObj.body
+  $fromAddr = if ($chosenAcct) { $chosenAcct.SmtpAddress } else { ($ns.Accounts | Select-Object -First 1).SmtpAddress }
   if ($act -eq 'send') { $mail.Send(); $status = 'sent' } else { $mail.Save(); $status = 'saved_draft' }
-  [ordered]@{ ok = $true; status = $status; to = [string]$argsObj.to; subject = [string]$argsObj.subject } | ConvertTo-Json
+  [ordered]@{ ok = $true; status = $status; from = $fromAddr; to = [string]$argsObj.to; subject = [string]$argsObj.subject } | ConvertTo-Json
 } else {
   $items = $inbox.Items
   $items.Sort('[ReceivedTime]', $true)
