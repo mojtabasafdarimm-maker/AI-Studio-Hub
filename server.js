@@ -606,23 +606,36 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 1c. Local file links (e.g. /C:/Users/.../report.md) — served so links from bots open on phone/gateway too
-    if (/^\/[A-Za-z]:\//.test(pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
+    // Helper: safely serve local files inside allowed roots
+    function resolveAllowedLocalFile(rawInput) {
+      let s = String(rawInput || '').trim();
+      try { s = decodeURIComponent(s); } catch {}
+      if (s.startsWith('file:///')) s = s.slice(8);
+      if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+      // Strip optional :line or :line:col suffix if the stripped path exists
+      const lineMatch = s.match(/^([A-Za-z]:[\\/].+?):\d+(?::\d+)?$/);
+      if (lineMatch && !fs.existsSync(s) && fs.existsSync(lineMatch[1])) s = lineMatch[1];
       let filePath;
-      try { filePath = path.resolve(decodeURIComponent(pathname.slice(1))); } catch { filePath = null; }
+      try { filePath = path.resolve(s); } catch { return { allowed: false, filePath: null }; }
+      const home = process.env.USERPROFILE || 'C:\\Users\\msafdari';
       const roots = [
         path.resolve(OMB_DATA_DIR),
-        path.resolve(process.env.USERPROFILE || 'C:\\Users', 'My Drive'),
+        path.resolve(home, 'My Drive'),
+        path.resolve(home, 'OneDrive - University of Guelph'),
         path.resolve(__dirname, '..')
       ];
-      const allowed = filePath && roots.some((r) => filePath.toLowerCase().startsWith(r.toLowerCase() + path.sep));
-      if (!allowed) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Forbidden: outside shared folders'); }
+      const allowed = roots.some((r) => filePath.toLowerCase().startsWith(r.toLowerCase() + path.sep));
+      return { allowed, filePath };
+    }
+
+    function sendLocalFileResponse(filePath, res, headOnly = false) {
       let st;
       try { st = fs.statSync(filePath); } catch { st = null; }
-      if (!st || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('File not found'); }
+      if (!st || !st.isFile()) return false;
       const ext = path.extname(filePath).toLowerCase();
       const MIME = {
-        '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+        '.md': 'text/markdown; charset=utf-8', '.markdown': 'text/markdown; charset=utf-8',
+        '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
         '.json': 'application/json; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.py': 'text/plain; charset=utf-8',
         '.js': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.pdf': 'application/pdf',
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
@@ -636,8 +649,58 @@ const server = http.createServer(async (req, res) => {
         'Cache-Control': 'no-store',
         'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(path.basename(filePath))}`
       });
-      if (req.method === 'HEAD') return res.end();
-      return fs.createReadStream(filePath).pipe(res);
+      if (headOnly) { res.end(); return true; }
+      fs.createReadStream(filePath).pipe(res);
+      return true;
+    }
+
+    // 1c. Direct local file URLs (e.g. /C:/Users/.../report.md)
+    if (/^\/[A-Za-z]:\//.test(pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
+      const { allowed, filePath } = resolveAllowedLocalFile(pathname);
+      if (!allowed) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Forbidden: outside shared folders'); }
+      if (!sendLocalFileResponse(filePath, res, req.method === 'HEAD')) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('File not found');
+      }
+      return;
+    }
+
+    // 1d. OpenMausBot chat file-link click handler (/api/threads/:id/messages/:msgId/file)
+    if (/^\/api\/threads\/[^/]+\/messages\/[^/]+\/file$/.test(pathname) && req.method === 'POST') {
+      const rawBody = (await readBody(req)).toString('utf8');
+      let body = {};
+      try { body = rawBody ? JSON.parse(rawBody) : {}; } catch {}
+      const normalizedReqPath = typeof body.path === 'string' && /^\/[A-Za-z]:[\\/]/.test(body.path)
+        ? body.path.slice(1)
+        : body.path;
+      const forwardBody = JSON.stringify({ ...body, path: normalizedReqPath });
+      const upstreamRes = await fetch(`http://127.0.0.1:${OMB_PORT}${req.url}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(masterToken ? { Authorization: `Bearer ${masterToken}` } : {})
+        },
+        body: forwardBody
+      }).catch(() => null);
+
+      if (upstreamRes && upstreamRes.ok) {
+        const buf = Buffer.from(await upstreamRes.arrayBuffer());
+        const outH = { 'Content-Type': upstreamRes.headers.get('content-type') || 'application/octet-stream', 'Cache-Control': 'no-store' };
+        const folderHdr = upstreamRes.headers.get('x-openmausbot-folder');
+        if (folderHdr) outH['x-openmausbot-folder'] = folderHdr;
+        res.writeHead(upstreamRes.status, outH);
+        return res.end(buf);
+      }
+
+      // Fallback: serve allowed local file directly if OpenMausBot returned 404/403 (e.g. /C:/... or outside task sandbox)
+      const { allowed, filePath } = resolveAllowedLocalFile(body.path || normalizedReqPath);
+      if (allowed && filePath && sendLocalFileResponse(filePath, res, false)) {
+        return;
+      }
+      const errStatus = upstreamRes ? upstreamRes.status : 404;
+      const errText = upstreamRes ? await upstreamRes.text().catch(() => '{"error":"File unavailable"}') : '{"error":"File unavailable"}';
+      res.writeHead(errStatus, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(errText);
     }
 
     // 2. Hub Health
