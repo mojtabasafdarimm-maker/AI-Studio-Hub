@@ -26,8 +26,6 @@ const __dirname = path.dirname(__filename);
 const HUB_PORT = Number(process.env.HUB_PORT || 4747);
 const OMB_PORT = Number(process.env.OMB_PORT || 8799);
 const OMB_DIR = path.join(__dirname, 'openmausbot');
-const GATEWAY_URL = 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
-const GATEWAY_SECRET = '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
 
 // Load local .env if present
 try {
@@ -39,6 +37,9 @@ try {
     }
   }
 } catch {}
+
+const GATEWAY_URL = process.env.GATEWAY_URL || 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
+const GATEWAY_SECRET = process.env.GATEWAY_SECRET || '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
 
 // ---------------------------------------------------------------------------
 // 1. Ensure OpenMausBot config.json has Codex CLI & AI Studio Hub MCP mounted
@@ -55,7 +56,9 @@ function ensureOmbConfig() {
     cfg.composio = { ...(cfg.composio || {}), apiKey: process.env.COMPOSIO_API_KEY };
   }
   if (!cfg.everyBotRules) {
-    cfg.everyBotRules = 'You are running locally on the user\'s Windows PC (C:\\Users\\msafdari). You HAVE full local file and PowerShell (shell) access to this computer. The user\'s Google Drive is synced locally on disk at C:\\Users\\msafdari\\My Drive\\ (e.g., FrenchApp for Parlez, AI-Studio-Hub, MyPapers, Thesis, AKTUAL). Never tell the user you cannot see their files or ask them to enable "This computer" screen mode—use PowerShell/shell and file tools directly on C:\\Users\\msafdari\\My Drive\\ and C:\\Users\\msafdari\\.';
+    const homeDir = process.env.USERPROFILE || 'C:\\Users\\Public';
+    const driveDir = path.join(homeDir, 'My Drive');
+    cfg.everyBotRules = `You are running locally on the user's Windows PC (${homeDir}). You HAVE full local file and PowerShell (shell) access to this computer. If Google Drive is synced at ${driveDir}, check there for local folders. Never tell the user you cannot see their files or ask them to enable "This computer" screen mode—use PowerShell/shell and file tools directly on ${driveDir} and ${homeDir}.`;
   }
 
   const codexBin = getBestCodexBin();
