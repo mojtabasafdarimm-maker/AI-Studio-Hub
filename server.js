@@ -127,7 +127,7 @@ function getMasterToken() {
 // 1c. Google Drive Cloud Sync & Persistence (Full Agent State + History)
 // ---------------------------------------------------------------------------
 const CLOUD_SYNC_DIR = path.join(__dirname, 'cloud-sync');
-const CLOUD_SYNC_SKIP_DIRS = new Set(['tools', 'agent-browser-profiles', 'browser', 'events']);
+const CLOUD_SYNC_SKIP_DIRS = new Set(['tools', 'agent-browser-profiles', 'browser', 'events', 'tmp', 'cache']);
 
 function copyDirRecursive(srcDir, dstDir, { overwrite = true, skipDirs = new Set() } = {}) {
   if (!fs.existsSync(srcDir)) return 0;
