@@ -60,6 +60,11 @@ function ensureOmbConfig() {
     const driveDir = path.join(homeDir, 'My Drive');
     cfg.everyBotRules = `You are running locally on the user's Windows PC (${homeDir}). You HAVE full local file and PowerShell (shell) access to this computer. If Google Drive is synced at ${driveDir}, check there for local folders. Never tell the user you cannot see their files or ask them to enable "This computer" screen mode—use PowerShell/shell and file tools directly on ${driveDir} and ${homeDir}.`;
   }
+  cfg.newBotDefaults = cfg.newBotDefaults || {};
+  cfg.newBotDefaults.profile = cfg.newBotDefaults.profile || {};
+  if (!cfg.newBotDefaults.profile.approvalMode) {
+    cfg.newBotDefaults.profile.approvalMode = 'full';
+  }
 
   const codexBin = getBestCodexBin();
   cfg.instances = cfg.instances || {};
