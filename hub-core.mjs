@@ -837,9 +837,10 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
 
     const availOpts = (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label }));
     const availLabels = availOpts.map((o) => o.label);
-    const geminiBucketModels = availLabels.filter((l) => /gemini/i.test(l) && !/argon/i.test(l));
+    const geminiBucketModels = availLabels.filter((l) => (/gemini/i.test(l) && !/argon/i.test(l)) || /orchestrator \(neon\)/i.test(l));
+    const argonBucketModels = availLabels.filter((l) => /argon|orchestrator \(argon\)/i.test(l));
     const claudeBucketModels = availLabels.filter((l) => /claude|gpt-oss/i.test(l));
-    const hasGemini4 = availLabels.some((l) => /gemini 4/i.test(l));
+    const hasGemini4 = availLabels.some((l) => /gemini 4|orchestrator/i.test(l));
 
     if (fiveHour && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
       fiveHour.modelsIncluded = geminiBucketModels;
@@ -855,7 +856,7 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
         const isClaudeGroup = /claude|gpt/i.test(m.name);
         models.push({
           name: m.name,
-          modelsIncluded: isClaudeGroup && claudeBucketModels.length > 0 ? claudeBucketModels : (/argon/i.test(m.name) ? ['Gemini 4 Argon'] : null),
+          modelsIncluded: isClaudeGroup && claudeBucketModels.length > 0 ? claudeBucketModels : (/argon/i.test(m.name) ? (argonBucketModels.length > 0 ? argonBucketModels : ['Gemini 4 Argon']) : null),
           windows: wins
         });
       }
