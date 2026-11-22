@@ -827,7 +827,7 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
 
   for (const p of providers) {
     const inst = instancesById.get(p.id);
-    const email = inst?.snapshot?.account?.email || (p.driver === 'codex' ? 'OpenAI / ChatGPT Plus' : null);
+    const email = inst?.snapshot?.account?.email || (p.id === 'antigravity' ? 'mina.khoshbazmf@gmail.com' : p.driver === 'codex' ? 'OpenAI / ChatGPT Plus' : null);
     const displayName = inst?.displayName || p.name || p.id;
     const authenticated = p.ok === true || inst?.snapshot?.authenticated === true;
     const assignedBots = botsByInstance.get(p.id) || [];
@@ -835,11 +835,29 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
     const fiveHour = normWindow(p.fiveHour, '5-hour');
     const weekly = normWindow(p.weekly, 'Weekly');
 
+    const availOpts = (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label }));
+    const availLabels = availOpts.map((o) => o.label);
+    const geminiBucketModels = availLabels.filter((l) => /gemini/i.test(l) && !/argon/i.test(l));
+    const claudeBucketModels = availLabels.filter((l) => /claude|gpt-oss/i.test(l));
+    const hasGemini4 = availLabels.some((l) => /gemini 4/i.test(l));
+
+    if (fiveHour && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
+      fiveHour.modelsIncluded = geminiBucketModels;
+    }
+    if (weekly && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
+      weekly.modelsIncluded = geminiBucketModels;
+    }
+
     const models = [];
     for (const m of p.models || []) {
       const wins = (m.windows || []).map((w) => normWindow(w, w.label || 'Window')).filter(Boolean);
       if (wins.length > 0) {
-        models.push({ name: m.name, windows: wins });
+        const isClaudeGroup = /claude|gpt/i.test(m.name);
+        models.push({
+          name: m.name,
+          modelsIncluded: isClaudeGroup && claudeBucketModels.length > 0 ? claudeBucketModels : (/argon/i.test(m.name) ? ['Gemini 4 Argon'] : null),
+          windows: wins
+        });
       }
     }
 
@@ -866,7 +884,8 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
     const soonResetBonus = (effWeekly >= 45 && typeof weeklyHours === 'number' && weeklyHours > 0 && weeklyHours <= 96)
       ? Math.round((96 - weeklyHours) / 4)
       : 0;
-    const routingScore = authenticated ? Math.round(effWeekly * 0.65 + effFive * 0.35 + soonResetBonus) : -1;
+    const proBonus = (p.driver === 'antigravity' && hasGemini4) ? 5 : 0;
+    const routingScore = authenticated ? Math.round(effWeekly * 0.65 + effFive * 0.35 + soonResetBonus + proBonus) : -1;
 
     let statusTag = 'ready';
     let statusLabel = 'Plenty Left';
@@ -889,13 +908,15 @@ export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0
       displayName,
       driver: p.driver,
       email,
-      plan: p.plan || (p.driver === 'antigravity' ? (email?.toLowerCase() === agyIdeEmail ? autoPilot?.agy?.user?.tier : 'Antigravity') : null),
+      plan: p.plan || (p.driver === 'antigravity' ? (hasGemini4 ? 'Google AI Pro' : 'Free Tier') : null),
       authenticated,
       error: p.error || null,
+      hasGemini4: p.driver === 'antigravity' ? hasGemini4 : false,
+      geminiSharedModels: p.driver === 'antigravity' ? geminiBucketModels : [],
       fiveHour,
       weekly,
       models,
-      availableModels: (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label })),
+      availableModels: availOpts,
       assignedBots,
       routingScore,
       statusTag,

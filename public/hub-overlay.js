@@ -644,15 +644,23 @@
                 </div>
               ` : '<div style="font-size:10.5px; color:#64748b;">No bots assigned yet — ready to use!</div>'}
 
-              <div style="margin-top:2px;">
+              <div style="margin-top:4px;">
+                ${acct.driver === 'antigravity' && acct.geminiSharedModels?.length ? `
+                  <div style="font-size:10.5px; color:#a5b4fc; margin-bottom:2px;">
+                    <b>Gemini Pool:</b> ${esc(acct.geminiSharedModels.join(' · '))}
+                  </div>
+                ` : ''}
                 ${renderWindowRow(acct.driver === 'codex' ? '5-Hour Window' : 'Gemini · 5-Hour', acct.fiveHour)}
                 ${renderWindowRow(acct.driver === 'codex' ? '7-Day Weekly' : 'Gemini · Weekly', acct.weekly)}
               </div>
 
               ${acct.models?.length ? `
                 <div style="margin-top:6px; padding-top:6px; border-top:1px solid rgba(148,163,184,0.14);">
-                  <div style="font-size:10.5px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">Model Pools on this Account</div>
-                  ${acct.models.map((m) => (m.windows || []).map((w) => renderWindowRow(`${m.name} (${w.label})`, w)).join('')).join('')}
+                  <div style="font-size:10.5px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">Separate Model Pools</div>
+                  ${acct.models.map((m) => `
+                    ${m.modelsIncluded?.length ? `<div style="font-size:10px; color:#94a3b8; margin-top:4px;">Includes: ${esc(m.modelsIncluded.join(' · '))}</div>` : ''}
+                    ${(m.windows || []).map((w) => renderWindowRow(`${m.name} (${w.label})`, w)).join('')}
+                  `).join('')}
                 </div>
               ` : ''}
             </div>
