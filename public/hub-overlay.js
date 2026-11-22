@@ -187,11 +187,11 @@
       z-index: 9998;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
+      gap: 4px;
+      padding: 4px 6px;
       border-radius: 999px;
       border: 1px solid rgba(148, 163, 184, 0.28);
-      background: rgba(17, 24, 39, 0.88);
+      background: rgba(17, 24, 39, 0.90);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       color: #f8fafc;
@@ -204,6 +204,42 @@
       touch-action: none;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
       transition: box-shadow 0.15s, background 0.15s;
+    }
+    .ash-pill-seg {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: none;
+      background: transparent;
+      color: #f8fafc;
+      font: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .ash-pill-seg:hover {
+      background: rgba(139, 92, 246, 0.28);
+    }
+    .ash-pill-seg.allowances {
+      background: rgba(99, 102, 241, 0.22);
+      color: #c7d2fe;
+    }
+    .ash-pill-seg.allowances:hover {
+      background: rgba(99, 102, 241, 0.42);
+      color: #fff;
+    }
+    .ash-pill-div {
+      width: 1px;
+      height: 14px;
+      background: rgba(148, 163, 184, 0.25);
+    }
+    #ash-allow-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #10b981;
+      display: inline-block;
     }
     #ash-pill:active {
       cursor: grabbing;
@@ -344,10 +380,14 @@
   `;
   document.head.appendChild(style);
 
-  const pill = document.createElement('button');
+  const pill = document.createElement('div');
   pill.id = 'ash-pill';
-  pill.title = 'AI Studio Hub — Quotas, Stalled Radar, Native Chats & Remote Pairing';
-  pill.innerHTML = '<span>⚡ Hub</span><span id="ash-pill-dot"></span>';
+  pill.title = 'Drag to move · Click Hub or Allowances';
+  pill.innerHTML = `
+    <button type="button" id="ash-btn-hub" class="ash-pill-seg" title="Open AI Studio Hub"><span>⚡ Hub</span><span id="ash-pill-dot"></span></button>
+    <span class="ash-pill-div"></span>
+    <button type="button" id="ash-btn-allowances" class="ash-pill-seg allowances" title="View Model Allowances & Reset Times Across All Accounts"><span id="ash-allow-dot"></span><span>📊 Allowances</span></button>
+  `;
   document.body.appendChild(pill);
 
   const backdrop = document.createElement('div');
@@ -365,9 +405,9 @@
         </div>
       </div>
       <div class="ash-tabs">
-        <button class="ash-tab active" data-tab="radar">📡 Radar</button>
+        <button class="ash-tab active" data-tab="quotas">📊 Allowances</button>
+        <button class="ash-tab" data-tab="radar">📡 Radar</button>
         <button class="ash-tab" data-tab="chats">🔍 Chats</button>
-        <button class="ash-tab" data-tab="quotas">⚡ Quotas</button>
         <button class="ash-tab" data-tab="remote">📱 Remote</button>
       </div>
       <div id="ash-body" class="ash-body"></div>
@@ -375,11 +415,12 @@
   `;
   document.body.appendChild(backdrop);
 
-  let activeTab = 'radar';
+  let activeTab = 'quotas';
   let hubState = null;
   let searchResults = [];
   let searchQuery = '';
   let pairInfo = null;
+  let allowancesRefreshing = false;
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -390,8 +431,18 @@
     return '<span class="ash-badge" style="background:rgba(16,185,129,0.22); color:#6ee7b7;">⚡ Codex</span>';
   }
 
+  function switchTab(tabName) {
+    activeTab = tabName;
+    backdrop.querySelectorAll('.ash-tab').forEach((t) => t.classList.toggle('active', t.getAttribute('data-tab') === tabName));
+    renderBody();
+  }
+
   async function loadHubState(force = false) {
     try {
+      if (force) {
+        allowancesRefreshing = true;
+        if (backdrop.classList.contains('open') && activeTab === 'quotas') renderBody();
+      }
       const res = await fetch('/api/hub/state' + (force ? '?force=1' : ''));
       if (!res.ok) return;
       hubState = await res.json();
@@ -399,8 +450,15 @@
       if (dot) {
         dot.style.display = (hubState?.radar?.stalledTasks?.length || 0) > 0 ? 'inline-block' : 'none';
       }
+      const allowDot = document.getElementById('ash-allow-dot');
+      if (allowDot) {
+        const warns = hubState?.allowances?.routingAdvice?.conserveWarnings || [];
+        allowDot.style.background = warns.length > 0 ? '#f59e0b' : '#10b981';
+      }
+    } catch {} finally {
+      allowancesRefreshing = false;
       if (backdrop.classList.contains('open')) renderBody();
-    } catch {}
+    }
   }
 
   async function continueInOmb(threadId, btn) {
@@ -523,12 +581,100 @@
     }
 
     if (activeTab === 'quotas') {
+      const al = hubState.allowances;
+      const barColor = (pct) => pct <= 15 ? '#ef4444' : pct <= 35 ? '#f59e0b' : '#10b981';
+      const statusBadge = (acct, idx) => {
+        if (idx === 0 && acct.statusTag !== 'conserve' && acct.statusTag !== 'critical') {
+          return '<span class="ash-badge" style="background:rgba(16,185,129,0.22); color:#6ee7b7;">★ Best Right Now</span>';
+        }
+        if (acct.statusTag === 'use-soon') return '<span class="ash-badge" style="background:rgba(56,189,248,0.22); color:#7dd3fc;">⏳ Use Before Reset</span>';
+        if (acct.statusTag === 'conserve') return '<span class="ash-badge" style="background:rgba(245,158,11,0.22); color:#fcd34d;">⚠️ Low Weekly — Conserve</span>';
+        if (acct.statusTag === 'critical') return '<span class="ash-badge" style="background:rgba(239,68,68,0.22); color:#fca5a5;">🔴 Nearly Exhausted</span>';
+        return '<span class="ash-badge" style="background:rgba(16,185,129,0.16); color:#6ee7b7;">✓ Plenty Left</span>';
+      };
+
+      const renderWindowRow = (label, win) => {
+        if (!win || typeof win.remainingPercent !== 'number') return '';
+        const pct = Math.max(0, Math.min(100, Math.round(win.remainingPercent)));
+        const resetTxt = win.resetsInHuman
+          ? `resets in ${win.resetsInHuman}${win.resetsAtEastern ? ` (${win.resetsAtEastern})` : ''}`
+          : (pct >= 99.5 ? 'full / ready' : '');
+        return `
+          <div style="margin-top:5px;">
+            <div style="font-size:11.5px; display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+              <span style="color:#e2e8f0; font-weight:600;">${esc(label)}</span>
+              <span style="color:#cbd5e1; font-weight:700;">${pct}% left</span>
+            </div>
+            <div class="ash-bar-bg" style="margin-top:3px;"><div class="ash-bar-fill" style="width:${pct}%; background:${barColor(pct)};"></div></div>
+            ${resetTxt ? `<div style="font-size:10.5px; color:#94a3b8; margin-top:2px;">↻ ${esc(resetTxt)}</div>` : ''}
+          </div>
+        `;
+      };
+
+      if (al && Array.isArray(al.accounts) && al.accounts.length > 0) {
+        const adv = al.routingAdvice || {};
+        const updatedLabel = al.fetchedAt ? new Date(al.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+
+        body.innerHTML = `
+          <div class="ash-card" style="border-color:rgba(139,92,246,0.35); background:rgba(76,29,149,0.18);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <div style="font-size:12px; font-weight:800; color:#c4b5fd;">🧠 Smart Account Routing</div>
+              <button id="ash-allow-refresh" class="ash-btn" style="padding:3px 9px; font-size:11px;" ${allowancesRefreshing ? 'disabled' : ''}>${allowancesRefreshing ? 'Refreshing...' : '↻ Live Refresh'}</button>
+            </div>
+            <div style="font-size:12px; color:#e2e8f0; line-height:1.45;">${esc(adv.summary || 'All accounts loaded.')}</div>
+            ${updatedLabel ? `<div style="font-size:10.5px; color:#94a3b8;">Updated ${esc(updatedLabel)} · Shared with khadang & all bots via MCP</div>` : ''}
+          </div>
+
+          ${al.accounts.map((acct, idx) => `
+            <div class="ash-card">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px; flex-wrap:wrap;">
+                <div>
+                  <div style="font-weight:800; font-size:13px; color:#f8fafc;">
+                    ${acct.driver === 'codex' ? '🟢' : '🌌'} ${esc(acct.displayName)}
+                    ${acct.plan ? `<span class="ash-badge" style="margin-left:4px;">${esc(acct.plan)}</span>` : ''}
+                  </div>
+                  ${acct.email ? `<div style="font-size:11px; color:#94a3b8; margin-top:1px;">${esc(acct.email)}</div>` : ''}
+                </div>
+                ${statusBadge(acct, idx)}
+              </div>
+
+              ${acct.assignedBots?.length ? `
+                <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:2px;">
+                  ${acct.assignedBots.map((b) => `<span class="ash-badge" style="font-size:10px; background:rgba(51,65,85,0.8); color:#cbd5e1;">🤖 ${esc(b.name)}</span>`).join('')}
+                </div>
+              ` : '<div style="font-size:10.5px; color:#64748b;">No bots assigned yet — ready to use!</div>'}
+
+              <div style="margin-top:2px;">
+                ${renderWindowRow(acct.driver === 'codex' ? '5-Hour Window' : 'Gemini · 5-Hour', acct.fiveHour)}
+                ${renderWindowRow(acct.driver === 'codex' ? '7-Day Weekly' : 'Gemini · Weekly', acct.weekly)}
+              </div>
+
+              ${acct.models?.length ? `
+                <div style="margin-top:6px; padding-top:6px; border-top:1px solid rgba(148,163,184,0.14);">
+                  <div style="font-size:10.5px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">Model Pools on this Account</div>
+                  ${acct.models.map((m) => (m.windows || []).map((w) => renderWindowRow(`${m.name} (${w.label})`, w)).join('')).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `).join('')}
+
+          ${al.disconnected?.length ? `
+            <div class="ash-card" style="opacity:0.72;">
+              <div style="font-size:11.5px; font-weight:700; color:#94a3b8;">🔒 Not Signed In (${al.disconnected.length})</div>
+              ${al.disconnected.map((d) => `<div style="font-size:11px; color:#94a3b8;">• <b>${esc(d.displayName)}</b> — ${esc(d.error || 'Sign in via Hub Settings → Engines')}</div>`).join('')}
+            </div>
+          ` : ''}
+        `;
+
+        document.getElementById('ash-allow-refresh')?.addEventListener('click', () => loadHubState(true));
+        return;
+      }
+
+      // Fallback if /api/hub/allowances hasn't returned yet
       const ap = hubState.autoPilot || {};
       const agyPools = ap.agy?.pools || [];
       const cx5 = ap.codex?.fiveHourWindow?.remainingPct ?? 100;
       const cx7 = ap.codex?.weeklyWindow?.remainingPct ?? 100;
-      const barColor = (pct) => pct <= 15 ? '#ef4444' : pct <= 35 ? '#f59e0b' : '#10b981';
-
       body.innerHTML = `
         <div class="ash-card">
           <div style="font-size:12px; font-weight:700; color:#c4b5fd;">⚡ Auto-Pilot Recommendation: ${esc((ap.recommendedEngine || 'codex').toUpperCase())}</div>
@@ -543,7 +689,7 @@
         </div>
         <div class="ash-card">
           <div style="font-weight:700; font-size:13px;">🌌 Antigravity Pools ${ap.agy?.connected ? '' : '<span class="ash-badge">Cached</span>'}</div>
-          ${agyPools.length === 0 ? '<div style="font-size:12px; color:#94a3b8;">Start Antigravity IDE to refresh live pool quotas.</div>' : agyPools.map((p) => `
+          ${agyPools.length === 0 ? '<div style="font-size:12px; color:#94a3b8;">Loading multi-account allowances...</div>' : agyPools.map((p) => `
             <div style="font-size:12px; display:flex; justify-content:space-between;"><span>${esc(p.family)}</span><span>${p.remainingPct}%</span></div>
             <div class="ash-bar-bg"><div class="ash-bar-fill" style="width:${p.remainingPct}%; background:${barColor(p.remainingPct)};"></div></div>
           `).join('')}
@@ -681,6 +827,12 @@
       e.stopPropagation();
       return;
     }
+    const clickedAllowances = !!e.target?.closest?.('#ash-btn-allowances');
+    if (clickedAllowances) {
+      switchTab('quotas');
+    } else if (e.target?.closest?.('#ash-btn-hub')) {
+      switchTab(activeTab || 'quotas');
+    }
     backdrop.classList.add('open');
     loadHubState(true);
   });
@@ -689,9 +841,7 @@
   document.getElementById('ash-refresh-btn')?.addEventListener('click', () => loadHubState(true));
   backdrop.querySelectorAll('.ash-tab').forEach((tabBtn) => {
     tabBtn.addEventListener('click', () => {
-      activeTab = tabBtn.getAttribute('data-tab');
-      backdrop.querySelectorAll('.ash-tab').forEach((t) => t.classList.toggle('active', t === tabBtn));
-      renderBody();
+      switchTab(tabBtn.getAttribute('data-tab'));
     });
   });
 

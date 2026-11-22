@@ -729,3 +729,243 @@ export async function syncHubCalendars(force = false) {
   saveMuseState({ cachedCalendarEvents: events.slice(0, 120) });
   return events;
 }
+
+// ---------------------------------------------------------------------------
+// 5. Multi-Account Model Allowances & Smart Routing (OpenMausBot + Antigravity)
+// ---------------------------------------------------------------------------
+function formatResetInfo(isoStr) {
+  if (!isoStr) return { resetsAt: null, resetsInHuman: null, resetsAtEastern: null, hoursUntilReset: null };
+  const ms = Date.parse(isoStr);
+  if (!Number.isFinite(ms)) return { resetsAt: isoStr, resetsInHuman: null, resetsAtEastern: null, hoursUntilReset: null };
+  const diffMs = ms - Date.now();
+  const hoursUntilReset = Math.max(0, +(diffMs / 3600000).toFixed(2));
+  let resetsInHuman = 'now';
+  if (diffMs > 0) {
+    const totalMins = Math.round(diffMs / 60000);
+    const days = Math.floor(totalMins / 1440);
+    const hrs = Math.floor((totalMins % 1440) / 60);
+    const mins = totalMins % 60;
+    if (days > 0) resetsInHuman = `${days}d ${hrs}h`;
+    else if (hrs > 0) resetsInHuman = `${hrs}h ${mins}m`;
+    else resetsInHuman = `${Math.max(1, mins)}m`;
+  }
+  let resetsAtEastern = null;
+  try {
+    resetsAtEastern = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }).format(new Date(ms)) + ' ET';
+  } catch {
+    resetsAtEastern = new Date(ms).toLocaleString();
+  }
+  return { resetsAt: new Date(ms).toISOString(), resetsInHuman, resetsAtEastern, hoursUntilReset };
+}
+
+function normWindow(win, fallbackLabel) {
+  if (!win) return null;
+  const rem = typeof win.remainingPercent === 'number'
+    ? +win.remainingPercent.toFixed(1)
+    : typeof win.remainingPct === 'number'
+      ? +win.remainingPct.toFixed(1)
+      : null;
+  const used = typeof win.usedPercent === 'number'
+    ? +win.usedPercent.toFixed(1)
+    : rem !== null ? +(100 - rem).toFixed(1) : null;
+  if (rem === null && !win.available) return null;
+  return {
+    label: win.label || fallbackLabel,
+    remainingPercent: rem,
+    usedPercent: used,
+    ...formatResetInfo(win.resetsAt || win.resetTime || null)
+  };
+}
+
+export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0.1:8799', refresh = false, authHeaders = {} } = {}) {
+  const fetchJson = async (url, timeoutMs = 12000) => {
+    try {
+      const res = await fetch(url, { headers: authHeaders, signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  const [planUsage, instancesData, botsData, autoPilot] = await Promise.all([
+    fetchJson(`${ombBaseUrl}/api/plan-usage${refresh ? '?refresh=1' : ''}`, 15000),
+    fetchJson(`${ombBaseUrl}/api/instances`, 8000),
+    fetchJson(`${ombBaseUrl}/api/bots`, 8000),
+    getAutoPilotRecommendation().catch(() => null)
+  ]);
+
+  const instancesById = new Map();
+  for (const inst of instancesData?.instances || []) {
+    instancesById.set(inst.instanceId, inst);
+  }
+
+  const botsByInstance = new Map();
+  for (const b of botsData?.bots || []) {
+    const iid = b.modelSelection?.instanceId || 'codex';
+    if (!botsByInstance.has(iid)) botsByInstance.set(iid, []);
+    botsByInstance.get(iid).push({
+      id: b.id,
+      name: b.name,
+      model: b.modelSelection?.model || null
+    });
+  }
+
+  const agyIdeEmail = String(autoPilot?.agy?.user?.email || '').toLowerCase();
+  const agyIdePools = Array.isArray(autoPilot?.agy?.pools) ? autoPilot.agy.pools : [];
+
+  const providers = Array.isArray(planUsage?.providers) ? planUsage.providers : [];
+  const accounts = [];
+  const disconnected = [];
+
+  for (const p of providers) {
+    const inst = instancesById.get(p.id);
+    const email = inst?.snapshot?.account?.email || (p.driver === 'codex' ? 'OpenAI / ChatGPT Plus' : null);
+    const displayName = inst?.displayName || p.name || p.id;
+    const authenticated = p.ok === true || inst?.snapshot?.authenticated === true;
+    const assignedBots = botsByInstance.get(p.id) || [];
+
+    const fiveHour = normWindow(p.fiveHour, '5-hour');
+    const weekly = normWindow(p.weekly, 'Weekly');
+
+    const models = [];
+    for (const m of p.models || []) {
+      const wins = (m.windows || []).map((w) => normWindow(w, w.label || 'Window')).filter(Boolean);
+      if (wins.length > 0) {
+        models.push({ name: m.name, windows: wins });
+      }
+    }
+
+    // Attach live Antigravity IDE per-family pools (Gemini 3.8 Flash, Claude Opus/Sonnet 5.5, GPT-OSS) to matching email account
+    if (email && agyIdeEmail && email.toLowerCase() === agyIdeEmail && agyIdePools.length > 0) {
+      for (const pool of agyIdePools) {
+        const already = models.some((m) => m.name.toLowerCase() === String(pool.family || '').toLowerCase());
+        if (!already) {
+          models.push({
+            name: `${pool.family} (IDE Pool)`,
+            windows: [normWindow({ label: '5-hour / Pool', remainingPct: pool.remainingPct, resetTime: pool.resetTime }, 'Pool')].filter(Boolean)
+          });
+        }
+      }
+    }
+
+    // Compute smart routing priority score for this account
+    const effWeekly = weekly?.remainingPercent ?? 100;
+    const effFive = fiveHour?.remainingPercent ?? 100;
+    const effectiveMin = Math.min(effWeekly, effFive);
+
+    // Bonus for expiring soon when plenty is left ("burn before reset" optimization)
+    const weeklyHours = weekly?.hoursUntilReset;
+    const soonResetBonus = (effWeekly >= 45 && typeof weeklyHours === 'number' && weeklyHours > 0 && weeklyHours <= 96)
+      ? Math.round((96 - weeklyHours) / 4)
+      : 0;
+    const routingScore = authenticated ? Math.round(effWeekly * 0.65 + effFive * 0.35 + soonResetBonus) : -1;
+
+    let statusTag = 'ready';
+    let statusLabel = 'Plenty Left';
+    if (!authenticated) {
+      statusTag = 'disconnected';
+      statusLabel = p.error || 'Not Signed In';
+    } else if (effectiveMin <= 15) {
+      statusTag = 'critical';
+      statusLabel = 'Nearly Exhausted';
+    } else if (effWeekly <= 30) {
+      statusTag = 'conserve';
+      statusLabel = 'Low Weekly — Conserve';
+    } else if (soonResetBonus >= 8) {
+      statusTag = 'use-soon';
+      statusLabel = 'Use Before Reset';
+    }
+
+    const entry = {
+      instanceId: p.id,
+      displayName,
+      driver: p.driver,
+      email,
+      plan: p.plan || (p.driver === 'antigravity' ? (email?.toLowerCase() === agyIdeEmail ? autoPilot?.agy?.user?.tier : 'Antigravity') : null),
+      authenticated,
+      error: p.error || null,
+      fiveHour,
+      weekly,
+      models,
+      availableModels: (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label })),
+      assignedBots,
+      routingScore,
+      statusTag,
+      statusLabel
+    };
+
+    if (authenticated) accounts.push(entry);
+    else disconnected.push(entry);
+  }
+
+  // Sort active accounts by routingScore descending (best choice first)
+  accounts.sort((a, b) => b.routingScore - a.routingScore);
+
+  const bestOverall = accounts[0] || null;
+  const bestGemini = accounts.find((a) => a.driver === 'antigravity') || null;
+  const bestCodex = accounts.find((a) => a.driver === 'codex') || null;
+
+  // Find best account for Claude/GPT shared pool on Antigravity
+  let bestClaudePool = null;
+  for (const a of accounts.filter((x) => x.driver === 'antigravity')) {
+    const claudeModel = a.models.find((m) => /claude/i.test(m.name));
+    const rem = claudeModel?.windows?.[0]?.remainingPercent ?? null;
+    if (rem !== null && (!bestClaudePool || rem > bestClaudePool.remainingPercent)) {
+      bestClaudePool = {
+        instanceId: a.instanceId,
+        displayName: a.displayName,
+        email: a.email,
+        modelPool: claudeModel.name,
+        remainingPercent: rem,
+        resetsAtEastern: claudeModel.windows[0].resetsAtEastern,
+        resetsInHuman: claudeModel.windows[0].resetsInHuman
+      };
+    }
+  }
+
+  const conserveWarnings = accounts
+    .filter((a) => a.statusTag === 'conserve' || a.statusTag === 'critical')
+    .map((a) => {
+      const parts = [];
+      if (a.weekly && a.weekly.remainingPercent <= 30) {
+        parts.push(`Weekly ${a.weekly.remainingPercent}% left (resets ${a.weekly.resetsInHuman ? `in ${a.weekly.resetsInHuman} · ` : ''}${a.weekly.resetsAtEastern || 'unknown'})`);
+      }
+      if (a.fiveHour && a.fiveHour.remainingPercent <= 20) {
+        parts.push(`5-hour ${a.fiveHour.remainingPercent}% left (resets ${a.fiveHour.resetsInHuman ? `in ${a.fiveHour.resetsInHuman} · ` : ''}${a.fiveHour.resetsAtEastern || 'unknown'})`);
+      }
+      return `${a.displayName}${a.email ? ` (${a.email})` : ''}: ${parts.join(', ')}`;
+    });
+
+  const summaryParts = [];
+  if (bestOverall) {
+    summaryParts.push(
+      `Best right now: ${bestOverall.displayName}${bestOverall.email ? ` (${bestOverall.email})` : ''} (${bestOverall.weekly?.remainingPercent ?? bestOverall.fiveHour?.remainingPercent ?? '?'}% left${bestOverall.weekly?.resetsInHuman ? `, resets in ${bestOverall.weekly.resetsInHuman}` : ''}).`
+    );
+  }
+  if (conserveWarnings.length > 0) {
+    summaryParts.push(`Conserve: ${conserveWarnings.join(' | ')}.`);
+  }
+
+  return {
+    ok: true,
+    fetchedAt: planUsage?.fetchedAt || new Date().toISOString(),
+    accounts,
+    disconnected,
+    routingAdvice: {
+      summary: summaryParts.join(' '),
+      bestOverall: bestOverall ? { instanceId: bestOverall.instanceId, displayName: bestOverall.displayName, email: bestOverall.email, statusLabel: bestOverall.statusLabel } : null,
+      bestGemini: bestGemini ? { instanceId: bestGemini.instanceId, displayName: bestGemini.displayName, email: bestGemini.email, weeklyRemaining: bestGemini.weekly?.remainingPercent ?? null, resetsInHuman: bestGemini.weekly?.resetsInHuman ?? null } : null,
+      bestClaudePool,
+      bestCodex: bestCodex ? { instanceId: bestCodex.instanceId, displayName: bestCodex.displayName, fiveHourRemaining: bestCodex.fiveHour?.remainingPercent ?? null, weeklyRemaining: bestCodex.weekly?.remainingPercent ?? null, weeklyResetsIn: bestCodex.weekly?.resetsInHuman ?? null } : null,
+      conserveWarnings
+    }
+  };
+}

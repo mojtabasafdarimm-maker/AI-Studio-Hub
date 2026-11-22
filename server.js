@@ -11,6 +11,7 @@ import {
   buildStalledRadar,
   getAutoPilotRecommendation,
   getBestCodexBin,
+  getUnifiedAccountAllowances,
   listNativeConversations,
   loadMuseState,
   readNativeTranscript,
@@ -716,11 +717,79 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, ombReady, tunnelStatus, tunnelUrl, gatewayUrl: GATEWAY_URL });
     }
 
-    // 3. Hub State (Radar, Recent Native Chats, Quotas & Auto-Pilot, Tunnel)
+    // 2b. Multi-Account Model Allowances (Live per-account, per-model % left & reset times + smart routing)
+    if (pathname === '/api/hub/allowances' && req.method === 'GET') {
+      const refresh = urlObj.searchParams.get('refresh') === '1';
+      const authHeaders = masterToken ? { Authorization: `Bearer ${masterToken}` } : {};
+      const data = await getUnifiedAccountAllowances({
+        ombBaseUrl: `http://127.0.0.1:${OMB_PORT}`,
+        refresh,
+        authHeaders
+      });
+      return sendJson(res, 200, data);
+    }
+
+    // 2c. Switch any bot's active account / model (for Chief of Staff smart allowance routing)
+    if (pathname === '/api/hub/switch-bot-account' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const body = raw ? JSON.parse(raw) : {};
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        ...(masterToken ? { Authorization: `Bearer ${masterToken}` } : {})
+      };
+      const [botsRes, instRes] = await Promise.all([
+        fetch(`http://127.0.0.1:${OMB_PORT}/api/bots`, { headers: authHeaders }),
+        fetch(`http://127.0.0.1:${OMB_PORT}/api/instances`, { headers: authHeaders })
+      ]);
+      const bots = (await botsRes.json().catch(() => ({})))?.bots || [];
+      const instances = (await instRes.json().catch(() => ({})))?.instances || [];
+
+      const botQuery = String(body.botId || body.botName || '').trim().toLowerCase();
+      const targetBot = bots.find((b) => b.id === body.botId || String(b.name || '').toLowerCase() === botQuery);
+      if (!targetBot) return sendJson(res, 404, { ok: false, error: `Bot not found: ${body.botId || body.botName}` });
+
+      const instQuery = String(body.instanceId || body.account || '').trim().toLowerCase();
+      const targetInst = instances.find((i) =>
+        i.instanceId === body.instanceId ||
+        String(i.displayName || '').toLowerCase() === instQuery ||
+        String(i.snapshot?.account?.email || '').toLowerCase() === instQuery
+      );
+      if (!targetInst) return sendJson(res, 404, { ok: false, error: `Account/instance not found: ${body.instanceId || body.account}` });
+
+      const chosenModel = String(body.model || targetInst.models?.default || targetInst.models?.options?.[0]?.id || '').trim();
+      const modelSelection = { instanceId: targetInst.instanceId, model: chosenModel };
+      if (body.effort) modelSelection.effort = String(body.effort);
+      if (body.variant) modelSelection.variant = String(body.variant);
+
+      const threadId = body.threadId || targetBot.threadId;
+      const patchRes = await fetch(`http://127.0.0.1:${OMB_PORT}/api/bots/${encodeURIComponent(targetBot.id)}`, {
+        method: 'PATCH',
+        headers: authHeaders,
+        body: JSON.stringify({ threadId, modelSelection })
+      });
+      const patchJson = await patchRes.json().catch(() => ({}));
+      if (!patchRes.ok) {
+        return sendJson(res, patchRes.status, { ok: false, error: patchJson.error || 'Failed to switch bot account' });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        bot: { id: targetBot.id, name: targetBot.name, threadId },
+        account: {
+          instanceId: targetInst.instanceId,
+          displayName: targetInst.displayName,
+          email: targetInst.snapshot?.account?.email || null
+        },
+        modelSelection
+      });
+    }
+
+    // 3. Hub State (Radar, Recent Native Chats, Quotas & Auto-Pilot, Multi-Account Allowances, Tunnel)
     if (pathname === '/api/hub/state' && req.method === 'GET') {
       const force = urlObj.searchParams.get('force') === '1';
-      const [autoPilot, radar, recentNative] = await Promise.all([
+      const authHeaders = masterToken ? { Authorization: `Bearer ${masterToken}` } : {};
+      const [autoPilot, allowances, radar, recentNative] = await Promise.all([
         getAutoPilotRecommendation(),
+        getUnifiedAccountAllowances({ ombBaseUrl: `http://127.0.0.1:${OMB_PORT}`, refresh: force, authHeaders }).catch(() => null),
         Promise.resolve(buildStalledRadar()),
         Promise.resolve(listNativeConversations(20).map(({ rolloutPath: _rp, ...rest }) => rest))
       ]);
@@ -728,6 +797,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         autoPilot,
+        allowances,
         radar,
         recentNative,
         tunnel: { status: tunnelStatus, url: tunnelUrl, gatewayUrl: GATEWAY_URL }

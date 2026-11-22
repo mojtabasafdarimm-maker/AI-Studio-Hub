@@ -12,6 +12,7 @@ import {
   findAgyBin,
   getAutoPilotRecommendation,
   getBestCodexBin,
+  getUnifiedAccountAllowances,
   loadMuseState,
   readNativeTranscript,
   saveMuseState,
@@ -63,8 +64,40 @@ const TOOLS = [
   },
   {
     name: 'hub_quota_status',
-    description: 'Get real-time Antigravity and Codex 5-hour / 7-day remaining quotas plus the Auto-Pilot engine recommendation.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+    description: 'Get live remaining allowances, per-model quotas, and exact reset times across ALL connected accounts (OpenAI Codex + all Google Gemini / Antigravity accounts) plus smart routing recommendations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Force a live refresh from provider quota endpoints (default true)' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'hub_account_allowances',
+    description: 'Inspect live remaining allowance percentages, 5-hour and weekly reset timestamps, per-model pools, assigned bots, and smart account-selection advice across ALL connected Codex and Google/Antigravity accounts. Use this to decide which account/model to use based on remaining allowance and reset timing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Force live refresh (default true)' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'hub_switch_bot_account',
+    description: 'Switch any OpenMausBot agent to a different connected AI account/instance and model (e.g., moving a bot from a low-quota Codex account to a fresh Antigravity/Gemini account based on hub_account_allowances).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        botName: { type: 'string', description: 'Bot name (e.g. "Grader", "Parlez", "GlenNeely", "khadang") or botId' },
+        account: { type: 'string', description: 'Target account email (e.g. "mojtaba.safdari.mm@gmail.com", "mojtaba.safdari.ms@gmail.com", "mina.khoshbazmf@gmail.com"), displayName (e.g. "Mojtaba.mm", "mojtaba", "Codex"), or instanceId' },
+        model: { type: 'string', description: 'Optional model ID (e.g. "gemini-3.8-flash", "gemini-4-neon", "gpt-6.2-sol", "gpt-6-luna"). Defaults to the account default model.' },
+        effort: { type: 'string', description: 'Optional Codex effort level (low, medium, high)' },
+        variant: { type: 'string', description: 'Optional Antigravity model variant (low, medium, high)' }
+      },
+      required: ['botName', 'account']
+    }
   },
   {
     name: 'hub_calendar_and_reminders',
@@ -192,9 +225,39 @@ async function handleToolCall(name, args = {}) {
       }
     }
   }
-  if (name === 'hub_quota_status') {
-    const quota = await getAutoPilotRecommendation();
-    return { content: [{ type: 'text', text: JSON.stringify(quota, null, 2) }] };
+  if (name === 'hub_quota_status' || name === 'hub_account_allowances') {
+    const refresh = args.refresh !== false;
+    try {
+      const res = await fetch(`http://127.0.0.1:4747/api/hub/allowances?refresh=${refresh ? '1' : '0'}`, {
+        signal: AbortSignal.timeout(18000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+    } catch {}
+    const fallback = await getUnifiedAccountAllowances({ refresh });
+    return { content: [{ type: 'text', text: JSON.stringify(fallback, null, 2) }] };
+  }
+  if (name === 'hub_switch_bot_account') {
+    try {
+      const res = await fetch('http://127.0.0.1:4747/api/hub/switch-bot-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          botName: args.botName,
+          account: args.account,
+          model: args.model,
+          effort: args.effort,
+          variant: args.variant
+        }),
+        signal: AbortSignal.timeout(12000)
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: !res.ok };
+    } catch (e) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: e.message }) }], isError: true };
+    }
   }
   if (name === 'hub_calendar_and_reminders') {
     if (args.action === 'add_reminder' && args.title) {
