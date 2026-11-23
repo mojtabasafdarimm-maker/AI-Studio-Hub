@@ -344,7 +344,7 @@ if ($act -eq 'read') {
         continue
       }
     }
-    $preview = ([string]$it.Body -replace '\s+', ' ').Trim()
+    $preview = ([string]$it.Body -replace '\\s+', ' ').Trim()
     if ($preview.Length -gt 220) { $preview = $preview.Substring(0, 220) + '...' }
     $res += [ordered]@{
       entryId = $it.EntryID
@@ -357,7 +357,7 @@ if ($act -eq 'read') {
     }
     if ($res.Count -ge $limit) { break }
   }
-  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; count = $res.Count; emails = @($res) } | ConvertTo-Json -Depth 4
+  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; offline = [bool]$ns.Offline; connectionMode = [int]$ns.ExchangeConnectionMode; count = $res.Count; emails = @($res) } | ConvertTo-Json -Depth 4
 }
 ` : `
 $cal = $ns.GetDefaultFolder(9)
