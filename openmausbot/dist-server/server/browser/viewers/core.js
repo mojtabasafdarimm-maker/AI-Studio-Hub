@@ -142,22 +142,20 @@ export class Viewer {
         await session.send("Page.stopScreencast").catch(() => { });
         await this.#hub.host.browser()?.detachSession(session);
     }
-    #start(scale) {
-        this.#scale = scale;
-        const session = this.#session;
-        this.#params = this.#params.then(async () => {
-            if (!session || session !== this.#session || session.detached || this.#paused > 0 || this.#hidden || this.closed)
-                return;
-            await session.send("Page.stopScreencast").catch(() => { });
-            await session.send("Page.startScreencast", {
-                format: "jpeg",
-                quality: scale < 1 ? Math.min(this.options.quality, MOTION_QUALITY) : this.options.quality,
-                maxWidth: Math.max(1, Math.round(this.options.maxWidth * scale)),
-                maxHeight: Math.max(1, Math.round(this.options.maxHeight * scale)),
-            }).catch(() => { });
-        });
-        return this.#params;
-    }
+#start(scale) {
+ this.#scale=scale;const session=this.#session;
+ const run=async()=>{
+  for(let attempt=0;attempt<2;attempt++){
+   if(!session||session!==this.#session||session.detached||this.#paused>0||this.#hidden||this.closed)return;
+   await session.send('Page.stopScreencast').catch(()=>{});
+   try{await session.send('Page.startScreencast',{format:'jpeg',quality:scale<1?Math.min(this.options.quality,50):this.options.quality,maxWidth:Math.max(1,Math.round(this.options.maxWidth*scale)),maxHeight:Math.max(1,Math.round(this.options.maxHeight*scale))});return;}
+   catch(error){console.warn('[browser-stream] Screencast start failed', {attempt:attempt+1,error:error?.name||'Error'});}
+  }
+  // Callers capture a still after binding or resizing; do not recursively capture from the parameter queue.
+  console.error('[browser-stream] Screencast start recovery failed; retaining still-image fallback');
+ };
+ this.#params=this.#params.then(run,run);return this.#params;
+}
     /** Stops the screencast while a scaled capture renders: it would show up in it. */
     pause() {
         this.#paused++;
@@ -281,7 +279,17 @@ export class Viewer {
                 ack: () => { },
             });
         }
-        catch { }
+        catch(error) {
+            console.warn('[browser-stream] Still capture failed; retrying without clip', {error:error?.name||'Error'});
+            if(this.closed||session!==this.#session||session.detached||this.#hidden)return;
+            try {
+                const captureSession=tab.page.session??session;
+                const {data}=await this.#hub.paused(tab,()=>captureSession.send('Page.captureScreenshot',{format:'jpeg',quality:this.options.quality}));
+                if(this.closed||session!==this.#session||this.#hidden)return;
+                const size=this.#hub.viewport();
+                this.push({type:'frame',data:Buffer.from(data,'base64'),metadata:{deviceWidth:size.width,deviceHeight:size.height,offsetTop:0,pageScaleFactor:1,scrollOffsetX:0,scrollOffsetY:0,timestamp:Date.now()/1000},still:true,ack:()=>{}});
+            }catch(retryError){console.error('[browser-stream] Still capture recovery failed',{error:retryError?.name||'Error'});}
+        }
     }
     /** keyUp and mouseUp for everything this viewer still holds, on the session it pressed them on. */
     async releaseInput() {

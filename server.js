@@ -40,6 +40,7 @@ try {
 } catch {}
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'https://ai-studio-hub.mojtaba-safdari-mm.workers.dev';
+const GATEWAY_HOST = (() => { try { return new URL(GATEWAY_URL).host.toLowerCase(); } catch { return ''; } })();
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET || '8fa19e8ed7ade397c28256f1d21b7a59ced45297a365c9d9';
 
 // ---------------------------------------------------------------------------
@@ -903,6 +904,11 @@ const server = http.createServer(async (req, res) => {
     // 8. Reverse Proxy all other HTTP / SSE requests to OpenMausBot (127.0.0.1:8799)
     const proxyHeaders = { ...req.headers };
     delete proxyHeaders['accept-encoding']; // avoid gzip so we can cleanly inject <script> into HTML
+    const xfHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
+    if (GATEWAY_HOST && xfHost === GATEWAY_HOST) {
+      proxyHeaders['host'] = GATEWAY_HOST;
+      proxyHeaders['x-forwarded-proto'] = 'https';
+    }
 
     // Seamless auto-authentication: Pass master session so user is never prompted for pairing
     if (masterToken) {
@@ -1041,6 +1047,11 @@ server.on('upgrade', (req, socket, head) => {
 
   const upstream = net.connect(OMB_PORT, '127.0.0.1', () => {
     const headers = { ...req.headers };
+    const xfHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
+    if (GATEWAY_HOST && xfHost === GATEWAY_HOST) {
+      headers['host'] = GATEWAY_HOST;
+      headers['x-forwarded-proto'] = 'https';
+    }
     if (masterToken) {
       if (!headers['authorization']) headers['authorization'] = `Bearer ${masterToken}`;
       const existingCookie = headers['cookie'] || '';

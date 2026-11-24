@@ -377,6 +377,32 @@
     .ash-input:focus {
       border-color: #8b5cf6;
     }
+    @media (max-width: 640px) {
+      :root {
+        --chat-bubble-max: 100% !important;
+        --chat-bubble-pct: 94% !important;
+        --chat-card-pct: 96% !important;
+        --chat-prose-max: 100% !important;
+      }
+      .chat-text, [data-chat-bubble], [data-reply-bubble], .reply-bubble {
+        max-width: min(94%, calc(100vw - 24px)) !important;
+      }
+    }
+    @media (max-width: 768px) {
+      .ash-mob-input {
+        font-size: 16px !important;
+      }
+    }
+    @keyframes ash-tap-ripple {
+      0% { transform: translate(-50%, -50%) scale(0.35); opacity: 0.95; }
+      100% { transform: translate(-50%, -50%) scale(1.55); opacity: 0; }
+    }
+    .ash-mb-btn {
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
   `;
   document.head.appendChild(style);
 
