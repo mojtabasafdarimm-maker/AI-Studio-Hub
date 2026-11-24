@@ -1500,29 +1500,37 @@ const server = http.createServer(async (req, res) => {
           proxyRes.on('data', (chunk) => {
             res.write(chunk);
             const text = chunk.toString('utf8');
-            const isPing = text.includes('"kind":"ping"');
+            const isPing = text.includes('"kind":"ping"') || text.includes('event: heartbeat');
             if (!isPing) {
-              console.log('[SSE Event from 8799]', chunk.length, 'bytes -> flushing to edge');
-              schedulePadFlush(40);
+              if (chunk.length < 131072) {
+                schedulePadFlush(40);
+              }
             } else if (Date.now() - lastPadAt > 20000) {
               schedulePadFlush(40);
             }
           });
+          let sseClosed = false;
+          const cleanupSse = (reason) => {
+            if (sseClosed) return;
+            sseClosed = true;
+            if (padTimer) clearTimeout(padTimer);
+            console.log(`[SSE Closed: ${reason}]`, pathname);
+            try { proxyReq.destroy(); } catch {}
+            try { proxyRes.destroy(); } catch {}
+          };
           proxyRes.on('end', () => {
             if (padTimer) clearTimeout(padTimer);
-            console.log('[SSE End]');
-            res.end();
+            console.log('[SSE End]', pathname);
+            if (!res.writableEnded) res.end();
           });
           proxyRes.on('error', (err) => {
             if (padTimer) clearTimeout(padTimer);
             console.warn('[SSE Error]', err.message);
-            res.end();
+            if (!res.writableEnded) res.end();
           });
-          req.on('close', () => {
-            if (padTimer) clearTimeout(padTimer);
-            console.log('[SSE Request Closed by client]');
-            proxyReq.destroy();
-          });
+          res.on('close', () => cleanupSse('res.close'));
+          res.on('error', () => cleanupSse('res.error'));
+          req.on('aborted', () => cleanupSse('req.aborted'));
           return;
         }
 

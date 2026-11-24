@@ -847,8 +847,18 @@ export class BrowserLive {
         const replaced = options.resume ? this.viewers.get(options.resume) : undefined;
         if (replaced && replaced.owner === options.owner && replaced.botId === options.botId)
             this.close(replaced, true, true);
-        if (this.viewers.size >= 8 || [...this.viewers.values()].filter((v) => v.session === options.session).length >= 2) {
-            throw new BrowserLiveError("Too many browser views are open. Close another browser panel first.", 429);
+        // Auto-evict oldest stale viewer on same session (or globally) instead of locking out mobile reloads with HTTP 429
+        const sameSession = [...this.viewers.values()].filter((v) => v.session === options.session);
+        while (sameSession.length >= 2) {
+            const oldest = sameSession.shift();
+            if (oldest)
+                this.close(oldest, true, true);
+        }
+        while (this.viewers.size >= 8) {
+            const oldest = this.viewers.values().next().value;
+            if (!oldest)
+                break;
+            this.close(oldest, true, true);
         }
         const viewer = { ...options, id: randomUUID(), person: options.person ?? options.owner, closed: false, blocked: false, pendingActions: 0, restarting: false, pressedKeys: new Map(), pressedButtons: new Set(), pointer: { x: 0, y: 0 }, unacked: new Map(), waiting: false, abort: new AbortController(), unwatch: () => { } };
         if (!this.current(viewer))
