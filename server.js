@@ -541,7 +541,104 @@ function startLocalSseTap() {
 // ---------------------------------------------------------------------------
 // --- HUB-MOBILE-CDP-HELPERS-START ---
 const CDP_URL = process.env.CHROME_CDP_URL || 'http://127.0.0.1:9222';
-let mobileEmulSession = { active: false, width: 390, height: 780, targetId: null, timer: null };
+const MOBILE_SAFARI_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1';
+let mobileEmulSession = { active: false, width: 390, height: 780, targetId: null, timer: null, conn: null };
+let scrollCdpPool = { targetId: null, wsUrl: null, conn: null, idleTimer: null };
+
+function openPersistentCdp(wsUrl, openTimeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let nextId = 1;
+    let closed = false;
+    const pending = new Map();
+    const openTimer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error('CDP open timed out'));
+    }, openTimeoutMs);
+    const failAll = (err) => {
+      closed = true;
+      for (const p of pending.values()) {
+        clearTimeout(p.t);
+        p.reject(err);
+      }
+      pending.clear();
+    };
+    const send = (method, params = {}, timeoutMs = 5000) => {
+      if (closed || ws.readyState !== WebSocket.OPEN) {
+        return Promise.reject(new Error('CDP socket not open'));
+      }
+      return new Promise((res, rej) => {
+        const id = nextId++;
+        const t = setTimeout(() => {
+          pending.delete(id);
+          rej(new Error(`CDP ${method} timed out`));
+        }, timeoutMs);
+        pending.set(id, { resolve: res, reject: rej, t });
+        try {
+          ws.send(JSON.stringify({ id, method, params }));
+        } catch (err) {
+          clearTimeout(t);
+          pending.delete(id);
+          rej(err);
+        }
+      });
+    };
+    const close = () => {
+      if (closed) return;
+      failAll(new Error('CDP closed'));
+      try { ws.close(); } catch {}
+    };
+    ws.addEventListener('open', () => {
+      clearTimeout(openTimer);
+      resolve({ send, close, isOpen: () => !closed && ws.readyState === WebSocket.OPEN });
+    });
+    ws.addEventListener('message', (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data));
+        if (msg.id && pending.has(msg.id)) {
+          const p = pending.get(msg.id);
+          pending.delete(msg.id);
+          clearTimeout(p.t);
+          if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+          else p.resolve(msg.result);
+        }
+      } catch {}
+    });
+    ws.addEventListener('error', () => {
+      clearTimeout(openTimer);
+      failAll(new Error('CDP WebSocket error'));
+      reject(new Error('CDP WebSocket error'));
+    });
+    ws.addEventListener('close', () => {
+      clearTimeout(openTimer);
+      failAll(new Error('CDP WebSocket closed'));
+    });
+  });
+}
+
+async function getScrollCdp(tab) {
+  if (scrollCdpPool.conn && scrollCdpPool.targetId === tab.id && scrollCdpPool.conn.isOpen()) {
+    if (scrollCdpPool.idleTimer) clearTimeout(scrollCdpPool.idleTimer);
+    scrollCdpPool.idleTimer = setTimeout(() => {
+      try { scrollCdpPool.conn?.close(); } catch {}
+      scrollCdpPool.conn = null;
+      scrollCdpPool.targetId = null;
+    }, 25000);
+    return scrollCdpPool.conn;
+  }
+  try { scrollCdpPool.conn?.close(); } catch {}
+  if (scrollCdpPool.idleTimer) clearTimeout(scrollCdpPool.idleTimer);
+  const conn = await openPersistentCdp(tab.webSocketDebuggerUrl, 4000);
+  scrollCdpPool.conn = conn;
+  scrollCdpPool.targetId = tab.id;
+  scrollCdpPool.wsUrl = tab.webSocketDebuggerUrl;
+  scrollCdpPool.idleTimer = setTimeout(() => {
+    try { scrollCdpPool.conn?.close(); } catch {}
+    scrollCdpPool.conn = null;
+    scrollCdpPool.targetId = null;
+  }, 25000);
+  return conn;
+}
 
 async function findChromeTab(preferredUrl) {
   const res = await fetch(`${CDP_URL}/json/list`, { signal: AbortSignal.timeout(3000) });
@@ -636,9 +733,20 @@ async function clearMobileEmulation(preferredUrl) {
     clearTimeout(mobileEmulSession.timer);
     mobileEmulSession.timer = null;
   }
+  const prevConn = mobileEmulSession.conn;
   const prevTargetId = mobileEmulSession.targetId;
+  mobileEmulSession.conn = null;
   mobileEmulSession.active = false;
   mobileEmulSession.targetId = null;
+  if (prevConn && prevConn.isOpen()) {
+    await prevConn.send('Emulation.clearDeviceMetricsOverride', {}, 2500).catch(() => {});
+    await prevConn.send('Emulation.setTouchEmulationEnabled', { enabled: false }, 2000).catch(() => {});
+    await prevConn.send('Emulation.setUserAgentOverride', { userAgent: '' }, 2000).catch(() => {});
+    await prevConn.send('Runtime.evaluate', { expression: "window.dispatchEvent(new Event('resize'))" }, 1500).catch(() => {});
+    try { prevConn.close(); } catch {}
+    return { ok: true, mobile: false, width: null, height: null };
+  }
+  try { prevConn?.close(); } catch {}
   try {
     const res = await fetch(`${CDP_URL}/json/list`, { signal: AbortSignal.timeout(2500) });
     const targets = await res.json();
@@ -843,7 +951,7 @@ function sendJson(res, status, data) {
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://127.0.0.1:${HUB_PORT}`);
   const pathname = urlObj.pathname;
-  if (pathname.startsWith('/api/') && pathname !== '/api/hub/events-poll') {
+  if (pathname.startsWith('/api/') && pathname !== '/api/hub/events-poll' && pathname !== '/api/hub/browser-scroll') {
     console.log(`[REQ] ${req.method} ${pathname}`);
   }
 
@@ -1063,19 +1171,24 @@ const server = http.createServer(async (req, res) => {
       const height = Math.max(520, Math.min(960, Number(body.height) || 780));
       try {
         const tab = await findChromeTab(preferredUrl);
-        if (mobileEmulSession.targetId && mobileEmulSession.targetId !== tab.id) {
+        if (mobileEmulSession.conn && (mobileEmulSession.targetId !== tab.id || !mobileEmulSession.conn.isOpen())) {
           await clearMobileEmulation().catch(() => {});
         }
-        await cdpCall(tab.webSocketDebuggerUrl, async (send) => {
-          await send('Emulation.setDeviceMetricsOverride', {
-            width,
-            height,
-            deviceScaleFactor: 2,
-            mobile: true,
-            screenWidth: width,
-            screenHeight: height
-          });
-        });
+        const conn = mobileEmulSession.conn && mobileEmulSession.conn.isOpen()
+          ? mobileEmulSession.conn
+          : await openPersistentCdp(tab.webSocketDebuggerUrl, 5000);
+        await conn.send('Emulation.setDeviceMetricsOverride', {
+          width,
+          height,
+          deviceScaleFactor: 2,
+          mobile: true,
+          screenWidth: width,
+          screenHeight: height
+        }, 4000);
+        await conn.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, 2500).catch(() => {});
+        await conn.send('Emulation.setUserAgentOverride', { userAgent: MOBILE_SAFARI_UA, platform: 'iPhone' }, 2500).catch(() => {});
+        await conn.send('Runtime.evaluate', { expression: "window.dispatchEvent(new Event('resize'))" }, 1500).catch(() => {});
+        mobileEmulSession.conn = conn;
         mobileEmulSession.active = true;
         mobileEmulSession.width = width;
         mobileEmulSession.height = height;
@@ -1091,6 +1204,98 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return sendJson(res, 502, { ok: false, error: e.message || 'Could not enable mobile view' });
+      }
+    }
+
+    // 1c-scroll. Fast pooled CDP scroll (works reliably with 3-finger swipe, 1-finger drag, and ▲/▼ buttons even on nested containers)
+    if (pathname === '/api/hub/browser-scroll' && req.method === 'POST') {
+      let body = {};
+      try {
+        const raw = (await readBody(req)).toString('utf8');
+        if (raw) body = JSON.parse(raw);
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      const preferredUrl = body.url ? String(body.url) : '';
+      const action = body.action ? String(body.action) : '';
+      const dx = Math.max(-3000, Math.min(3000, Math.round(Number(body.deltaX) || 0)));
+      const dy = Math.max(-3000, Math.min(3000, Math.round(Number(body.deltaY) || 0)));
+      const px = Number.isFinite(Number(body.x)) ? Math.max(0, Math.round(Number(body.x))) : null;
+      const py = Number.isFinite(Number(body.y)) ? Math.max(0, Math.round(Number(body.y))) : null;
+      try {
+        const tab = await findChromeTab(preferredUrl);
+        const conn = await getScrollCdp(tab);
+        if (action === 'top' || action === 'bottom') {
+          await conn.send('Runtime.evaluate', {
+            expression: `(() => {
+              const isBottom = ${JSON.stringify(action === 'bottom')};
+              const root = document.scrollingElement || document.documentElement || document.body;
+              if (root) root.scrollTo({ top: isBottom ? root.scrollHeight : 0, behavior: 'smooth' });
+              window.scrollTo({ top: isBottom ? document.body.scrollHeight : 0, behavior: 'smooth' });
+              const all = [...document.querySelectorAll('main, [role="main"], .overflow-y-auto, .overflow-auto, div')];
+              for (const el of all) {
+                if (el.scrollHeight > el.clientHeight + 60 && el.clientHeight > 220) {
+                  const st = getComputedStyle(el);
+                  if (/auto|scroll/.test(st.overflowY)) el.scrollTop = isBottom ? el.scrollHeight : 0;
+                }
+              }
+              return true;
+            })()`,
+            returnByValue: true
+          }, 3000);
+          return sendJson(res, 200, { ok: true, action });
+        }
+        const beforeEv = await conn.send('Runtime.evaluate', {
+          expression: `(() => {
+            const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+            const cx = ${px === null ? 'Math.round(vw / 2)' : 'Math.min(vw - 2, Math.max(2, ' + px + '))'};
+            const cy = ${py === null ? 'Math.round(vh / 2)' : 'Math.min(vh - 2, Math.max(2, ' + py + '))'};
+            const findScrollable = (start) => {
+              let el = start;
+              while (el && el !== document.body && el !== document.documentElement) {
+                const st = getComputedStyle(el);
+                const canY = /auto|scroll|overlay/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 4;
+                const canX = /auto|scroll|overlay/.test(st.overflowX) && el.scrollWidth > el.clientWidth + 4;
+                if (canY || canX) return el;
+                el = el.parentElement;
+              }
+              return document.scrollingElement || document.documentElement || document.body;
+            };
+            const hit = document.elementFromPoint(cx, cy);
+            const sc = findScrollable(hit);
+            window.__ashLastScrollEl = sc;
+            return { cx, cy, wx: window.scrollX, wy: window.scrollY, sx: sc ? sc.scrollLeft : 0, sy: sc ? sc.scrollTop : 0 };
+          })()`,
+          returnByValue: true
+        }, 2500);
+        const b = beforeEv?.result?.value || { cx: 400, cy: 360, wx: 0, wy: 0, sx: 0, sy: 0 };
+        await conn.send('Input.dispatchMouseEvent', {
+          type: 'mouseWheel',
+          x: b.cx,
+          y: b.cy,
+          deltaX: dx,
+          deltaY: dy,
+          modifiers: 0
+        }, 2500);
+        const afterEv = await conn.send('Runtime.evaluate', {
+          expression: `(() => {
+            const sc = window.__ashLastScrollEl || document.scrollingElement || document.documentElement || document.body;
+            const moved = Math.abs(window.scrollY - ${b.wy}) > 1 || Math.abs(window.scrollX - ${b.wx}) > 1 || (sc && (Math.abs(sc.scrollTop - ${b.sy}) > 1 || Math.abs(sc.scrollLeft - ${b.sx}) > 1));
+            if (!moved) {
+              if (sc && typeof sc.scrollBy === 'function') sc.scrollBy(${dx}, ${dy});
+              else if (sc) { sc.scrollLeft += ${dx}; sc.scrollTop += ${dy}; }
+              window.scrollBy(${dx}, ${dy});
+              return { fallback: true, wy: window.scrollY, sy: sc ? sc.scrollTop : 0 };
+            }
+            return { fallback: false, wy: window.scrollY, sy: sc ? sc.scrollTop : 0 };
+          })()`,
+          returnByValue: true
+        }, 2500);
+        return sendJson(res, 200, { ok: true, ...(afterEv?.result?.value || {}) });
+      } catch (e) {
+        try { scrollCdpPool.conn?.close(); } catch {}
+        scrollCdpPool.conn = null;
+        return sendJson(res, 502, { ok: false, error: e.message || 'Scroll failed' });
       }
     }
 
