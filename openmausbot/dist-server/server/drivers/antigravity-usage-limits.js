@@ -188,8 +188,10 @@ export function clearAntigravityUsageAccess() {
 }
 /** `work`, or a rejection once `signal` aborts: a request that ignores its signal does not hold the others' answers. */
 function untilAborted(work, signal) {
-    if (signal.aborted)
+    if (signal.aborted) {
+        work.catch(() => { });
         return Promise.reject(new Error("deadline"));
+    }
     return new Promise((done, fail) => {
         const stop = () => fail(new Error("deadline"));
         signal.addEventListener("abort", stop, { once: true });
@@ -264,7 +266,7 @@ export async function readAntigravityUsageWindows(tokenPath, deps, signal = Abor
         return [...windows.values()];
     };
     const summary = await fetchWindows("retrieveUserQuotaSummary", antigravitySummaryWindows);
-    return summary.length ? summary : fetchWindows("fetchAvailableModels", (response) => antigravityModelWindows(response));
+    return summary.length ? summary : signal.aborted ? [] : fetchWindows("fetchAvailableModels", (response) => antigravityModelWindows(response));
 }
 /** An Antigravity instance's limits for the usage report, or null for no row: the switch is off, nobody is signed in,
  * Google refused or could not be reached, or it reported nothing usable. It never throws and reports no error. */

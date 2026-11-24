@@ -348,8 +348,10 @@ function untilAborted(promise, signal, onAbort) {
             onAbort();
             reject(signal.reason);
         };
-        if (signal.aborted)
+        if (signal.aborted) {
+            promise.catch(() => { });
             return abort();
+        }
         signal.addEventListener("abort", abort, { once: true });
         promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });

@@ -76,9 +76,11 @@ export function installCrashGuard(deps) {
             const at = now();
             while (recent.length && at - recent[0] > STORM_WINDOW_MS)
                 recent.shift();
-            recent.push(at);
             const turn = currentTurn();
-            let verdict = closing ? "exit" : crashVerdict(kind, error, turn, recent.length);
+            const isTransientTimeout = kind === "rejection" && !turn && (error?.name === "TimeoutError" || error?.name === "AbortError");
+            if (!isTransientTimeout)
+                recent.push(at);
+            let verdict = closing ? "exit" : isTransientTimeout ? "keep" : crashVerdict(kind, error, turn, recent.length);
             log(crashLine(kind, error, turn, verdict, redact));
             if (verdict === "fail-turn" && turn) {
                 let stopped = false;
