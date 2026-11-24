@@ -539,6 +539,292 @@ function startLocalSseTap() {
 // ---------------------------------------------------------------------------
 // 4. Hub Bridge HTTP + WebSocket Reverse Proxy on Port 4747
 // ---------------------------------------------------------------------------
+// --- HUB-MOBILE-CDP-HELPERS-START ---
+const CDP_URL = process.env.CHROME_CDP_URL || 'http://127.0.0.1:9222';
+let mobileEmulSession = { active: false, width: 390, height: 780, targetId: null, timer: null };
+
+async function findChromeTab(preferredUrl) {
+  const res = await fetch(`${CDP_URL}/json/list`, { signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error(`Chrome CDP HTTP ${res.status}`);
+  const targets = await res.json();
+  const pages = (Array.isArray(targets) ? targets : []).filter((t) => t && t.type === 'page' && t.webSocketDebuggerUrl);
+  if (!pages.length) throw new Error('No browser tab available on CDP');
+  if (preferredUrl) {
+    const clean = String(preferredUrl).trim();
+    let best = pages.find((t) => t.url === clean);
+    if (!best) {
+      try {
+        const u = new URL(clean);
+        best =
+          pages.find((t) => {
+            try {
+              const tu = new URL(t.url);
+              return tu.origin === u.origin && tu.pathname === u.pathname;
+            } catch {
+              return false;
+            }
+          }) || pages.find((t) => t.url && t.url.startsWith(u.origin));
+      } catch {}
+    }
+    if (best) return best;
+  }
+  return (
+    pages.find(
+      (t) =>
+        t.url &&
+        !t.url.startsWith('chrome://') &&
+        !t.url.startsWith('chrome-extension://') &&
+        !t.url.startsWith('about:') &&
+        !t.url.startsWith('edge://')
+    ) || pages[0]
+  );
+}
+
+function cdpCall(wsUrl, fn, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let nextId = 1;
+    let settled = false;
+    const pending = new Map();
+    const timer = setTimeout(() => done(new Error('CDP call timed out')), timeoutMs);
+    function done(err, val) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const p of pending.values()) p.reject(err || new Error('CDP closed'));
+      pending.clear();
+      try {
+        ws.close();
+      } catch {}
+      err ? reject(err) : resolve(val);
+    }
+    function send(method, params = {}) {
+      return new Promise((res, rej) => {
+        const id = nextId++;
+        pending.set(id, { resolve: res, reject: rej });
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+    }
+    ws.addEventListener('open', async () => {
+      try {
+        const result = await fn(send);
+        done(null, result);
+      } catch (e) {
+        done(e);
+      }
+    });
+    ws.addEventListener('message', (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data));
+        if (msg.id && pending.has(msg.id)) {
+          const p = pending.get(msg.id);
+          pending.delete(msg.id);
+          if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+          else p.resolve(msg.result);
+        }
+      } catch {}
+    });
+    ws.addEventListener('error', () => done(new Error('CDP WebSocket error')));
+    ws.addEventListener('close', () => {
+      if (!settled) done(new Error('CDP WebSocket closed unexpectedly'));
+    });
+  });
+}
+
+async function clearMobileEmulation(preferredUrl) {
+  if (mobileEmulSession.timer) {
+    clearTimeout(mobileEmulSession.timer);
+    mobileEmulSession.timer = null;
+  }
+  const prevTargetId = mobileEmulSession.targetId;
+  mobileEmulSession.active = false;
+  mobileEmulSession.targetId = null;
+  try {
+    const res = await fetch(`${CDP_URL}/json/list`, { signal: AbortSignal.timeout(2500) });
+    const targets = await res.json();
+    const pages = (Array.isArray(targets) ? targets : []).filter((t) => t && t.type === 'page' && t.webSocketDebuggerUrl);
+    const seen = new Set();
+    const toClear = [];
+    if (prevTargetId) {
+      const p = pages.find((t) => t.id === prevTargetId);
+      if (p && !seen.has(p.id)) {
+        seen.add(p.id);
+        toClear.push(p);
+      }
+    }
+    if (preferredUrl) {
+      try {
+        const p = await findChromeTab(preferredUrl);
+        if (p && !seen.has(p.id)) {
+          seen.add(p.id);
+          toClear.push(p);
+        }
+      } catch {}
+    }
+    if (!toClear.length) {
+      for (const p of pages) {
+        if (p.url && !p.url.startsWith('chrome://') && !p.url.startsWith('chrome-extension://')) {
+          toClear.push(p);
+          if (toClear.length >= 2) break;
+        }
+      }
+    }
+    for (const p of toClear) {
+      await cdpCall(
+        p.webSocketDebuggerUrl,
+        async (send) => {
+          await send('Emulation.clearDeviceMetricsOverride');
+        },
+        3000
+      ).catch(() => {});
+    }
+  } catch {}
+  return { ok: true, mobile: false, width: null, height: null };
+}
+
+function resetMobileEmulTimer() {
+  if (mobileEmulSession.timer) clearTimeout(mobileEmulSession.timer);
+  mobileEmulSession.timer = setTimeout(() => {
+    clearMobileEmulation().catch(() => {});
+  }, 15 * 60 * 1000);
+}
+
+function __ashScanFormInPage() {
+  const isVis = (el) => {
+    if (!el || !el.isConnected) return false;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') === 0) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 6 || r.height < 6) return false;
+    if (r.right < -50 || r.left > window.innerWidth + 1200) return false;
+    if (el.closest('.g-recaptcha, #recaptcha, [data-sitekey]')) return false;
+    return true;
+  };
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const findLabel = (el) => {
+    if (el.id) {
+      try {
+        const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (lbl) { const t = norm(lbl.innerText); if (t) return t; }
+      } catch {}
+    }
+    const wrapLbl = el.closest('label');
+    if (wrapLbl) {
+      const clone = wrapLbl.cloneNode(true);
+      clone.querySelectorAll('input,textarea,select').forEach((n) => n.remove());
+      const t = norm(clone.innerText);
+      if (t) return t;
+    }
+    const aria = norm(el.getAttribute('aria-label'));
+    if (aria) return aria;
+    const labelledBy = norm(el.getAttribute('aria-labelledby'));
+    if (labelledBy) {
+      const t = labelledBy.split(' ').map((id) => norm(document.getElementById(id)?.innerText)).filter(Boolean).join(' ');
+      if (t) return t;
+    }
+    const box = el.closest('div, fieldset, li, td, section, form') || el.parentElement;
+    if (box) {
+      const l2 = box.querySelector('label, legend, .label, [class*="label"]');
+      if (l2 && !l2.contains(el)) {
+        const t = norm(l2.innerText);
+        if (t && t.length < 80) return t;
+      }
+    }
+    return norm(el.placeholder || el.name || el.id || el.type || 'Field');
+  };
+  const inferAuto = (el, label) => {
+    const ac = norm(el.getAttribute('autocomplete'));
+    if (ac && ac !== 'off' && ac !== 'on') return ac;
+    const t = (el.type || '').toLowerCase();
+    const hint = ((el.name || '') + ' ' + (el.id || '') + ' ' + label + ' ' + (el.placeholder || '')).toLowerCase();
+    if (t === 'password' || /password|passcode/.test(hint)) return 'current-password';
+    if (t === 'email' || /e-?mail/.test(hint)) return 'email';
+    if (/user(name)?|login|account/.test(hint)) return 'username';
+    if (t === 'tel' || /phone|mobile/.test(hint)) return 'tel';
+    if (/otp|2fa|verification|one-time/.test(hint)) return 'one-time-code';
+    return '';
+  };
+  const rawInputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([disabled]), textarea:not([disabled]), select:not([disabled])'));
+  const inputs = [];
+  let fi = 0;
+  for (const el of rawInputs) {
+    const nameId = ((el.name || '') + ' ' + (el.id || '')).toLowerCase();
+    if (/recaptcha|hcaptcha|turnstile|honeypot/.test(nameId)) continue;
+    if (!isVis(el)) continue;
+    const fid = 'f' + (fi++);
+    el.setAttribute('data-ash-fid', fid);
+    const t = el.tagName === 'TEXTAREA' ? 'textarea' : el.tagName === 'SELECT' ? 'select' : (el.type || 'text').toLowerCase();
+    const label = findLabel(el).slice(0, 80);
+    const item = {
+      fid,
+      tag: el.tagName.toLowerCase(),
+      type: t,
+      name: el.name || '',
+      id: el.id || '',
+      label,
+      placeholder: (el.placeholder || '').slice(0, 80),
+      autocomplete: inferAuto(el, label),
+      value: t === 'password' ? '' : (t === 'checkbox' || t === 'radio' ? '' : String(el.value || '').slice(0, 500)),
+      checked: t === 'checkbox' || t === 'radio' ? !!el.checked : undefined
+    };
+    if (t === 'select') {
+      item.options = Array.from(el.options).slice(0, 60).map((o) => ({ value: o.value, label: norm(o.text).slice(0, 60) }));
+    }
+    inputs.push(item);
+    if (inputs.length >= 20) break;
+  }
+  const rawBtns = Array.from(document.querySelectorAll('button:not([disabled]), input[type="submit"]:not([disabled]), input[type="button"]:not([disabled]), [role="button"]:not([aria-disabled="true"]), a'));
+  const buttons = [];
+  let bi = 0;
+  const skipBtnRe = /^(close|dismiss|menu|delete|clear|remove|reset|cancel|toggle password|show password|hide password|eye|privacy policy|sitemap|term of use|terms of use)$/i;
+  for (const el of rawBtns) {
+    if (!isVis(el)) continue;
+    if (el.closest('.osano-cm-window, #onetrust-consent-sdk, .onetrust-pc-dark-filter, #CybotCookiebotDialog, .cc-window')) continue;
+    const rawTxt = norm(el.innerText || el.value || el.getAttribute('aria-label') || el.title || '');
+    const cls = String(el.className || '');
+    if (/osano-cm-/.test(cls)) continue;
+    const imgAlt = norm(el.querySelector('img')?.alt || '');
+    const imgSrc = String(el.querySelector('img')?.src || '');
+    const href = String(el.getAttribute('href') || '');
+    const aria = String(el.getAttribute('aria-label') || '');
+    const ownSelfHint = (rawTxt + ' ' + aria + ' ' + (el.title || '') + ' ' + (el.id || '')).toLowerCase();
+    if (/\bcookie/.test(ownSelfHint)) continue;
+    const htmlHint = (cls + ' ' + href + ' ' + imgSrc + ' ' + aria + ' ' + (el.getAttribute('data-provider') || '')).toLowerCase();
+    let label = rawTxt;
+    if (!label || /^icon[-_]?\d*$/i.test(label)) {
+      if (imgAlt && !/^icon[-_]?\d*$/i.test(imgAlt) && !/logo/i.test(imgAlt + ' ' + cls)) label = imgAlt;
+      else if (/google/.test(htmlHint)) label = 'Continue with Google';
+      else if (/linkedin/.test(htmlHint)) label = 'Continue with LinkedIn';
+      else if (/facebook/.test(htmlHint)) label = 'Continue with Facebook';
+      else if (/microsoft|azure|live\.com/.test(htmlHint)) label = 'Continue with Microsoft';
+      else if (/apple/.test(htmlHint)) label = 'Continue with Apple';
+      else if (/github/.test(htmlHint)) label = 'Continue with GitHub';
+      else continue;
+    }
+    if (el.tagName === 'A' && el.getAttribute('role') !== 'button' && !/^(continue with|sign\s*in with|log\s*in with|sso)/i.test(label) && !/google|linkedin|facebook|microsoft|apple|github|sso/.test(htmlHint)) continue;
+    if (skipBtnRe.test(label) || /password/i.test(aria)) continue;
+    if (label.length > 60) continue;
+    const bid = 'b' + (bi++);
+    el.setAttribute('data-ash-bid', bid);
+    const isNativeBtn = el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button')) || el.getAttribute('role') === 'button';
+    const isOAuth = /^(continue with|sign\s*in with|log\s*in with)/i.test(label) || /google|linkedin|facebook|apple|microsoft|github/.test(label.toLowerCase());
+    const isExactAction = /^(sign\s*in|log\s*in|submit|continue|next|verify|save|apply|login|signin)$/i.test(label);
+    const isSubmit = !!(isNativeBtn && !isOAuth && (el.type === 'submit' || isExactAction || (/sign\s*in|log\s*in|submit|continue|next|verify|save|apply/i.test(label) && !/don't have|sign up|forgot|employer|create/i.test(label))));
+    buttons.push({ bid, text: label, isSubmit, _rank: isExactAction ? 200 : isSubmit ? 100 : isOAuth ? 20 : 10 });
+    if (buttons.length >= 12) break;
+  }
+  buttons.sort((a, b) => b._rank - a._rank);
+  buttons.forEach((b) => delete b._rank);
+  return {
+    url: location.href,
+    title: document.title || '',
+    iframeCount: document.querySelectorAll('iframe').length,
+    inputs,
+    buttons
+  };
+}
+// --- HUB-MOBILE-CDP-HELPERS-END ---
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -712,6 +998,240 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(errStatus, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(errText);
     }
+
+    // --- HUB-MOBILE-CDP-ROUTES-START ---
+    // 1c. Mobile Browser CDP Helpers (Viewport Emulation + Quick Fill) — zero credential/body logging
+    if (pathname === '/api/hub/browser-mobile-mode' && req.method === 'GET') {
+      const preferredUrl = urlObj.searchParams.get('url') || '';
+      let liveWidth = null;
+      let liveHeight = null;
+      let tabUrl = '';
+      try {
+        const tab = await findChromeTab(preferredUrl);
+        tabUrl = tab.url || '';
+        const vp = await cdpCall(
+          tab.webSocketDebuggerUrl,
+          async (send) => {
+            const ev = await send('Runtime.evaluate', {
+              expression: '({ w: window.innerWidth, h: window.innerHeight })',
+              returnByValue: true
+            });
+            return ev?.result?.value || null;
+          },
+          2500
+        );
+        if (vp && Number.isFinite(vp.w)) {
+          liveWidth = vp.w;
+          liveHeight = vp.h;
+          if (mobileEmulSession.active && tab.id === mobileEmulSession.targetId && vp.w > 500) {
+            mobileEmulSession.active = false;
+            mobileEmulSession.targetId = null;
+          }
+        }
+      } catch {}
+      return sendJson(res, 200, {
+        ok: true,
+        mobile: !!mobileEmulSession.active,
+        width: mobileEmulSession.active ? mobileEmulSession.width : null,
+        height: mobileEmulSession.active ? mobileEmulSession.height : null,
+        viewportWidth: liveWidth,
+        viewportHeight: liveHeight,
+        tabUrl
+      });
+    }
+
+    if (pathname === '/api/hub/browser-mobile-mode' && req.method === 'POST') {
+      let body = {};
+      try {
+        const raw = (await readBody(req)).toString('utf8');
+        if (raw) body = JSON.parse(raw);
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      const preferredUrl = body.url ? String(body.url) : '';
+      const enable =
+        body.enable !== undefined
+          ? !!body.enable
+          : body.mobile !== undefined
+            ? !!body.mobile
+            : !mobileEmulSession.active;
+      if (!enable) {
+        const result = await clearMobileEmulation(preferredUrl);
+        return sendJson(res, 200, result);
+      }
+      const width = Math.max(320, Math.min(480, Number(body.width) || 390));
+      const height = Math.max(520, Math.min(960, Number(body.height) || 780));
+      try {
+        const tab = await findChromeTab(preferredUrl);
+        if (mobileEmulSession.targetId && mobileEmulSession.targetId !== tab.id) {
+          await clearMobileEmulation().catch(() => {});
+        }
+        await cdpCall(tab.webSocketDebuggerUrl, async (send) => {
+          await send('Emulation.setDeviceMetricsOverride', {
+            width,
+            height,
+            deviceScaleFactor: 2,
+            mobile: true,
+            screenWidth: width,
+            screenHeight: height
+          });
+        });
+        mobileEmulSession.active = true;
+        mobileEmulSession.width = width;
+        mobileEmulSession.height = height;
+        mobileEmulSession.targetId = tab.id;
+        resetMobileEmulTimer();
+        return sendJson(res, 200, {
+          ok: true,
+          mobile: true,
+          width,
+          height,
+          url: tab.url || '',
+          title: tab.title || ''
+        });
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message || 'Could not enable mobile view' });
+      }
+    }
+
+    if (pathname === '/api/hub/browser-form' && req.method === 'GET') {
+      const preferredUrl = urlObj.searchParams.get('url') || '';
+      try {
+        const tab = await findChromeTab(preferredUrl);
+        const scan = await cdpCall(tab.webSocketDebuggerUrl, async (send) => {
+          const ev = await send('Runtime.evaluate', { expression: '(' + __ashScanFormInPage.toString() + ')()', returnByValue: true });
+          if (ev?.exceptionDetails) throw new Error(ev.exceptionDetails.text || 'Form scan error');
+          return ev?.result?.value || { url: tab.url || '', title: tab.title || '', inputs: [], buttons: [] };
+        });
+        return sendJson(res, 200, { ok: true, ...scan });
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message || 'Could not inspect page form' });
+      }
+    }
+
+    if (pathname === '/api/hub/browser-form-fill' && req.method === 'POST') {
+      let body = {};
+      try {
+        const rawBuf = await readBody(req);
+        if (rawBuf.length > 65536) return sendJson(res, 413, { ok: false, error: 'Payload too large' });
+        const raw = rawBuf.toString('utf8');
+        if (raw) body = JSON.parse(raw);
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      const preferredUrl = body.url ? String(body.url) : '';
+      const fields = Array.isArray(body.fields) ? body.fields.slice(0, 20) : [];
+      const clickBid = body.clickBid ? String(body.clickBid) : '';
+      try {
+        const tab = await findChromeTab(preferredUrl);
+        let filledCount = 0;
+        let clicked = false;
+        await cdpCall(tab.webSocketDebuggerUrl, async (send) => {
+          for (const f of fields) {
+            if (!f || typeof f.fid !== 'string' || !/^f\d{1,3}$/.test(f.fid)) continue;
+            if (f.checked !== undefined && (f.type === 'checkbox' || f.type === 'radio' || typeof f.checked === 'boolean')) {
+              const info = await send('Runtime.evaluate', {
+                expression: `(() => {
+                  const el = document.querySelector('[data-ash-fid="${f.fid}"]');
+                  if (!el || el.disabled) return null;
+                  el.scrollIntoView({ block: 'center', inline: 'center' });
+                  const want = ${JSON.stringify(!!f.checked)};
+                  if (!!el.checked === want) return { already: true };
+                  const r = el.getBoundingClientRect();
+                  return { already: false, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+                })()`,
+                returnByValue: true
+              });
+              const v = info?.result?.value;
+              if (v && !v.already && Number.isFinite(v.x) && v.x >= 0) {
+                await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: v.x, y: v.y, button: 'left', clickCount: 1 });
+                await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: v.x, y: v.y, button: 'left', clickCount: 1 });
+                filledCount++;
+              }
+              continue;
+            }
+            const val = f.value === undefined || f.value === null ? '' : String(f.value);
+            const prep = await send('Runtime.evaluate', {
+              expression: `(() => {
+                const el = document.querySelector('[data-ash-fid="${f.fid}"]');
+                if (!el || el.disabled) return { ok: false };
+                el.scrollIntoView({ block: 'center', inline: 'center' });
+                if (el.tagName === 'SELECT') {
+                  el.value = ${JSON.stringify(val)};
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  return { ok: true, mode: 'select' };
+                }
+                const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(el, '');
+                else el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.focus();
+                const r = el.getBoundingClientRect();
+                return { ok: true, mode: 'text', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+              })()`,
+              returnByValue: true
+            });
+            const pVal = prep?.result?.value;
+            if (!pVal?.ok) continue;
+            if (pVal.mode === 'text') {
+              if (Number.isFinite(pVal.x) && pVal.x >= 0 && Number.isFinite(pVal.y) && pVal.y >= 0) {
+                await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pVal.x, y: pVal.y, button: 'left', clickCount: 1 });
+                await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pVal.x, y: pVal.y, button: 'left', clickCount: 1 });
+              }
+              if (val.length > 0) {
+                await send('Input.insertText', { text: val });
+              }
+              await send('Runtime.evaluate', {
+                expression: `(() => {
+                  const el = document.querySelector('[data-ash-fid="${f.fid}"]');
+                  if (!el) return;
+                  const target = ${JSON.stringify(val)};
+                  if (el.value !== target) {
+                    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(el, target);
+                    else el.value = target;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                })()`,
+                returnByValue: true
+              });
+            }
+            filledCount++;
+          }
+
+          if (clickBid && /^b\d{1,3}$/.test(clickBid)) {
+            const btnEval = await send('Runtime.evaluate', {
+              expression: `(() => {
+                const btn = document.querySelector('[data-ash-bid="${clickBid}"]');
+                if (!btn || btn.disabled) return null;
+                if (document.activeElement && typeof document.activeElement.blur === 'function') {
+                  try { document.activeElement.blur(); } catch {}
+                }
+                btn.scrollIntoView({ block: 'center', inline: 'center' });
+                const r = btn.getBoundingClientRect();
+                return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+              })()`,
+              returnByValue: true
+            });
+            const coords = btnEval?.result?.value;
+            if (coords && coords.w > 0 && coords.h > 0) {
+              await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: coords.x, y: coords.y, button: 'none', clickCount: 0 });
+              await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: coords.x, y: coords.y, button: 'left', clickCount: 1 });
+              await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: coords.x, y: coords.y, button: 'left', clickCount: 1 });
+              clicked = true;
+            }
+          }
+        });
+        return sendJson(res, 200, { ok: true, filledCount, clicked });
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message || 'Could not fill form' });
+      }
+    }
+    // --- HUB-MOBILE-CDP-ROUTES-END ---
 
     // 2. Hub Health
     if (pathname === '/api/hub/health' && req.method === 'GET') {
@@ -1076,9 +1596,12 @@ server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => upstream.destroy());
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   tunnelManuallyStopped = true;
   syncDataToCloudDrive();
+  if (mobileEmulSession.active) {
+    await Promise.race([clearMobileEmulation(), new Promise((r) => setTimeout(r, 750))]).catch(() => {});
+  }
   if (tunnelProcess) killTree(tunnelProcess);
   if (ombProcess) killTree(ombProcess);
   process.exit(0);

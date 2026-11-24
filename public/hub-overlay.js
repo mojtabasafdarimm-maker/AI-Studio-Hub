@@ -403,6 +403,11 @@
       user-select: none;
       -webkit-user-select: none;
     }
+    @media (max-width: 768px) {
+      body:has([data-browser-surface]) #ash-pill {
+        display: none !important;
+      }
+    }
   `;
   document.head.appendChild(style);
 
