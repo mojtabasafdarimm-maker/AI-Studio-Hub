@@ -19,6 +19,7 @@ import {
   searchNativeConversations,
   syncHubCalendars
 } from './hub-core.mjs';
+import { applyRoute, routeTask } from './hub-router.mjs';
 
 const TOOLS = [
   {
@@ -97,6 +98,20 @@ const TOOLS = [
         variant: { type: 'string', description: 'Optional Antigravity model variant (low, medium, high)' }
       },
       required: ['botName', 'account']
+    }
+  },
+  {
+    name: 'hub_route_task',
+    description: 'Automatically pick the best account and model for a task using live account allowances (5h/weekly headroom, reset times) and online OpenRouter $/1M token pricing as a cost weight. Set apply=true to immediately switch the bot to the chosen account and model.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Task description or prompt to classify (light / standard / heavy)' },
+        botName: { type: 'string', description: 'Target bot name (e.g. "khadang", "Grader", "GlenNeely")' },
+        tier: { type: 'string', enum: ['light', 'standard', 'heavy'], description: 'Optional override for task complexity tier' },
+        apply: { type: 'boolean', description: 'If true, immediately switch botName to the recommended account and model (default false)' }
+      },
+      required: ['text']
     }
   },
   {
@@ -258,6 +273,17 @@ async function handleToolCall(name, args = {}) {
       });
       const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: !res.ok };
+    } catch (e) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: e.message }) }], isError: true };
+    }
+  }
+  if (name === 'hub_route_task') {
+    try {
+      const result = await routeTask({ text: args.text, botName: args.botName, tier: args.tier });
+      if (args.apply && result.ok && result.recommendation && args.botName) {
+        result.applied = await applyRoute(args.botName, result.recommendation);
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: !result.ok };
     } catch (e) {
       return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: e.message }) }], isError: true };
     }
