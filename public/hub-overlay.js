@@ -229,6 +229,29 @@
       background: rgba(99, 102, 241, 0.42);
       color: #fff;
     }
+    .ash-pill-seg.go {
+      background: rgba(16, 185, 129, 0.24);
+      color: #6ee7b7;
+      font-weight: 700;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ash-pill-seg.go:hover {
+      background: rgba(16, 185, 129, 0.42);
+      color: #ffffff;
+    }
+    .ash-pill-seg.go.sent {
+      background: rgba(16, 185, 129, 0.55);
+      color: #ffffff;
+    }
+    .ash-pill-seg.go.warn {
+      background: rgba(245, 158, 11, 0.30);
+      color: #fde68a;
+    }
+    .ash-pill-seg.go:disabled {
+      opacity: 0.65;
+      cursor: default;
+    }
     .ash-pill-div {
       width: 1px;
       height: 14px;
@@ -413,11 +436,13 @@
 
   const pill = document.createElement('div');
   pill.id = 'ash-pill';
-  pill.title = 'Drag to move · Click Hub or Allowances';
+  pill.title = 'Drag to move · Click Hub, Allowances, or Go';
   pill.innerHTML = `
     <button type="button" id="ash-btn-hub" class="ash-pill-seg" title="Open AI Studio Hub"><span>⚡ Hub</span><span id="ash-pill-dot"></span></button>
     <span class="ash-pill-div"></span>
     <button type="button" id="ash-btn-allowances" class="ash-pill-seg allowances" title="View Model Allowances & Reset Times Across All Accounts"><span id="ash-allow-dot"></span><span>📊 Allowances</span></button>
+    <span class="ash-pill-div"></span>
+    <button type="button" id="ash-btn-go" class="ash-pill-seg go" title="Send &quot;Go&quot; in the current chat"><span>▶ Go</span></button>
   `;
   document.body.appendChild(pill);
 
@@ -776,8 +801,10 @@
     if (savedPos) {
       const { x, y } = JSON.parse(savedPos);
       if (typeof x === 'number' && typeof y === 'number') {
-        const maxW = window.innerWidth - 80;
-        const maxH = window.innerHeight - 40;
+        const pillW = pill.offsetWidth || 240;
+        const pillH = pill.offsetHeight || 38;
+        const maxW = Math.max(8, window.innerWidth - pillW - 8);
+        const maxH = Math.max(8, window.innerHeight - pillH - 8);
         const safeX = Math.max(8, Math.min(x, maxW));
         const safeY = Math.max(8, Math.min(y, maxH));
         pill.style.left = safeX + 'px';
@@ -860,10 +887,134 @@
     onDragEnd();
   });
 
+  let goSending = false;
+  let goFlashTimer = null;
+
+  function flashGoBtn(btn, label, cls, ms = 1100) {
+    if (!btn) return;
+    if (goFlashTimer) {
+      clearTimeout(goFlashTimer);
+      goFlashTimer = null;
+    }
+    btn.classList.remove('sent', 'warn');
+    if (cls) btn.classList.add(cls);
+    btn.textContent = label;
+    btn.disabled = true;
+    goFlashTimer = setTimeout(() => {
+      goFlashTimer = null;
+      btn.classList.remove('sent', 'warn');
+      btn.innerHTML = '<span>▶ Go</span>';
+      btn.disabled = false;
+    }, ms);
+  }
+
+  function findVisibleComposer() {
+    const visibleActions = Array.from(document.querySelectorAll('[data-composer-actions]'))
+      .filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0);
+    visibleActions.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+    for (const actionsEl of visibleActions) {
+      let root = actionsEl.parentElement;
+      for (let i = 0; i < 4 && root; i++) {
+        const ta = Array.from(root.querySelectorAll('textarea')).find(
+          (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0
+        );
+        if (ta) return { actionsEl, ta };
+        root = root.parentElement;
+      }
+    }
+    return null;
+  }
+
+  function findComposerSendButton(actionsEl) {
+    if (!actionsEl) return null;
+    const followUp = actionsEl.querySelector('[data-composer-follow-up]');
+    if (followUp) {
+      const followBtns = Array.from(followUp.querySelectorAll('button'));
+      const sendBtn = followBtns[followBtns.length - 1] || null;
+      if (sendBtn && !sendBtn.disabled) return sendBtn;
+    }
+    const candidates = Array.from(actionsEl.querySelectorAll('button')).filter((b) => {
+      if (b.disabled) return false;
+      if (b.hasAttribute('data-composer-stop') || b.hasAttribute('aria-haspopup')) return false;
+      const aria = String(b.getAttribute('aria-label') || '');
+      if (/stop|dictat|voice|record|mic/i.test(aria)) return false;
+      return true;
+    });
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function triggerQuickGo(btn) {
+    if (goSending) return;
+    const found = findVisibleComposer();
+    if (!found || !found.ta) {
+      flashGoBtn(btn, 'No chat', 'warn');
+      return;
+    }
+    const { actionsEl, ta } = found;
+    if (ta.disabled) {
+      flashGoBtn(btn, 'Busy', 'warn');
+      return;
+    }
+    const current = String(ta.value || '').trim();
+    if (current.length > 0 && current.toLowerCase() !== 'go') {
+      flashGoBtn(btn, 'Clear box', 'warn', 1300);
+      return;
+    }
+
+    goSending = true;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+    if (setter) setter.call(ta, 'Go');
+    else ta.value = 'Go';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    let frames = 0;
+    const maxFrames = 12;
+    const trySend = () => {
+      const sendBtn = findComposerSendButton(actionsEl);
+      if (sendBtn && !sendBtn.disabled) {
+        sendBtn.click();
+        goSending = false;
+        flashGoBtn(btn, '✓ Sent', 'sent', 950);
+        nudgeAllEventSources();
+        return;
+      }
+      frames++;
+      if (frames < maxFrames) {
+        requestAnimationFrame(trySend);
+        return;
+      }
+      ta.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      }));
+      setTimeout(() => {
+        goSending = false;
+        if (String(ta.value || '').trim() === '') {
+          flashGoBtn(btn, '✓ Sent', 'sent', 950);
+          nudgeAllEventSources();
+        } else {
+          flashGoBtn(btn, 'Retry', 'warn', 1200);
+        }
+      }, 100);
+    };
+    requestAnimationFrame(trySend);
+  }
+
   pill.addEventListener('click', (e) => {
     if (hasMoved) {
       e.preventDefault();
       e.stopPropagation();
+      return;
+    }
+    const goBtn = e.target?.closest?.('#ash-btn-go');
+    if (goBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerQuickGo(goBtn);
       return;
     }
     const clickedAllowances = !!e.target?.closest?.('#ash-btn-allowances');
