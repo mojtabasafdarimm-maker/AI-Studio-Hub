@@ -6,7 +6,7 @@
 // • hub_calendar_and_reminders: Check upcoming calendar events & reminders, or add a reminder
 import readline from 'node:readline';
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import {
   buildStalledRadar,
   findAgyBin,
@@ -113,18 +113,21 @@ const TOOLS = [
   },
   {
     name: 'hub_outlook_emails',
-    description: 'Access the user\'s work/university Outlook (Classic Outlook on Windows) inbox without Microsoft cloud OAuth: list recent emails, search by keyword, read full email body, create a draft, or send an email.',
+    description: 'Access the user\'s work/university Outlook (Classic Outlook on Windows) without Microsoft cloud OAuth: list or search Inbox, Sent Items, or Drafts with reply-status verification, read full email bodies, run audit_open_loops across read & unread emails to catch academic peer reviews and open student/colleague loops, create drafts, or send emails.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'search', 'read', 'draft', 'send'], description: 'Action to perform (default list)' },
+        action: { type: 'string', enum: ['list', 'search', 'read', 'draft', 'send', 'audit_open_loops'], description: 'Action to perform (default list)' },
+        folder: { type: 'string', enum: ['inbox', 'sent', 'drafts'], description: 'Outlook folder for list/search (default inbox)' },
         query: { type: 'string', description: 'Search text for subject, sender, or body (for action=search)' },
+        days: { type: 'number', description: 'Lookback window in days (1-90; default 30 for audit_open_loops; optional date restriction for list/search)' },
+        unrepliedOnly: { type: 'boolean', description: 'For inbox list/search: return only emails with no reply sent yet' },
         entryId: { type: 'string', description: 'Email EntryID returned by list/search (for action=read)' },
         to: { type: 'string', description: 'Recipient email address(es), semicolon-separated (for draft/send)' },
         from: { type: 'string', description: 'Optional sender email address (e.g. msafdari@uoguelph.ca) to explicitly pick the Outlook sending account' },
         subject: { type: 'string', description: 'Email subject (for draft/send)' },
         body: { type: 'string', description: 'Email body text (for draft/send)' },
-        limit: { type: 'number', description: 'Max emails to return for list/search (default 15, max 40)' }
+        limit: { type: 'number', description: 'Max emails to return for list/search (default 15, max 50; max 30 per bucket for audit_open_loops)' }
       }
     }
   },
@@ -291,20 +294,70 @@ try { $ol = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Applicat
 $ns = $ol.GetNamespace('MAPI')
 `;
     const psBody = name === 'hub_outlook_emails' ? `
-$inbox = $ns.GetDefaultFolder(6)
+function Get-SmtpAddress($it) {
+  $addr = [string]$it.SenderEmailAddress
+  try {
+    if ([string]$it.SenderEmailType -eq 'EX' -and $it.Sender) {
+      $ex = $it.Sender.GetExchangeUser()
+      if ($ex -and $ex.PrimarySmtpAddress) { return [string]$ex.PrimarySmtpAddress }
+    }
+  } catch {}
+  return $addr
+}
+function Get-VerbCode($it) {
+  try {
+    $v = $it.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x10810003')
+    if ($null -ne $v) { return [int]$v }
+  } catch {}
+  return 0
+}
+function Get-SentConvData($ns, [int]$lookbackDays, [bool]$collectHuman) {
+  $sentFolder = $ns.GetDefaultFolder(5)
+  $cutoffStr = (Get-Date).AddDays(-$lookbackDays).ToString('g')
+  $sitems = $sentFolder.Items.Restrict("[SentOn] >= '$cutoffStr'")
+  $sitems.Sort('[SentOn]', $true)
+  $convMap = @{}
+  $humanList = @()
+  foreach ($sit in $sitems) {
+    if ($sit.Class -ne 43) { continue }
+    $cid = [string]$sit.ConversationID
+    $sentOn = $sit.SentOn
+    if ($cid -and $sentOn) {
+      if (-not $convMap.ContainsKey($cid) -or $sentOn -gt $convMap[$cid]) {
+        $convMap[$cid] = $sentOn
+      }
+    }
+    if ($collectHuman -and $sentOn) {
+      $humanList += [PSCustomObject]@{
+        conversationId = $cid
+        subject = [string]$sit.Subject
+        to = [string]$sit.To
+        sentOn = $sentOn
+        body = [string]$sit.Body
+      }
+    }
+  }
+  return @{ convMap = $convMap; humanList = $humanList }
+}
+
 $act = if ($argsObj.action) { [string]$argsObj.action } else { 'list' }
-$limit = if ($argsObj.limit) { [Math]::Min(40, [Math]::Max(1, [int]$argsObj.limit)) } else { 15 }
 if ($act -eq 'read') {
   $item = $ns.GetItemFromID([string]$argsObj.entryId)
+  $verb = Get-VerbCode $item
+  $lastVerb = switch ($verb) { 102 { 'replied' } 103 { 'replied_all' } 104 { 'forwarded' } default { $null } }
   $out = [ordered]@{
     entryId = $item.EntryID
-    subject = $item.Subject
-    from = $item.SenderName
-    fromEmail = $item.SenderEmailAddress
-    to = $item.To
+    subject = [string]$item.Subject
+    from = [string]$item.SenderName
+    fromEmail = (Get-SmtpAddress $item)
+    to = [string]$item.To
     receivedAt = if ($item.ReceivedTime) { $item.ReceivedTime.ToString('o') } else { $null }
     unread = [bool]$item.UnRead
-    body = $item.Body
+    conversationId = [string]$item.ConversationID
+    flagStatus = [int]$item.FlagStatus
+    lastVerb = $lastVerb
+    replied = ($verb -in @(102, 103))
+    body = [string]$item.Body
   }
   $out | ConvertTo-Json -Depth 4
 } elseif ($act -eq 'draft' -or $act -eq 'send') {
@@ -325,39 +378,281 @@ if ($act -eq 'read') {
   $fromAddr = if ($chosenAcct) { $chosenAcct.SmtpAddress } else { ($ns.Accounts | Select-Object -First 1).SmtpAddress }
   if ($act -eq 'send') { $mail.Send(); $status = 'sent' } else { $mail.Save(); $status = 'saved_draft' }
   [ordered]@{ ok = $true; status = $status; from = $fromAddr; to = [string]$argsObj.to; subject = [string]$argsObj.subject } | ConvertTo-Json
-} else {
-  $items = $inbox.Items
+} elseif ($act -eq 'audit_open_loops') {
+  $now = Get-Date
+  $days = if ($argsObj.days) { [Math]::Min(90, [Math]::Max(7, [int]$argsObj.days)) } else { 30 }
+  $cap = if ($argsObj.limit) { [Math]::Min(30, [Math]::Max(5, [int]$argsObj.limit)) } else { 25 }
+  $inbox = $ns.GetDefaultFolder(6)
+  $cutoffStr = $now.AddDays(-$days).ToString('g')
+  $items = $inbox.Items.Restrict("[ReceivedTime] >= '$cutoffStr'")
   $items.Sort('[ReceivedTime]', $true)
-  $q = if ($argsObj.query) { [string]$argsObj.query } else { '' }
-  $res = @()
-  $scanned = 0
+
+  $sentData = Get-SentConvData $ns ($days + 14) $true
+  $sentConvLatest = $sentData.convMap
+  $sentHumanList = $sentData.humanList
+  $inboundConvLatest = @{}
+  $seenInboundConvs = @{}
+  $submittedManuscripts = @{}
+  $peerReviews = @()
+  $unrepliedHumanLoops = @()
+
+  $prSenderRe = '(?i)(editorialmanager\\.com|manuscriptcentral\\.com|scholarone|eesmail|editorialexpress|reviewerhub|elsevier|springer|wiley|mdpi|tandf|sagepub|frontiersin|ieee|asme|ashrae)'
+  $prTextRe = '(?i)(review for |inviting you to review|invitation to review|agree to review|peer review|referee|manuscript number|submit your review|pending assignments|review due|reviewer assignment|thank you for (?:submitting|completing) your review|thank you for reviewing)'
+  $prNoiseRe = '(?i)(newsletter|author connect|call for papers|read the first articles|confirm co-authorship|verify your email|frontiers science news|google maps|walmart|purchase|prospectus|job alert|ashrae toronto chapter|defense announcement|listserv\\.uoguelph\\.ca|fasrjobs@uoguelph\\.ca)'
+  $noiseSenderRe = '(?i)(no-?reply|noreply|do-?not-?reply|listserv\\.uoguelph\\.ca|fasrjobs@uoguelph\\.ca|newsletter|marketing|notifications?@|updates-noreply|jobalerts|scholaralerts|walmart|homedepot|communauto|editorialmanager\\.com|manuscriptcentral\\.com|scholarone|microsoft|teams|zoom|coursera|linkedin|google\\.com|github\\.com|vercel\\.com|rbc\\.com|wealthsimple|alectra|uhip|cowan|registrar|servicerequest|ithelp|postmaster|mailer-daemon)'
+  $noiseSubjRe = '(?i)(confirmation of receipt|defense announcement|newsletter|digest|estatement|order #|verify your email|new sign-in|shared some google account data|sent a message|automatic reply|out of office|accepted:|declined:|canceled:)'
+  $humanQuestionRe = '\\?|\\b(help|tutor|fluid|quiz|lab|grade|mark|recommend|meeting|syllabus|extension|transfer|question|clarification|available|availability|schedule|advice|reference|thesis|defense|review)\\b'
+
   foreach ($it in $items) {
-    if ($scanned -ge 250 -and $q) { break }
-    $scanned++
     if ($it.Class -ne 43) { continue }
     $subj = [string]$it.Subject
     $sndr = [string]$it.SenderName
-    $sndEmail = [string]$it.SenderEmailAddress
-    if ($q) {
-      $bodySnippet = [string]$it.Body
-      if ($subj -notmatch [regex]::Escape($q) -and $sndr -notmatch [regex]::Escape($q) -and $sndEmail -notmatch [regex]::Escape($q) -and $bodySnippet -notmatch [regex]::Escape($q)) {
-        continue
+    $rawEmail = [string]$it.SenderEmailAddress
+    $cid = [string]$it.ConversationID
+    $recvDt = $it.ReceivedTime
+
+    $isFirstForConv = $true
+    if ($cid) {
+      if ($seenInboundConvs.ContainsKey($cid)) {
+        $isFirstForConv = $false
+      } else {
+        $seenInboundConvs[$cid] = $true
+        if ($recvDt) { $inboundConvLatest[$cid] = $recvDt }
       }
     }
-    $preview = ([string]$it.Body -replace '\\s+', ' ').Trim()
+
+    $body = [string]$it.Body
+    if ($body.Length -gt 4000) { $bodyHead = $body.Substring(0, 4000) } else { $bodyHead = $body }
+
+    # 1. Peer review detection (across both read & unread)
+    $isPrMatch = ($sndr -match $prSenderRe -or $rawEmail -match $prSenderRe -or $subj -match $prTextRe -or $bodyHead -match $prTextRe)
+    if ($isPrMatch -and -not ($sndr -match $prNoiseRe -or $rawEmail -match $prNoiseRe -or $subj -match $prNoiseRe)) {
+      $msId = $null
+      if ($bodyHead -match '(?i)(?:Manuscript(?:\\s+Number|\\s+ID)?\\s*[:#]\\s*)([A-Z0-9][A-Z0-9._-]{3,30})') {
+        $msId = $matches[1].Trim()
+      } elseif ($bodyHead -match '\\b([A-Z]{2,8}-[A-Z0-9]{1,4}-\\d{2,4}-\\d{3,7}(?:R\\d+)?)\\b') {
+        $msId = $matches[1].Trim()
+      }
+      $dueText = $null
+      if ($bodyHead -match '(?i)(?:submit your review by|due(?:\\s+date)?(?:\\s+is|\\s*:)?|review by|deadline(?:\\s+is|\\s*:)?)[\\s:]*([A-Z][a-z]{2,8}\\.?\\s+\\d{1,2},?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}\\s+[A-Z][a-z]{2,8}\\s+\\d{4})') {
+        $dueText = $matches[1].Trim()
+      }
+      $prStatus = 'review_notice'
+      if ($subj -match '(?i)(thank you for (?:submitting|completing) your review|review (?:has been )?submitted|review received|thank you for reviewing)' -or $bodyHead -match '(?i)(thank you for (?:submitting|completing) your review|review (?:has been )?submitted|review received|thank you for reviewing)') {
+        $prStatus = 'submitted_confirmation'
+        if ($msId) { $submittedManuscripts[$msId] = $true }
+      } elseif ($subj -match '(?i)(next steps|thank you(?: very much)? for agreeing|pending assignments|agreed to review)' -or $bodyHead -match '(?i)(thank you(?: very much)? for agreeing|pending assignments|submit your review by)') {
+        $prStatus = 'accepted_active'
+      } elseif ($subj -match '(?i)(inviting you to review|invitation to review|agree to review)' -or $bodyHead -match '(?i)(inviting you to review|invitation to review|agree to review)') {
+        $prStatus = 'invitation'
+      }
+      $prSmtp = Get-SmtpAddress $it
+      $prPreview = ($bodyHead -replace '\\s+', ' ').Trim()
+      if ($prPreview.Length -gt 220) { $prPreview = $prPreview.Substring(0, 220) + '...' }
+      $peerReviews += [ordered]@{
+        entryId = $it.EntryID
+        subject = $subj
+        from = $sndr
+        fromEmail = $prSmtp
+        receivedAt = if ($recvDt) { $recvDt.ToString('o') } else { $null }
+        unread = [bool]$it.UnRead
+        status = $prStatus
+        manuscriptId = $msId
+        dueDateText = $dueText
+        submissionConfirmed = $false
+        conversationId = $cid
+        preview = $prPreview
+      }
+    }
+
+    # 2. Unreplied human/student correspondence loops (latest inbound per conversation, read & unread)
+    if (-not $isFirstForConv) { continue }
+    if ($unrepliedHumanLoops.Count -ge $cap) { continue }
+    if ($sndr -match $noiseSenderRe -or $rawEmail -match $noiseSenderRe -or $subj -match $noiseSubjRe) { continue }
+
+    $verb = Get-VerbCode $it
+    $lastSent = if ($cid -and $sentConvLatest.ContainsKey($cid)) { $sentConvLatest[$cid] } else { $null }
+    $sentAfter = ($null -ne $lastSent -and $recvDt -and $lastSent -gt $recvDt)
+    $replied = ($verb -in @(102, 103) -or $sentAfter)
+    if ($replied) { continue }
+
+    $isExchange = ([string]$it.SenderEmailType -eq 'EX')
+    $isHumanText = ($subj -match $humanQuestionRe -or $bodyHead -match $humanQuestionRe)
+    if (-not ($isExchange -or $rawEmail -match '(?i)@uoguelph\\.ca$' -or $isHumanText)) { continue }
+
+    $smtp = Get-SmtpAddress $it
+    if ($smtp -match $noiseSenderRe) { continue }
+
+    $ageHrs = if ($recvDt) { [Math]::Round(($now - $recvDt).TotalHours, 1) } else { $null }
+    $ageDays = if ($recvDt) { [Math]::Round(($now - $recvDt).TotalDays, 1) } else { $null }
+    $preview = ($bodyHead -replace '\\s+', ' ').Trim()
     if ($preview.Length -gt 220) { $preview = $preview.Substring(0, 220) + '...' }
-    $res += [ordered]@{
+    $unrepliedHumanLoops += [ordered]@{
       entryId = $it.EntryID
       subject = $subj
       from = $sndr
-      fromEmail = $sndEmail
-      receivedAt = if ($it.ReceivedTime) { $it.ReceivedTime.ToString('o') } else { $null }
+      fromEmail = $smtp
+      receivedAt = if ($recvDt) { $recvDt.ToString('o') } else { $null }
       unread = [bool]$it.UnRead
+      ageHours = $ageHrs
+      ageDays = $ageDays
+      flagStatus = [int]$it.FlagStatus
+      conversationId = $cid
+      lastSentInThread = if ($lastSent) { $lastSent.ToString('o') } else { $null }
       preview = $preview
+    }
+  }
+
+  foreach ($pr in $peerReviews) {
+    if ($pr.manuscriptId -and $submittedManuscripts.ContainsKey($pr.manuscriptId)) {
+      $pr.submissionConfirmed = $true
+    }
+  }
+  if ($peerReviews.Count -gt $cap) { $peerReviews = @($peerReviews[0..($cap - 1)]) }
+
+  # 3. Sent follow-ups awaiting their reply
+  $sentAwaitingTheirReply = @()
+  $seenSentConvs = @{}
+  $sentCut = $now.AddDays(-$days)
+  $sentFollowRe = '(?i)(schedule|meeting|weekly|follow up|let me know|send me|syllabus|availability|fluid|tutor|recommend|next week|draft)'
+  foreach ($sit in $sentHumanList) {
+    if ($sit.sentOn -lt $sentCut) { continue }
+    $cid = $sit.conversationId
+    if ($cid) {
+      if ($seenSentConvs.ContainsKey($cid)) { continue }
+      $seenSentConvs[$cid] = $true
+      if ($inboundConvLatest.ContainsKey($cid) -and $inboundConvLatest[$cid] -ge $sit.sentOn) { continue }
+    }
+    $toStr = $sit.to
+    if ($toStr -match '(?i)(no-?reply|noreply|do-?not-?reply|listserv|notifications?@)') { continue }
+    $sBody = if ($sit.body.Length -gt 2000) { $sit.body.Substring(0, 2000) } else { $sit.body }
+    if ($sit.subject -notmatch $sentFollowRe -and $sBody -notmatch $sentFollowRe) { continue }
+    $sPreview = ($sBody -replace '\\s+', ' ').Trim()
+    if ($sPreview.Length -gt 180) { $sPreview = $sPreview.Substring(0, 180) + '...' }
+    $sentAwaitingTheirReply += [ordered]@{
+      subject = $sit.subject
+      to = $toStr
+      sentAt = $sit.sentOn.ToString('o')
+      ageDays = [Math]::Round(($now - $sit.sentOn).TotalDays, 1)
+      conversationId = $cid
+      preview = $sPreview
+    }
+    if ($sentAwaitingTheirReply.Count -ge 10) { break }
+  }
+
+  [ordered]@{
+    account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '
+    offline = [bool]$ns.Offline
+    connectionMode = [int]$ns.ExchangeConnectionMode
+    daysScanned = $days
+    peerReviewCount = $peerReviews.Count
+    peerReviews = @($peerReviews)
+    unrepliedHumanLoopCount = $unrepliedHumanLoops.Count
+    unrepliedHumanLoops = @($unrepliedHumanLoops)
+    sentAwaitingTheirReplyCount = $sentAwaitingTheirReply.Count
+    sentAwaitingTheirReply = @($sentAwaitingTheirReply)
+  } | ConvertTo-Json -Depth 5
+} else {
+  $folderName = if ($argsObj.folder) { ([string]$argsObj.folder).ToLower() } else { 'inbox' }
+  if ($folderName -eq 'sent') {
+    $folderObj = $ns.GetDefaultFolder(5)
+    $dateField = 'SentOn'
+  } elseif ($folderName -eq 'drafts') {
+    $folderObj = $ns.GetDefaultFolder(16)
+    $dateField = 'LastModificationTime'
+  } else {
+    $folderName = 'inbox'
+    $folderObj = $ns.GetDefaultFolder(6)
+    $dateField = 'ReceivedTime'
+  }
+  $limit = if ($argsObj.limit) { [Math]::Min(50, [Math]::Max(1, [int]$argsObj.limit)) } else { 15 }
+  $items = $folderObj.Items
+  $hasDays = ($null -ne $argsObj.days -and [int]$argsObj.days -gt 0)
+  $daysVal = if ($hasDays) { [Math]::Min(90, [Math]::Max(1, [int]$argsObj.days)) } else { 30 }
+  if ($hasDays -and $folderName -ne 'drafts') {
+    $cutoffStr = (Get-Date).AddDays(-$daysVal).ToString('g')
+    $items = $items.Restrict("[$dateField] >= '$cutoffStr'")
+  }
+  $items.Sort("[$dateField]", $true)
+  $q = if ($argsObj.query) { [string]$argsObj.query } else { '' }
+  $unrepliedOnly = [bool]$argsObj.unrepliedOnly
+  $sentConvLatest = @{}
+  if ($folderName -eq 'inbox') {
+    $sentData = Get-SentConvData $ns ([Math]::Max($daysVal, 30) + 14) $false
+    $sentConvLatest = $sentData.convMap
+  }
+  $maxScan = if ($hasDays) { 1000 } else { 800 }
+  $res = @()
+  $scanned = 0
+  foreach ($it in $items) {
+    if ($scanned -ge $maxScan -and ($q -or $unrepliedOnly)) { break }
+    $scanned++
+    if ($it.Class -ne 43) { continue }
+    $subj = [string]$it.Subject
+    $bodyText = [string]$it.Body
+    if ($folderName -eq 'inbox') {
+      $sndr = [string]$it.SenderName
+      $rawEmail = [string]$it.SenderEmailAddress
+      if ($q) {
+        if ($subj -notmatch [regex]::Escape($q) -and $sndr -notmatch [regex]::Escape($q) -and $rawEmail -notmatch [regex]::Escape($q) -and $bodyText -notmatch [regex]::Escape($q)) {
+          continue
+        }
+      }
+      $cid = [string]$it.ConversationID
+      $verb = Get-VerbCode $it
+      $lastSent = if ($cid -and $sentConvLatest.ContainsKey($cid)) { $sentConvLatest[$cid] } else { $null }
+      $sentAfter = ($null -ne $lastSent -and $it.ReceivedTime -and $lastSent -gt $it.ReceivedTime)
+      $replied = ($verb -in @(102, 103) -or $sentAfter)
+      if ($unrepliedOnly -and $replied) { continue }
+      $smtp = Get-SmtpAddress $it
+      $preview = ($bodyText -replace '\\s+', ' ').Trim()
+      if ($preview.Length -gt 220) { $preview = $preview.Substring(0, 220) + '...' }
+      $res += [ordered]@{
+        entryId = $it.EntryID
+        subject = $subj
+        from = $sndr
+        fromEmail = $smtp
+        receivedAt = if ($it.ReceivedTime) { $it.ReceivedTime.ToString('o') } else { $null }
+        unread = [bool]$it.UnRead
+        replied = $replied
+        forwarded = ($verb -eq 104)
+        lastSentInThread = if ($lastSent) { $lastSent.ToString('o') } else { $null }
+        flagStatus = [int]$it.FlagStatus
+        conversationId = $cid
+        preview = $preview
+      }
+    } else {
+      $toStr = [string]$it.To
+      if ($q) {
+        if ($subj -notmatch [regex]::Escape($q) -and $toStr -notmatch [regex]::Escape($q) -and $bodyText -notmatch [regex]::Escape($q)) {
+          continue
+        }
+      }
+      $preview = ($bodyText -replace '\\s+', ' ').Trim()
+      if ($preview.Length -gt 220) { $preview = $preview.Substring(0, 220) + '...' }
+      if ($folderName -eq 'sent') {
+        $res += [ordered]@{
+          entryId = $it.EntryID
+          subject = $subj
+          to = $toStr
+          sentAt = if ($it.SentOn) { $it.SentOn.ToString('o') } else { $null }
+          conversationId = [string]$it.ConversationID
+          preview = $preview
+        }
+      } else {
+        $res += [ordered]@{
+          entryId = $it.EntryID
+          subject = $subj
+          to = $toStr
+          modifiedAt = if ($it.LastModificationTime) { $it.LastModificationTime.ToString('o') } else { $null }
+          conversationId = [string]$it.ConversationID
+          preview = $preview
+        }
+      }
     }
     if ($res.Count -ge $limit) { break }
   }
-  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; offline = [bool]$ns.Offline; connectionMode = [int]$ns.ExchangeConnectionMode; count = $res.Count; emails = @($res) } | ConvertTo-Json -Depth 4
+  [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; folder = $folderName; offline = [bool]$ns.Offline; connectionMode = [int]$ns.ExchangeConnectionMode; count = $res.Count; emails = @($res) } | ConvertTo-Json -Depth 4
 }
 ` : `
 $cal = $ns.GetDefaultFolder(9)
@@ -395,13 +690,48 @@ if ($act -eq 'create') {
   [ordered]@{ account = ($ns.Accounts | ForEach-Object { $_.SmtpAddress }) -join ', '; count = $evts.Count; events = @($evts) } | ConvertTo-Json -Depth 4
 }
 `;
-    const encoded = Buffer.from(psHeader + '\n' + psBody, 'utf16le').toString('base64');
+    const encodedUtf8 = Buffer.from(psHeader + '\n' + psBody, 'utf8').toString('base64');
     try {
       const out = await new Promise((resolve, reject) => {
-        execFile('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], { encoding: 'utf8', timeout: 25000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-          if (err && !stdout.trim()) return reject(new Error(stderr || err.message));
+        const psCmd = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $b=[Console]::In.ReadToEnd(); Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b.Trim())))';
+        const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], {
+          windowsHide: true,
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
+        let stdout = '';
+        let stderr = '';
+        let totalBytes = 0;
+        let settled = false;
+        const maxBytes = 4 * 1024 * 1024;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { child.kill(); } catch {}
+          reject(new Error('PowerShell execution timed out after 45000ms'));
+        }, 45000);
+        child.stdout.on('data', (chunk) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= maxBytes) stdout += chunk.toString('utf8');
+        });
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk.toString('utf8');
+        });
+        child.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on('close', (code) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (code !== 0 && !stdout.trim()) {
+            return reject(new Error(stderr.trim() || `PowerShell exited with code ${code}`));
+          }
           resolve(stdout.trim());
         });
+        child.stdin.end(encodedUtf8);
       });
       return { content: [{ type: 'text', text: out || '{}' }] };
     } catch (err) {
