@@ -377,17 +377,34 @@ export async function routeTask({ text, botName, tier: forcedTier, allowances, c
     for (const m of acct.availableModels || []) {
       if (policy.avoidModels.some((a) => `${m.id} ${m.label}`.toLowerCase().includes(a))) continue;
       const mt = modelTier(m, policy);
-      if (TIER[mt] < need) continue;
+      // Light tasks -> any tier; Standard -> standard/heavy; Heavy -> standard (e.g. Sonnet) or heavy (only pure light/mini models excluded)
+      if (need === TIER.standard && TIER[mt] < TIER.standard) continue;
+      if (need === TIER.heavy && TIER[mt] < TIER.standard) continue;
       const hr = headroomFor(acct, m);
       if (hr.percent < policy.minHeadroomPercent) continue;
       const price = priceFor(m, mt, catalog, policy);
 
+      // Score driven by Moji's 3 parameters: (1) Allowance %, (2) Reset time, (3) Online $/1M Price
       let score = hr.percent;
-      score -= (TIER[mt] - need) * 25;
-      score -= Math.log10(price.perM + 1) * 14;
-      if (hr.weekly && hr.weekly.hoursUntilReset != null && hr.weekly.hoursUntilReset < 24 && hr.weekly.remainingPercent > 30) {
-        score += 15;
+
+      // 2. Reset time: boost expiring 5h/weekly quotas ("use it or lose it"), pace long-resetting low pools
+      const fiveH = acct.fiveHour;
+      if (fiveH && fiveH.hoursUntilReset != null && fiveH.hoursUntilReset <= 3 && fiveH.remainingPercent >= 25) {
+        score += 12;
       }
+      if (hr.weekly && hr.weekly.hoursUntilReset != null) {
+        if (hr.weekly.hoursUntilReset <= 36 && hr.weekly.remainingPercent >= 25) {
+          score += 18;
+        } else if (hr.weekly.hoursUntilReset > 96 && hr.weekly.remainingPercent < 55) {
+          score -= 10;
+        }
+      }
+
+      // 3. Price: stronger cost sensitivity on light/standard tasks, gentler on heavy tasks so affordable Sonnet beats pricey Opus
+      const priceWeight = need === TIER.light ? 24 : need === TIER.standard ? 16 : 10;
+      score -= Math.log10(price.perM + 1) * priceWeight;
+      // Small quality tie-breaker on heavy tasks only if allowance & price are close
+      if (need === TIER.heavy && mt === 'heavy') score += 4;
 
       candidates.push({
         account: acct.displayName,
