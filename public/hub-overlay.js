@@ -13,6 +13,8 @@
   const origFetch = window.fetch.bind(window);
   const NativeEventSource = window.EventSource;
   const activeEventSources = new Set();
+  let lastFetchedBotId = null;
+  let onLiveBotEvent = null;
 
   class HubPolledEventSource {
     constructor(url) {
@@ -50,11 +52,19 @@
         this._seq = payload.seq;
         const events = payload.events || [];
         if (events.length > 0) {
+          let hasBotEv = false;
           for (const ev of events) {
             if (this._closed) return;
+            const dStr = String(ev.data || '');
+            if (dStr.includes('"bot"') || dStr.includes('"runtime"') || dStr.includes('"modelSelection"')) {
+              hasBotEv = true;
+            }
             if (typeof this.onmessage === 'function') {
               this.onmessage({ data: ev.data, lastEventId: ev.id || '' });
             }
+          }
+          if (hasBotEv && typeof onLiveBotEvent === 'function') {
+            onLiveBotEvent(false);
           }
         } else if (typeof this.onmessage === 'function') {
           // Keep OpenMausBot's 40s stale timer alive
@@ -148,12 +158,20 @@
     const url = String(args[0] || '');
     const opts = args[1] || {};
     const method = String(opts.method || 'GET').toUpperCase();
+    const mBot = url.match(/\/api\/bots\/([0-9a-f-]{8,})\b/i);
+    if (mBot) lastFetchedBotId = mBot[1];
     const p = origFetch.apply(this, args);
-    if (method === 'POST' && (url.includes('/messages') || url.includes('/tasks') || url.includes('/turns'))) {
+    if (
+      (method === 'POST' && (url.includes('/messages') || url.includes('/tasks') || url.includes('/turns'))) ||
+      (method === 'PATCH' && url.includes('/api/bots/'))
+    ) {
       p.then(() => {
         nudgeAllEventSources();
         setTimeout(nudgeAllEventSources, 250);
         setTimeout(nudgeAllEventSources, 600);
+        if (typeof onLiveBotEvent === 'function') {
+          onLiveBotEvent(true);
+        }
       }).catch(() => {});
     }
     if (method === 'POST' && (url.includes('/authorize') || url.includes('/auth/start'))) {
@@ -251,6 +269,32 @@
     .ash-pill-seg.go:disabled {
       opacity: 0.65;
       cursor: default;
+    }
+    .ash-pill-seg.next {
+      background: rgba(139, 92, 246, 0.24);
+      color: #ddd6fe;
+      font-weight: 700;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ash-pill-seg.next:hover {
+      background: rgba(139, 92, 246, 0.44);
+      color: #ffffff;
+    }
+    .ash-pill-seg.next.sent {
+      background: rgba(16, 185, 129, 0.55);
+      color: #ffffff;
+    }
+    .ash-pill-seg.next.warn {
+      background: rgba(245, 158, 11, 0.30);
+      color: #fde68a;
+    }
+    .ash-pill-seg.next:disabled {
+      opacity: 0.65;
+      cursor: default;
+    }
+    .ash-allow-short {
+      display: none;
     }
     .ash-pill-seg.auto {
       background: rgba(100, 116, 139, 0.22);
@@ -452,42 +496,73 @@
       user-select: none;
       -webkit-user-select: none;
     }
+    @media (max-width: 520px) {
+      #ash-pill {
+        gap: 2px;
+        padding: 3px 5px;
+        font-size: 11px;
+      }
+      .ash-pill-seg {
+        padding: 4px 6px;
+        gap: 4px;
+      }
+      .ash-allow-full {
+        display: none;
+      }
+      .ash-allow-short {
+        display: inline;
+      }
+    }
     @media (max-width: 768px) {
-      body:has([data-browser-surface]) #ash-pill {
+      body:has([data-browser-surface]) #ash-pill,
+      body:has([data-browser-surface]) #ash-running-model-note {
         display: none !important;
       }
     }
     #ash-running-model-note {
       position: fixed;
-      z-index: 99997;
+      z-index: 35;
       display: none;
       align-items: center;
-      gap: 6px;
-      padding: 3px 10px;
+      gap: 5px;
+      padding: 2px 9px;
       border-radius: 9999px;
-      background: rgba(15, 23, 42, 0.9);
+      background: rgba(15, 23, 42, 0.84);
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(56, 189, 248, 0.35);
+      border: 1px solid rgba(148, 163, 184, 0.28);
       color: #e2e8f0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 11px;
+      font-size: 10.5px;
+      line-height: 1.3;
       font-weight: 500;
+      opacity: 0.9;
       pointer-events: none;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+      transform: translateX(-50%);
       white-space: nowrap;
       max-width: calc(100vw - 24px);
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    #ash-running-model-note.running {
+      border-color: rgba(56, 189, 248, 0.50);
+      background: rgba(15, 23, 42, 0.92);
+      opacity: 1;
+    }
     #ash-running-model-note .ash-rm-dot {
       width: 6px;
       height: 6px;
       border-radius: 50%;
+      background: #10b981;
+      box-shadow: none;
+      animation: none;
+      flex-shrink: 0;
+    }
+    #ash-running-model-note.running .ash-rm-dot {
       background: #38bdf8;
       box-shadow: 0 0 6px #38bdf8;
       animation: ash-pulse 1.4s ease-in-out infinite;
-      flex-shrink: 0;
     }
     @keyframes ash-pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
@@ -498,13 +573,15 @@
 
   const pill = document.createElement('div');
   pill.id = 'ash-pill';
-  pill.title = 'Drag to move · Click Hub, Allowances, or Go';
+  pill.title = 'Drag to move · Click Hub, Allowances, Go, Next, or Auto';
   pill.innerHTML = `
     <button type="button" id="ash-btn-hub" class="ash-pill-seg" title="Open AI Studio Hub"><span>⚡ Hub</span><span id="ash-pill-dot"></span></button>
     <span class="ash-pill-div"></span>
-    <button type="button" id="ash-btn-allowances" class="ash-pill-seg allowances" title="View Model Allowances & Reset Times Across All Accounts"><span id="ash-allow-dot"></span><span>📊 Allowances</span></button>
+    <button type="button" id="ash-btn-allowances" class="ash-pill-seg allowances" title="View Model Allowances & Reset Times Across All Accounts"><span id="ash-allow-dot"></span><span>📊 <span class="ash-allow-full">Allowances</span><span class="ash-allow-short">Quota</span></span></button>
     <span class="ash-pill-div"></span>
     <button type="button" id="ash-btn-go" class="ash-pill-seg go" title="Send &quot;Go&quot; in the current chat"><span>▶ Go</span></button>
+    <span class="ash-pill-div"></span>
+    <button type="button" id="ash-btn-next" class="ash-pill-seg next" title="Send &quot;So what is the next step?&quot; in the current chat"><span>⏭ Next</span></button>
     <span class="ash-pill-div"></span>
     <button type="button" id="ash-btn-auto" class="ash-pill-seg auto" title="Toggle AI Auto-Routing (Model & Account Optimizer)"><span id="ash-auto-dot"></span><span>🤖 Auto</span></button>
   `;
@@ -573,7 +650,7 @@
       if (r.ok) {
         routerState = await r.json();
         syncAutoBtn();
-        if (backdrop.classList.contains('open') && activeTab === 'quotas') render();
+        if (backdrop.classList.contains('open') && activeTab === 'quotas') renderBody();
       }
     } catch {}
   }
@@ -590,7 +667,7 @@
       if (r.ok) {
         routerState = await r.json();
         syncAutoBtn();
-        if (backdrop.classList.contains('open') && activeTab === 'quotas') render();
+        if (backdrop.classList.contains('open') && activeTab === 'quotas') renderBody();
       }
     } catch {} finally {
       if (autoBtn) autoBtn.disabled = false;
@@ -923,7 +1000,7 @@
     if (savedPos) {
       const { x, y } = JSON.parse(savedPos);
       if (typeof x === 'number' && typeof y === 'number') {
-        const pillW = pill.offsetWidth || 240;
+        const pillW = pill.offsetWidth || 320;
         const pillH = pill.offsetHeight || 38;
         const maxW = Math.max(8, window.innerWidth - pillW - 8);
         const maxH = Math.max(8, window.innerHeight - pillH - 8);
@@ -1009,25 +1086,27 @@
     onDragEnd();
   });
 
-  let goSending = false;
-  let goFlashTimer = null;
+  let promptSending = false;
+  const promptFlashTimers = new Map();
 
-  function flashGoBtn(btn, label, cls, ms = 1100) {
+  function flashPromptBtn(btn, label, cls, ms = 1100, defaultHtml = '<span>▶ Go</span>') {
     if (!btn) return;
-    if (goFlashTimer) {
-      clearTimeout(goFlashTimer);
-      goFlashTimer = null;
+    const prev = promptFlashTimers.get(btn);
+    if (prev) {
+      clearTimeout(prev);
+      promptFlashTimers.delete(btn);
     }
     btn.classList.remove('sent', 'warn');
     if (cls) btn.classList.add(cls);
     btn.textContent = label;
     btn.disabled = true;
-    goFlashTimer = setTimeout(() => {
-      goFlashTimer = null;
+    const tid = setTimeout(() => {
+      promptFlashTimers.delete(btn);
       btn.classList.remove('sent', 'warn');
-      btn.innerHTML = '<span>▶ Go</span>';
+      btn.innerHTML = defaultHtml;
       btn.disabled = false;
     }, ms);
+    promptFlashTimers.set(btn, tid);
   }
 
   function findVisibleComposer() {
@@ -1059,34 +1138,35 @@
       if (b.disabled) return false;
       if (b.hasAttribute('data-composer-stop') || b.hasAttribute('aria-haspopup')) return false;
       const aria = String(b.getAttribute('aria-label') || '');
-      if (/stop|dictat|voice|record|mic/i.test(aria)) return false;
+      const title = String(b.getAttribute('title') || '');
+      if (/stop|dictat|voice|record|mic/i.test(aria) || /^stop\b|interrupt/i.test(title)) return false;
       return true;
     });
     return candidates[candidates.length - 1] || null;
   }
 
-  function triggerQuickGo(btn) {
-    if (goSending) return;
+  function triggerQuickPrompt(btn, promptText, defaultHtml) {
+    if (promptSending) return;
     const found = findVisibleComposer();
     if (!found || !found.ta) {
-      flashGoBtn(btn, 'No chat', 'warn');
+      flashPromptBtn(btn, 'No chat', 'warn', 1100, defaultHtml);
       return;
     }
     const { actionsEl, ta } = found;
     if (ta.disabled) {
-      flashGoBtn(btn, 'Busy', 'warn');
+      flashPromptBtn(btn, 'Busy', 'warn', 1100, defaultHtml);
       return;
     }
     const current = String(ta.value || '').trim();
-    if (current.length > 0 && current.toLowerCase() !== 'go') {
-      flashGoBtn(btn, 'Clear box', 'warn', 1300);
+    if (current.length > 0 && current.toLowerCase() !== promptText.toLowerCase()) {
+      flashPromptBtn(btn, 'Clear box', 'warn', 1300, defaultHtml);
       return;
     }
 
-    goSending = true;
+    promptSending = true;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-    if (setter) setter.call(ta, 'Go');
-    else ta.value = 'Go';
+    if (setter) setter.call(ta, promptText);
+    else ta.value = promptText;
     ta.dispatchEvent(new Event('input', { bubbles: true }));
 
     let frames = 0;
@@ -1095,8 +1175,8 @@
       const sendBtn = findComposerSendButton(actionsEl);
       if (sendBtn && !sendBtn.disabled) {
         sendBtn.click();
-        goSending = false;
-        flashGoBtn(btn, '✓ Sent', 'sent', 950);
+        promptSending = false;
+        flashPromptBtn(btn, '✓ Sent', 'sent', 950, defaultHtml);
         nudgeAllEventSources();
         return;
       }
@@ -1114,16 +1194,20 @@
         cancelable: true
       }));
       setTimeout(() => {
-        goSending = false;
+        promptSending = false;
         if (String(ta.value || '').trim() === '') {
-          flashGoBtn(btn, '✓ Sent', 'sent', 950);
+          flashPromptBtn(btn, '✓ Sent', 'sent', 950, defaultHtml);
           nudgeAllEventSources();
         } else {
-          flashGoBtn(btn, 'Retry', 'warn', 1200);
+          flashPromptBtn(btn, 'Retry', 'warn', 1200, defaultHtml);
         }
       }, 100);
     };
     requestAnimationFrame(trySend);
+  }
+
+  function triggerQuickGo(btn) {
+    return triggerQuickPrompt(btn, 'Go', '<span>▶ Go</span>');
   }
 
   pill.addEventListener('click', (e) => {
@@ -1137,6 +1221,13 @@
       e.preventDefault();
       e.stopPropagation();
       toggleAutoRouter();
+      return;
+    }
+    const nextBtn = e.target?.closest?.('#ash-btn-next');
+    if (nextBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerQuickPrompt(nextBtn, 'So what is the next step?', '<span>⏭ Next</span>');
       return;
     }
     const goBtn = e.target?.closest?.('#ash-btn-go');
@@ -1166,7 +1257,7 @@
 
   setTimeout(() => { loadHubState(false); loadRouterState(); }, 1500);
   setInterval(() => { loadHubState(false); loadRouterState(); }, 60000);
-  // Tiny live model note while an agent is actively running
+  // Live model badge (idle & running) right below the chat header
   const runNote = document.createElement('div');
   runNote.id = 'ash-running-model-note';
   document.body.appendChild(runNote);
@@ -1174,96 +1265,275 @@
   let botsCache = [];
   let lastBotsFetchAt = 0;
   let wasRunning = false;
+  let lastRunNoteHtml = '';
+  let liveBotTimer = null;
 
-  async function refreshBotsCache(force = false) {
-    if (!force && Date.now() - lastBotsFetchAt < 8000) return botsCache;
+  async function refreshBotsCache(force = false, maxAgeMs = 8000) {
+    if (!force && botsCache.length > 0 && Date.now() - lastBotsFetchAt < maxAgeMs) return botsCache;
     lastBotsFetchAt = Date.now();
     try {
       const r = await fetch('/api/bots');
       if (r.ok) {
         const d = await r.json();
-        if (Array.isArray(d.bots)) botsCache = d.bots;
+        const list = Array.isArray(d) ? d : (Array.isArray(d?.bots) ? d.bots : null);
+        if (list) botsCache = list;
       }
     } catch {}
     return botsCache;
   }
 
-  function detectActiveBot() {
+  function findBotByNameInText(text) {
+    const raw = String(text || '').trim();
+    if (!raw || !botsCache.length) return null;
+    const sorted = [...botsCache].filter((b) => b && b.name).sort((a, b) => b.name.length - a.name.length);
+    const patterns = [
+      /^Message\s+(.+)$/i,
+      /^Ask\s+(.+?)(?:\.\.\.|…)?$/i,
+      /^(.+?)\s+is working\b/i,
+      /^Open\s+(.+?)(?:'s|’s)\s+profile$/i,
+      /\b(?:queue|steer)\s+(?:for\s+)?(.+?)(?:\s*[.(—-]|$)/i
+    ];
+    for (const re of patterns) {
+      const m = raw.match(re);
+      if (m) {
+        const candidate = m[1].trim().toLowerCase();
+        const exact = sorted.find((b) => String(b.name || '').trim().toLowerCase() === candidate);
+        if (exact) return exact;
+      }
+    }
+    const lower = raw.toLowerCase();
+    for (const b of sorted) {
+      const nm = String(b.name || '').trim().toLowerCase();
+      if (!nm) continue;
+      const escaped = nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, 'i').test(lower)) {
+        return b;
+      }
+    }
+    return null;
+  }
+
+  function detectActiveBot(foundComposer) {
+    if (!botsCache.length) return null;
     const qBot = new URLSearchParams(window.location.search).get('bot');
     if (qBot) {
       const hit = botsCache.find((b) => b.id === qBot);
       if (hit) return hit;
     }
-    const ta = findVisibleComposer()?.ta;
-    const ph = String(ta?.getAttribute('placeholder') || '');
-    const m = ph.match(/^Message\s+(.+)$/i);
-    if (m) {
-      const targetName = m[1].trim().toLowerCase();
-      const hit = botsCache.find((b) => String(b.name || '').trim().toLowerCase() === targetName);
-      if (hit) return hit;
+    const loc = `${window.location.pathname || ''} ${window.location.hash || ''}`;
+    for (const b of botsCache) {
+      if (b.id && loc.includes(b.id)) return b;
     }
+    const ariaBot = findBotByNameInText(foundComposer?.ta?.getAttribute('aria-label'));
+    if (ariaBot) return ariaBot;
+
+    const phBot = findBotByNameInText(foundComposer?.ta?.getAttribute('placeholder'));
+    if (phBot) return phBot;
+
+    const sorted = [...botsCache].filter((b) => b && b.name).sort((a, b) => b.name.length - a.name.length);
+    const topEls = Array.from(document.querySelectorAll('button, h1, h2, [role="heading"]')).filter((el) => {
+      if (el.offsetParent === null) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.top < 100 && r.width > 0 && r.height > 0;
+    });
+    for (const el of topEls) {
+      const txt = String(el.textContent || '').trim().toLowerCase();
+      if (!txt) continue;
+      const exact = sorted.find((b) => String(b.name || '').trim().toLowerCase() === txt);
+      if (exact) return exact;
+    }
+
     const profileBtn = Array.from(document.querySelectorAll('button[aria-label^="Open "]')).find((b) =>
-      /'s profile$/i.test(b.getAttribute('aria-label') || '')
+      /(?:'s|’s)\s+profile$/i.test(b.getAttribute('aria-label') || '')
     );
     if (profileBtn) {
-      const pm = String(profileBtn.getAttribute('aria-label') || '').match(/^Open\s+(.+?)'s profile$/i);
-      if (pm) {
-        const targetName = pm[1].trim().toLowerCase();
-        const hit = botsCache.find((b) => String(b.name || '').trim().toLowerCase() === targetName);
-        if (hit) return hit;
-      }
+      const pBot = findBotByNameInText(profileBtn.getAttribute('aria-label'));
+      if (pBot) return pBot;
+    }
+
+    if (lastFetchedBotId) {
+      const hit = botsCache.find((b) => b.id === lastFetchedBotId);
+      if (hit) return hit;
     }
     return null;
+  }
+
+  function isComposerRunning(foundComposer) {
+    const visibleStopAttr = Array.from(document.querySelectorAll('[data-composer-stop]')).find(
+      (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0
+    );
+    if (visibleStopAttr) return true;
+
+    const stopRe = /^stop\b|stop\s+(?:this\s+)?turn|interrupt/i;
+    if (foundComposer?.actionsEl) {
+      const actButtons = Array.from(foundComposer.actionsEl.querySelectorAll('button')).filter(
+        (b) => b.offsetParent !== null && b.getBoundingClientRect().width > 0
+      );
+      for (const b of actButtons) {
+        const aria = String(b.getAttribute('aria-label') || '');
+        const title = String(b.getAttribute('title') || '');
+        if (stopRe.test(aria) || stopRe.test(title)) return true;
+      }
+    }
+
+    const headerButtons = Array.from(document.querySelectorAll('button')).filter((b) => {
+      if (b.offsetParent === null) return false;
+      const r = b.getBoundingClientRect();
+      return r.top >= 0 && r.top < 110 && r.width > 0 && r.height > 0;
+    });
+    for (const b of headerButtons) {
+      const aria = String(b.getAttribute('aria-label') || '');
+      const title = String(b.getAttribute('title') || '');
+      if (stopRe.test(aria) || stopRe.test(title)) return true;
+    }
+
+    const ph = String(foundComposer?.ta?.getAttribute('placeholder') || '');
+    if (/\bis working\b/i.test(ph)) return true;
+
+    return false;
   }
 
   function formatAccountLabel(instanceId) {
     if (!instanceId) return '';
     const accts = hubState?.allowances?.accounts || [];
     const hit = accts.find((a) => a.instanceId === instanceId);
-    if (hit?.displayName) return hit.displayName;
+    if (hit?.displayName) {
+      if (hit.displayName === 'Google Gemini (Antigravity)') return 'Mina';
+      return hit.displayName;
+    }
     if (instanceId === 'codex') return 'Codex';
-    if (instanceId === 'antigravity') return 'Antigravity';
+    if (instanceId === 'antigravity') return 'Mina';
+    if (instanceId === 'antigravity-803cef99-77bf-4686-b428-149233bd1050') return 'Mojtaba.mm';
+    if (instanceId === 'antigravity-78fdf303-92f9-41a2-bc00-5fc57f32c39c') return 'mojtaba';
     if (instanceId.startsWith('claude-')) return 'Claude';
     return instanceId;
   }
 
-  async function updateRunningModelNote() {
-    const stopBtn = Array.from(document.querySelectorAll('[data-composer-stop]')).find(
-      (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0
-    );
-    if (!stopBtn) {
-      wasRunning = false;
-      runNote.style.display = 'none';
-      return;
+  function formatModelLabel(modelId) {
+    const id = String(modelId || '').trim();
+    if (!id) return '';
+    const map = {
+      'claude-opus-5-5': 'Claude Opus 5.5',
+      'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+      'claude-haiku-5-5': 'Claude Haiku 5.5',
+      'gemini-pro-orchestrator-neon': 'Orchestrator Neon',
+      'gemini-pro-orchestrator-argon': 'Orchestrator Argon',
+      'gemini-3.8-flash': 'Gemini 3.8 Flash',
+      'gemini-4-neon': 'Gemini 4 Neon',
+      'gpt-6.2-sol': 'GPT-6.2 Sol',
+      'gpt-6-luna': 'GPT-6 Luna',
+      'gpt-oss-120b-medium': 'GPT-OSS 120B'
+    };
+    if (map[id]) return map[id];
+    let pretty = id
+      .replace(/^claude-([a-z]+)-(\d+)-(\d+)$/i, (_, f, a, b) => `Claude ${f[0].toUpperCase()}${f.slice(1)} ${a}.${b}`)
+      .replace(/^gpt-oss-(\d+[a-z]*)(?:-.+)?$/i, (_, sz) => `GPT-OSS ${sz.toUpperCase()}`)
+      .replace(/^gpt-([0-9.]+)-([a-z]+)$/i, (_, ver, tag) => `GPT-${ver} ${tag[0].toUpperCase()}${tag.slice(1)}`)
+      .replace(/^gemini-([0-9.]+)-([a-z]+)$/i, (_, ver, tag) => `Gemini ${ver} ${tag[0].toUpperCase()}${tag.slice(1)}`);
+    if (pretty === id) {
+      pretty = id.split('-').map((p) => (/^[0-9.]+$/.test(p) ? p : (p[0] ? p[0].toUpperCase() + p.slice(1) : p))).join(' ');
     }
-    const justStarted = !wasRunning;
-    wasRunning = true;
-    await refreshBotsCache(justStarted);
-    const bot = detectActiveBot();
-    const sel = bot?.modelSelection;
-    if (!sel || !sel.model) {
-      runNote.style.display = 'none';
-      return;
-    }
-    const acct = formatAccountLabel(sel.instanceId);
-    const modelText = acct ? `${acct} · ${sel.model}` : sel.model;
-    runNote.innerHTML = `<span class="ash-rm-dot"></span><span>Running on <b>${esc(modelText)}</b></span>`;
+    return pretty;
+  }
 
-    const comp = findVisibleComposer()?.ta?.closest('form, [data-composer], div') || stopBtn.closest('[data-composer-actions]')?.parentElement;
-    const rect = comp?.getBoundingClientRect();
-    if (rect && rect.top > 40) {
-      runNote.style.left = `${Math.max(12, Math.round(rect.left + 8))}px`;
-      runNote.style.top = `${Math.max(8, Math.round(rect.top - 28))}px`;
-      runNote.style.bottom = 'auto';
-    } else {
-      runNote.style.left = '14px';
-      runNote.style.bottom = '84px';
-      runNote.style.top = 'auto';
+  function resolveBotModel(bot) {
+    if (!bot) return null;
+    const tasks = Array.isArray(bot.tasks) ? bot.tasks : [];
+    const qThread = new URLSearchParams(window.location.search).get('thread');
+    const activeTask =
+      (qThread && tasks.find((t) => t.threadId === qThread)) ||
+      tasks.find((t) => t.threadId === bot.threadId) ||
+      null;
+    if (activeTask?.modelSelection?.model) return activeTask.modelSelection;
+    if (bot.modelSelection?.model) return bot.modelSelection;
+    const ctx = String(activeTask?.lastContextModel || '');
+    if (ctx.includes(':')) {
+      const idx = ctx.indexOf(':');
+      return { instanceId: ctx.slice(0, idx), model: ctx.slice(idx + 1) };
     }
+    return null;
+  }
+
+  async function updateRunningModelNote(forceRefresh = false) {
+    const found = findVisibleComposer();
+    if (!found || !found.ta) {
+      wasRunning = false;
+      lastRunNoteHtml = '';
+      runNote.style.display = 'none';
+      return;
+    }
+    const running = isComposerRunning(found);
+    const justStarted = running && !wasRunning;
+    wasRunning = running;
+    const maxAgeMs = running ? 5000 : 15000;
+    await refreshBotsCache(forceRefresh || justStarted || botsCache.length === 0, maxAgeMs);
+
+    const bot = detectActiveBot(found);
+    const sel = resolveBotModel(bot);
+    if (!sel || !sel.model) {
+      lastRunNoteHtml = '';
+      runNote.style.display = 'none';
+      return;
+    }
+
+    const acct = formatAccountLabel(sel.instanceId);
+    let modelLabel = formatModelLabel(sel.model);
+    if (acct && modelLabel.toLowerCase().startsWith(acct.toLowerCase() + ' ')) {
+      modelLabel = modelLabel.slice(acct.length + 1);
+    }
+    const label = acct ? `${acct} · ${modelLabel}` : modelLabel;
+    const nextHtml = running
+      ? `<span class="ash-rm-dot"></span><span>Running · <b>${esc(label)}</b></span>`
+      : `<span class="ash-rm-dot"></span><span><b>${esc(label)}</b></span>`;
+
+    runNote.classList.toggle('running', running);
+    if (nextHtml !== lastRunNoteHtml) {
+      lastRunNoteHtml = nextHtml;
+      runNote.innerHTML = nextHtml;
+    }
+
+    let headerBottom = 0;
+    const headerEl = document.querySelector('header');
+    if (headerEl && headerEl.offsetParent !== null) {
+      const hr = headerEl.getBoundingClientRect();
+      if (hr.width > 0 && hr.height > 0 && hr.bottom <= 125) headerBottom = hr.bottom;
+    }
+    if (!headerBottom) {
+      const topEls = Array.from(document.querySelectorAll('button, h1, h2, [role="heading"]')).filter((el) => {
+        if (el.offsetParent === null) return false;
+        const r = el.getBoundingClientRect();
+        return r.top >= 0 && r.top < 100 && r.height >= 24 && r.bottom <= 125 && r.width > 0;
+      });
+      for (const el of topEls) {
+        headerBottom = Math.max(headerBottom, el.getBoundingClientRect().bottom);
+      }
+    }
+    if (!headerBottom) headerBottom = 52;
+
+    const compEl = found.ta.closest('form, div') || found.actionsEl?.parentElement;
+    const compRect = compEl?.getBoundingClientRect();
+    let centerX = window.innerWidth / 2;
+    if (compRect && compRect.width > 0) {
+      centerX = compRect.left + compRect.width / 2;
+    }
+    centerX = Math.max(80, Math.min(centerX, Math.max(80, window.innerWidth - 80)));
+
+    runNote.style.top = `${Math.round(headerBottom + 4)}px`;
+    runNote.style.left = `${Math.round(centerX)}px`;
+    runNote.style.bottom = 'auto';
     runNote.style.display = 'flex';
   }
 
-  setInterval(() => { updateRunningModelNote(); }, 900);
+  onLiveBotEvent = (force) => {
+    if (liveBotTimer) clearTimeout(liveBotTimer);
+    liveBotTimer = setTimeout(() => {
+      liveBotTimer = null;
+      updateRunningModelNote(!!force);
+    }, 250);
+  };
+
+  setTimeout(() => { updateRunningModelNote(true); }, 250);
+  setInterval(() => { updateRunningModelNote(false); }, 900);
   }
 
   if (document.body) {
