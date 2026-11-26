@@ -20,6 +20,13 @@ import {
   syncHubCalendars,
   truncate
 } from './hub-core.mjs';
+import {
+  autoRouteMessage,
+  loadPolicy,
+  loadRouterState,
+  routeTask,
+  setRouterEnabled
+} from './hub-router.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1509,6 +1516,25 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // 2d. AI Auto-Router Status, Toggle & On-Demand Routing
+    if (pathname === '/api/hub/router' && req.method === 'GET') {
+      const state = loadRouterState();
+      return sendJson(res, 200, { ok: true, enabled: state.enabled, recentRoutes: state.recentRoutes, policy: loadPolicy() });
+    }
+    if (pathname === '/api/hub/router/toggle' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const body = raw ? JSON.parse(raw) : {};
+      const nextEnabled = body.enabled !== undefined ? !!body.enabled : !loadRouterState().enabled;
+      const state = setRouterEnabled(nextEnabled);
+      return sendJson(res, 200, { ok: true, enabled: state.enabled, recentRoutes: state.recentRoutes });
+    }
+    if (pathname === '/api/hub/route-task' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const body = raw ? JSON.parse(raw) : {};
+      const resRoute = await routeTask({ text: body.text, botName: body.botName, tier: body.tier });
+      return sendJson(res, resRoute.ok ? 200 : 503, resRoute);
+    }
+
     // 3. Hub State (Radar, Recent Native Chats, Quotas & Auto-Pilot, Multi-Account Allowances, Tunnel)
     if (pathname === '/api/hub/state' && req.method === 'GET') {
       const force = urlObj.searchParams.get('force') === '1';
@@ -1627,6 +1653,27 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 8. Reverse Proxy all other HTTP / SSE requests to OpenMausBot (127.0.0.1:8799)
+    // AI Auto-Route hook on POST /api/bots/:id/messages
+    let bufferedMsgBody = null;
+    const msgMatch = req.method === 'POST' ? pathname.match(/^\/api\/bots\/([^/]+)\/messages$/) : null;
+    if (msgMatch && loadRouterState().enabled) {
+      try {
+        bufferedMsgBody = await readBody(req);
+        const parsed = bufferedMsgBody.length ? JSON.parse(bufferedMsgBody.toString('utf8')) : {};
+        if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) {
+          const routed = await Promise.race([
+            autoRouteMessage({ botId: decodeURIComponent(msgMatch[1]), threadId: parsed.threadId, text: parsed.text }),
+            new Promise((r) => setTimeout(() => r({ skipped: true, reason: 'router timeout' }), 5500))
+          ]);
+          if (routed && routed.ok) {
+            console.log(`[AI Router] ${routed.botName} -> ${routed.account}/${routed.model} (${routed.tier}, ${routed.judge}, ${routed.ms}ms, switched=${routed.switched})`);
+          }
+        }
+      } catch (e) {
+        console.warn('[AI Router Warning]', e.message);
+      }
+    }
+
     const proxyHeaders = { ...req.headers };
     delete proxyHeaders['accept-encoding']; // avoid gzip so we can cleanly inject <script> into HTML
     const xfHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
@@ -1767,7 +1814,11 @@ const server = http.createServer(async (req, res) => {
       }
     });
 
-    req.pipe(proxyReq);
+    if (bufferedMsgBody !== null) {
+      proxyReq.end(bufferedMsgBody);
+    } else {
+      req.pipe(proxyReq);
+    }
   } catch (err) {
     if (!res.headersSent) sendJson(res, 500, { error: err.message });
   }

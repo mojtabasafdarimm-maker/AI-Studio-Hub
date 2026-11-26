@@ -252,6 +252,32 @@
       opacity: 0.65;
       cursor: default;
     }
+    .ash-pill-seg.auto {
+      background: rgba(100, 116, 139, 0.22);
+      color: #cbd5e1;
+      font-weight: 700;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ash-pill-seg.auto.on {
+      background: rgba(14, 165, 233, 0.26);
+      color: #7dd3fc;
+    }
+    .ash-pill-seg.auto:hover {
+      background: rgba(14, 165, 233, 0.38);
+      color: #ffffff;
+    }
+    #ash-auto-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #64748b;
+      display: inline-block;
+    }
+    .ash-pill-seg.auto.on #ash-auto-dot {
+      background: #38bdf8;
+      box-shadow: 0 0 6px #38bdf8;
+    }
     .ash-pill-div {
       width: 1px;
       height: 14px;
@@ -443,6 +469,8 @@
     <button type="button" id="ash-btn-allowances" class="ash-pill-seg allowances" title="View Model Allowances & Reset Times Across All Accounts"><span id="ash-allow-dot"></span><span>📊 Allowances</span></button>
     <span class="ash-pill-div"></span>
     <button type="button" id="ash-btn-go" class="ash-pill-seg go" title="Send &quot;Go&quot; in the current chat"><span>▶ Go</span></button>
+    <span class="ash-pill-div"></span>
+    <button type="button" id="ash-btn-auto" class="ash-pill-seg auto" title="Toggle AI Auto-Routing (Model & Account Optimizer)"><span id="ash-auto-dot"></span><span>🤖 Auto</span></button>
   `;
   document.body.appendChild(pill);
 
@@ -491,6 +519,46 @@
     activeTab = tabName;
     backdrop.querySelectorAll('.ash-tab').forEach((t) => t.classList.toggle('active', t.getAttribute('data-tab') === tabName));
     renderBody();
+  }
+
+  let routerState = null;
+
+  function syncAutoBtn() {
+    const autoBtn = document.getElementById('ash-btn-auto');
+    if (!autoBtn) return;
+    const on = routerState ? !!routerState.enabled : true;
+    autoBtn.classList.toggle('on', on);
+    autoBtn.title = on ? 'AI Auto-Router: ON (click to pause)' : 'AI Auto-Router: OFF (click to enable)';
+  }
+
+  async function loadRouterState() {
+    try {
+      const r = await fetch('/api/hub/router');
+      if (r.ok) {
+        routerState = await r.json();
+        syncAutoBtn();
+        if (backdrop.classList.contains('open') && activeTab === 'quotas') render();
+      }
+    } catch {}
+  }
+
+  async function toggleAutoRouter() {
+    const autoBtn = document.getElementById('ash-btn-auto');
+    if (autoBtn) autoBtn.disabled = true;
+    try {
+      const r = await fetch('/api/hub/router/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !(routerState ? routerState.enabled : true) })
+      });
+      if (r.ok) {
+        routerState = await r.json();
+        syncAutoBtn();
+        if (backdrop.classList.contains('open') && activeTab === 'quotas') render();
+      }
+    } catch {} finally {
+      if (autoBtn) autoBtn.disabled = false;
+    }
   }
 
   async function loadHubState(force = false) {
@@ -730,6 +798,24 @@
           ` : ''}
         `;
 
+        if (routerState) {
+          const rRoutes = (routerState.recentRoutes || []).slice(0, 5);
+          body.innerHTML += `
+            <div class="ash-card">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-weight:700; font-size:12.5px;">🤖 AI Auto-Router</div>
+                <span class="ash-badge" style="color:${routerState.enabled ? '#7dd3fc' : '#94a3b8'};">${routerState.enabled ? 'ON' : 'OFF'}</span>
+              </div>
+              ${rRoutes.length ? rRoutes.map((rt) => `
+                <div style="font-size:11px; color:#cbd5e1; display:flex; justify-content:space-between; gap:6px; border-top:1px solid rgba(148,163,184,0.12); padding-top:4px;">
+                  <span><b>${esc(rt.botName)}</b> → ${esc(rt.account)} / ${esc(rt.modelLabel || rt.model)}</span>
+                  <span style="color:#94a3b8; white-space:nowrap;">${esc(rt.tier)}</span>
+                </div>
+                <div style="font-size:10.5px; color:#94a3b8; margin-top:-3px;">${esc(rt.reason)} (${esc(rt.judge)})</div>
+              `).join('') : '<div style="font-size:11px; color:#94a3b8;">No routed prompts yet. Send a message with Auto ON to see decisions here.</div>'}
+            </div>
+          `;
+        }
         document.getElementById('ash-allow-refresh')?.addEventListener('click', () => loadHubState(true));
         return;
       }
@@ -1010,6 +1096,13 @@
       e.stopPropagation();
       return;
     }
+    const autoBtn = e.target?.closest?.('#ash-btn-auto');
+    if (autoBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleAutoRouter();
+      return;
+    }
     const goBtn = e.target?.closest?.('#ash-btn-go');
     if (goBtn) {
       e.preventDefault();
@@ -1035,7 +1128,8 @@
     });
   });
 
-  setTimeout(() => loadHubState(false), 1500);
+  setTimeout(() => { loadHubState(false); loadRouterState(); }, 1500);
+  setInterval(() => { loadHubState(false); loadRouterState(); }, 60000);
   setInterval(() => loadHubState(false), 60000);
   }
 

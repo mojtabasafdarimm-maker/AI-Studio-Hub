@@ -1,23 +1,24 @@
-// hub-router.mjs — Subscription-aware task router for AI Studio Hub.
+// hub-router.mjs — Subscription-aware AI task router for AI Studio Hub.
 //
 // Fits your exact setup: bots run on *accounts* (Codex, 3x Google/Antigravity) instead of per-token APIs.
-// The router:
-//   1. Classifies a task into a capability tier (light / standard / heavy)
-//   2. Reads live allowance headroom for every connected account (from /api/hub/allowances)
-//   3. Fetches each model's public $/1M token price from OpenRouter's live catalog (no API key needed)
-//      as a relative cost weight (with fallback tier weights)
-//   4. Picks the most cost-effective capable model on the account with the most usable headroom
-//   5. Optionally takes over and switches the bot to that account/model via /api/hub/switch-bot-account
-//
-// Editable policy: %LOCALAPPDATA%\AIStudioHub\router-policy.json (auto-created on first run).
+// Flow when a prompt is sent to any bot:
+//   1. Fast zero-cost bypasses: short continuations ("ok", "yes", "go") keep current model unless quota < 12%;
+//      scheduled routines stay on Flash.
+//   2. Context-rich AI judge (~1s, ~700 tokens, zero agent/MCP overhead): calls gemini-2.5-flash-lite directly
+//      via Antigravity OAuth using: bot role + thread's FIRST message (goal) + last 12 text/digest messages + prompt.
+//   3. Account + online-price optimizer: combines the AI's tier with live /api/hub/allowances headroom and
+//      cached OpenRouter $/1M pricing, then automatically switches the bot/thread before its turn starts.
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR } from './hub-core.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { DATA_DIR, OMB_DATA_DIR } from './hub-core.mjs';
 
 const POLICY_FILE = path.join(DATA_DIR, 'router-policy.json');
 const CATALOG_FILE = path.join(DATA_DIR, 'model-catalog.json');
+const STATE_FILE = path.join(DATA_DIR, 'router-state.json');
 const CATALOG_TTL_MS = 24 * 3600 * 1000;
 const HUB = 'http://127.0.0.1:4747';
+const OMB = 'http://127.0.0.1:8799';
 
 const TIER = { light: 0, standard: 1, heavy: 2 };
 
@@ -55,6 +56,51 @@ export function loadPolicy() {
   }
 }
 
+export function loadRouterState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) {
+      const init = { enabled: true, recentRoutes: [] };
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(STATE_FILE, JSON.stringify(init, null, 2), 'utf8');
+      return init;
+    }
+    const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    return {
+      enabled: parsed.enabled !== false,
+      recentRoutes: Array.isArray(parsed.recentRoutes) ? parsed.recentRoutes : []
+    };
+  } catch {
+    return { enabled: true, recentRoutes: [] };
+  }
+}
+
+export function saveRouterState(next) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const out = {
+      enabled: next.enabled !== false,
+      recentRoutes: (next.recentRoutes || []).slice(0, 20)
+    };
+    fs.writeFileSync(STATE_FILE, JSON.stringify(out, null, 2), 'utf8');
+    return out;
+  } catch {
+    return next;
+  }
+}
+
+export function setRouterEnabled(enabled) {
+  const cur = loadRouterState();
+  cur.enabled = !!enabled;
+  return saveRouterState(cur);
+}
+
+function recordRoute(entry) {
+  const cur = loadRouterState();
+  cur.recentRoutes.unshift({ at: new Date().toISOString(), ...entry });
+  cur.recentRoutes = cur.recentRoutes.slice(0, 20);
+  saveRouterState(cur);
+}
+
 const slug = (s) => String(s || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]+/g, '');
 
 export async function loadCatalog(force = false) {
@@ -65,7 +111,7 @@ export async function loadCatalog(force = false) {
     }
   } catch {}
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(12000) });
+    const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     const models = {};
@@ -153,11 +199,162 @@ function headroomFor(account, model) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Thread Context Reader (First Goal + Last 12 Substantive Turns from messages.db)
+// -----------------------------------------------------------------------------
+function getBotSnapshot(botId) {
+  try {
+    const bots = JSON.parse(fs.readFileSync(path.join(OMB_DATA_DIR, 'bots.json'), 'utf8'));
+    return bots.find((b) => b.id === botId || String(b.name || '').toLowerCase() === String(botId || '').toLowerCase()) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function getThreadContext(threadId, botId) {
+  const bot = getBotSnapshot(botId);
+  const botInfo = bot
+    ? { id: bot.id, name: bot.name, title: bot.title || '', description: bot.description || '', threadId: threadId || bot.threadId, modelSelection: bot.modelSelection || null }
+    : { id: botId, name: String(botId || 'bot'), title: '', description: '', threadId, modelSelection: null };
+
+  const tid = threadId || bot?.threadId;
+  if (!tid) return { botInfo, firstGoal: '', recentTurns: [] };
+
+  try {
+    const dbPath = path.join(OMB_DATA_DIR, 'messages.db');
+    if (!fs.existsSync(dbPath)) return { botInfo, firstGoal: '', recentTurns: [] };
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+    const first = db.prepare(`
+      SELECT text FROM messages
+      WHERE thread_id = ? AND role = 'user' AND text IS NOT NULL AND trim(text) != ''
+      ORDER BY at ASC LIMIT 1
+    `).get(tid);
+    const recent = db.prepare(`
+      SELECT role, kind, text FROM messages
+      WHERE thread_id = ? AND kind IN ('text', 'digest') AND text IS NOT NULL AND trim(text) != ''
+      ORDER BY at DESC LIMIT 12
+    `).all(tid);
+    db.close();
+
+    const clip = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+    return {
+      botInfo,
+      firstGoal: first ? clip(first.text, 320) : '',
+      recentTurns: recent.reverse().map((r) => `[${r.role}/${r.kind}] ${clip(r.text, 240)}`)
+    };
+  } catch {
+    return { botInfo, firstGoal: '', recentTurns: [] };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Fast Direct Flash AI Judge (gemini-2.5-flash-lite via Antigravity OAuth, ~0.7s)
+// -----------------------------------------------------------------------------
+const oauthCache = new Map();
+
+function listAntigravityTokens() {
+  const dir = path.join(OMB_DATA_DIR, 'providers', 'antigravity');
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const sub of fs.readdirSync(dir)) {
+    const p = path.join(dir, sub, 'antigravity-acp', 'acp_token.json');
+    if (fs.existsSync(p)) out.push(p);
+  }
+  return out;
+}
+
+async function getAccessTokenForFile(tokenFile) {
+  const cached = oauthCache.get(tokenFile);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached;
+  const creds = JSON.parse(fs.readFileSync(tokenFile, 'utf8'));
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: creds.client_id,
+      client_secret: creds.client_secret,
+      refresh_token: creds.refresh_token
+    }),
+    signal: AbortSignal.timeout(3000)
+  });
+  if (!res.ok) throw new Error(`OAuth HTTP ${res.status}`);
+  const tok = await res.json();
+  if (!tok.access_token) throw new Error('No access_token');
+  const entry = {
+    accessToken: tok.access_token,
+    projectId: creds.project_id,
+    expiresAt: Date.now() + (Number(tok.expires_in) || 3500) * 1000
+  };
+  oauthCache.set(tokenFile, entry);
+  return entry;
+}
+
+export async function aiJudgeTask({ botInfo, firstGoal, recentTurns, prompt }) {
+  const tokens = listAntigravityTokens();
+  if (!tokens.length) return null;
+
+  const sysPrompt = [
+    'You are a fast model-tier router for an AI agent hub. Choose the lowest tier that will succeed cleanly:',
+    '- "light": quick inbox/calendar checks, simple lookups, status updates, short replies, reminders, summarizing short text.',
+    '- "standard": normal writing, multi-step web/form tasks, moderate analysis, drafting emails/reports, standard scripts.',
+    '- "heavy": complex coding/debugging/refactoring, multi-file engineering, test regressions, mathematical proofs, deep thesis/research synthesis.',
+    'Use the thread history (especially the original goal and recent turns) so short follow-ups like "do the next part" inherit the true task difficulty.',
+    'Reply ONLY with JSON: {"tier":"light|standard|heavy","reason":"<=10 words"}.'
+  ].join('\n');
+
+  const userContent = [
+    `Bot: ${botInfo.name}${botInfo.title ? ` (${botInfo.title})` : ''}`,
+    botInfo.description ? `Role: ${botInfo.description.slice(0, 180)}` : '',
+    firstGoal ? `Thread original goal: ${firstGoal}` : '',
+    recentTurns.length ? `Recent thread turns:\n${recentTurns.join('\n')}` : 'Recent thread turns: (new thread)',
+    `New user prompt: ${String(prompt || '').slice(0, 1200)}`
+  ].filter(Boolean).join('\n\n');
+
+  for (const tf of tokens) {
+    try {
+      const auth = await getAccessTokenForFile(tf);
+      const res = await fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${auth.accessToken}`,
+          'User-Agent': `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch}; cl=963137146)`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          project: auth.projectId,
+          model: 'gemini-2.5-flash-lite',
+          request: {
+            contents: [{ role: 'user', parts: [{ text: `${sysPrompt}\n\n---\n${userContent}` }] }],
+            generationConfig: { temperature: 0, maxOutputTokens: 120, responseMimeType: 'application/json' }
+          }
+        }),
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const parts = data?.response?.candidates?.[0]?.content?.parts || [];
+      const rawText = parts.filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('').trim();
+      const parsed = JSON.parse(rawText);
+      if (parsed && ['light', 'standard', 'heavy'].includes(parsed.tier)) {
+        return {
+          tier: parsed.tier,
+          reason: String(parsed.reason || 'AI context judge').slice(0, 80),
+          judge: 'ai:gemini-2.5-flash-lite'
+        };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------------------
+// Core Routing Engine
+// -----------------------------------------------------------------------------
 export async function routeTask({ text, botName, tier: forcedTier, allowances, catalog, policy } = {}) {
   policy = policy || loadPolicy();
   catalog = catalog || (await loadCatalog());
   if (!allowances) {
-    const res = await fetch(`${HUB}/api/hub/allowances`, { signal: AbortSignal.timeout(20000) });
+    const res = await fetch(`${HUB}/api/hub/allowances`, { signal: AbortSignal.timeout(15000) });
     allowances = await res.json();
   }
   const cls = forcedTier ? { tier: forcedTier, score: null, reasons: ['forced tier'] } : classifyTask(text, policy);
@@ -183,11 +380,11 @@ export async function routeTask({ text, botName, tier: forcedTier, allowances, c
       if (hr.percent < policy.minHeadroomPercent) continue;
       const price = priceFor(m, mt, catalog, policy);
 
-      let score = hr.percent; // Prefer accounts with higher remaining quota
-      score -= (TIER[mt] - need) * 25; // Avoid burning a heavy model on a light task
-      score -= Math.log10(price.perM + 1) * 14; // Relative cost weight from OpenRouter pricing
+      let score = hr.percent;
+      score -= (TIER[mt] - need) * 25;
+      score -= Math.log10(price.perM + 1) * 14;
       if (hr.weekly && hr.weekly.hoursUntilReset != null && hr.weekly.hoursUntilReset < 24 && hr.weekly.remainingPercent > 30) {
-        score += 15; // Use-it-or-lose-it bonus if weekly quota resets within 24h
+        score += 15;
       }
 
       candidates.push({
@@ -220,12 +417,117 @@ export async function routeTask({ text, botName, tier: forcedTier, allowances, c
   };
 }
 
-export async function applyRoute(botName, rec) {
+export async function applyRoute(botNameOrId, rec, threadId) {
+  const bot = getBotSnapshot(botNameOrId);
+  if (bot) {
+    const tid = threadId || bot.threadId;
+    const res = await fetch(`${OMB}/api/bots/${encodeURIComponent(bot.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...(tid ? { threadId: tid } : {}),
+        modelSelection: { instanceId: rec.instanceId, model: rec.model }
+      }),
+      signal: AbortSignal.timeout(6000)
+    });
+    if (res.ok) return { ok: true, botId: bot.id, threadId: tid, modelSelection: { instanceId: rec.instanceId, model: rec.model } };
+  }
   const res = await fetch(`${HUB}/api/hub/switch-bot-account`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ botName, account: rec.instanceId, model: rec.model }),
-    signal: AbortSignal.timeout(12000)
+    body: JSON.stringify({ botName: botNameOrId, account: rec.instanceId, model: rec.model }),
+    signal: AbortSignal.timeout(8000)
   });
   return res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+}
+
+// -----------------------------------------------------------------------------
+// Automatic Pre-Turn Router (called by server.js on POST /api/bots/:id/messages)
+// -----------------------------------------------------------------------------
+const QUICK_ACK_RE = /^(ok|okay|yes|yep|yeah|no|nope|go|continue|resume|retry|done|send|send it|send that|send that email|looks good|sounds good|proceed|please proceed|thanks|thank you)[.!?\s]*$/i;
+
+export async function autoRouteMessage({ botId, threadId, text, allowances } = {}) {
+  const t0 = Date.now();
+  const state = loadRouterState();
+  if (!state.enabled) return { skipped: true, reason: 'auto-route off' };
+
+  const prompt = String(text || '').trim();
+  if (!prompt) return { skipped: true, reason: 'empty prompt' };
+
+  const ctx = getThreadContext(threadId, botId);
+  const botName = ctx.botInfo.name;
+
+  // 1. Scheduled routines: keep on light without burning AI judge
+  const isRoutine = /^\[Scheduled routine\b/i.test(prompt) || /Trigger id:/i.test(prompt);
+  // 2. Short confirmations: keep current model (0 extra tokens) unless current account is low
+  const isQuickAck = prompt.length <= 40 && QUICK_ACK_RE.test(prompt);
+
+  if (isQuickAck) {
+    // Only check if current account is healthy (using cached allowances if available)
+    if (allowances && ctx.botInfo.modelSelection?.instanceId) {
+      const curAcct = (allowances.accounts || []).find((a) => a.instanceId === ctx.botInfo.modelSelection.instanceId);
+      const curMin = curAcct ? Math.min(...[curAcct.fiveHour?.remainingPercent, curAcct.weekly?.remainingPercent].filter(Number.isFinite)) : 100;
+      if (curMin >= loadPolicy().minHeadroomPercent) {
+        return { skipped: true, reason: 'quick confirmation (kept current model)' };
+      }
+    } else {
+      return { skipped: true, reason: 'quick confirmation (kept current model)' };
+    }
+  }
+
+  let decided = null;
+  if (isRoutine) {
+    decided = { tier: 'light', reason: 'scheduled routine', judge: 'bypass:routine' };
+  } else if (/#heavy\b/i.test(prompt)) {
+    decided = { tier: 'heavy', reason: 'explicit #heavy tag', judge: 'override' };
+  } else if (/#light\b/i.test(prompt)) {
+    decided = { tier: 'light', reason: 'explicit #light tag', judge: 'override' };
+  } else if (/#standard\b/i.test(prompt)) {
+    decided = { tier: 'standard', reason: 'explicit #standard tag', judge: 'override' };
+  } else {
+    decided = await aiJudgeTask({
+      botInfo: ctx.botInfo,
+      firstGoal: ctx.firstGoal,
+      recentTurns: ctx.recentTurns,
+      prompt
+    });
+  }
+
+  const routed = await routeTask({
+    text: prompt,
+    botName,
+    tier: decided?.tier,
+    allowances
+  });
+
+  if (!routed.ok || !routed.recommendation) {
+    return { skipped: true, reason: routed.note || 'no eligible route' };
+  }
+
+  const rec = routed.recommendation;
+  const curSel = ctx.botInfo.modelSelection;
+  const alreadyOnTarget = curSel && curSel.instanceId === rec.instanceId && curSel.model === rec.model;
+
+  let applied = { ok: true, unchanged: true };
+  if (!alreadyOnTarget) {
+    applied = await applyRoute(ctx.botInfo.id, rec, ctx.botInfo.threadId);
+  }
+
+  const summary = {
+    botId: ctx.botInfo.id,
+    botName,
+    tier: decided?.tier || routed.classification.tier,
+    reason: decided?.reason || routed.classification.reasons.join(', ') || 'classified',
+    judge: decided?.judge || 'heuristic',
+    account: rec.account,
+    instanceId: rec.instanceId,
+    model: rec.model,
+    modelLabel: rec.modelLabel,
+    headroomPercent: rec.headroomPercent,
+    pricePerMTokens: rec.pricePerMTokens,
+    switched: !alreadyOnTarget && !!applied?.ok,
+    ms: Date.now() - t0
+  };
+  recordRoute(summary);
+  return { ok: true, ...summary };
 }
