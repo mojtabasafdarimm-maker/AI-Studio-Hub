@@ -1741,6 +1741,14 @@
     const maxAgeMs = running ? 5000 : 15000;
     await refreshBotsCache(forceRefresh || justStarted || botsCache.length === 0, maxAgeMs);
 
+    // Only show the model while a response is being generated, beside the "Running for" status.
+    const anchor = running ? findRunningStatusAnchor() : null;
+    if (!anchor) {
+      lastRunNoteHtml = '';
+      runNote.style.display = 'none';
+      return;
+    }
+
     const bot = detectActiveBot(found);
     const sel = resolveBotModel(bot);
     if (!sel || !sel.model) {
@@ -1755,46 +1763,41 @@
       modelLabel = modelLabel.slice(acct.length + 1);
     }
     const label = acct ? `${acct} · ${modelLabel}` : modelLabel;
-    const nextHtml = running
-      ? `<span class="ash-rm-dot"></span><span>Running · <b>${esc(label)}</b></span>`
-      : `<span class="ash-rm-dot"></span><span><b>${esc(label)}</b></span>`;
+    const nextHtml = `<span class="ash-rm-dot"></span><span>${esc(label)}</span>`;
 
-    runNote.classList.toggle('running', running);
+    runNote.classList.add('running');
     if (nextHtml !== lastRunNoteHtml) {
       lastRunNoteHtml = nextHtml;
       runNote.innerHTML = nextHtml;
     }
 
-    let headerBottom = 0;
-    const headerEl = document.querySelector('header');
-    if (headerEl && headerEl.offsetParent !== null) {
-      const hr = headerEl.getBoundingClientRect();
-      if (hr.width > 0 && hr.height > 0 && hr.bottom <= 125) headerBottom = hr.bottom;
+    // Place the badge just to the right of the "Running for …" status text, not at the page top.
+    const ar = anchor.getBoundingClientRect();
+    if (!ar.width || !ar.height) {
+      runNote.style.display = 'none';
+      return;
     }
-    if (!headerBottom) {
-      const topEls = Array.from(document.querySelectorAll('button, h1, h2, [role="heading"]')).filter((el) => {
-        if (el.offsetParent === null) return false;
-        const r = el.getBoundingClientRect();
-        return r.top >= 0 && r.top < 100 && r.height >= 24 && r.bottom <= 125 && r.width > 0;
-      });
-      for (const el of topEls) {
-        headerBottom = Math.max(headerBottom, el.getBoundingClientRect().bottom);
-      }
-    }
-    if (!headerBottom) headerBottom = 52;
-
-    const compEl = found.ta.closest('form, div') || found.actionsEl?.parentElement;
-    const compRect = compEl?.getBoundingClientRect();
-    let centerX = window.innerWidth / 2;
-    if (compRect && compRect.width > 0) {
-      centerX = compRect.left + compRect.width / 2;
-    }
-    centerX = Math.max(80, Math.min(centerX, Math.max(80, window.innerWidth - 80)));
-
-    runNote.style.top = `${Math.round(headerBottom + 4)}px`;
-    runNote.style.left = `${Math.round(centerX)}px`;
+    const noteH = runNote.offsetHeight || 20;
+    const left = Math.min(ar.right + 10, window.innerWidth - 220);
+    runNote.style.top = `${Math.round(ar.top + (ar.height - noteH) / 2)}px`;
+    runNote.style.left = `${Math.round(Math.max(8, left))}px`;
     runNote.style.bottom = 'auto';
     runNote.style.display = 'flex';
+  }
+
+  // Finds the visible "Running for …" status text in the chat and returns its element.
+  function findRunningStatusAnchor() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const txt = String(node.nodeValue || '').trim();
+      if (!/^Running for\b/i.test(txt)) continue;
+      const el = node.parentElement;
+      if (!el || el.closest('#ash-running-model-note') || el.offsetParent === null) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight) return el;
+    }
+    return null;
   }
 
   function formatShortTime(ts) {
