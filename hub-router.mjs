@@ -29,7 +29,7 @@ export const DEFAULT_POLICY = {
     { match: 'sonnet|carbon|gpt-oss|gpt-6-luna|luna|pro', tier: 'standard' },
     { match: 'flash|hydrogen|mini|lite|haiku', tier: 'light' }
   ],
-  avoidModels: ['argon'], // Do not assign Argon unless explicitly requested
+  avoidModels: ['argon', 'gpt-oss'], // Do not assign Argon or low-capacity/128k gpt-oss unless explicitly requested
   avoidInstances: ['claudeApi'], // Never spend pay-per-token API credits automatically; use subscriptions only
   reserveAccounts: { codex: ['GlenNeely'] },
   fallbackPricePerM: { light: 0.4, standard: 4, heavy: 12 },
@@ -214,16 +214,19 @@ function getBotSnapshot(botId) {
 
 export function getThreadContext(threadId, botId) {
   const bot = getBotSnapshot(botId);
+  const taskSnap = bot && threadId ? (bot.tasks || []).find((t) => t.threadId === threadId) : null;
+  const effectiveModelSel = taskSnap?.modelSelection || bot?.modelSelection || null;
+  const contextTokens = Number(taskSnap?.usage?.context?.tokens || 0);
   const botInfo = bot
-    ? { id: bot.id, name: bot.name, title: bot.title || '', description: bot.description || '', threadId: threadId || bot.threadId, modelSelection: bot.modelSelection || null }
+    ? { id: bot.id, name: bot.name, title: bot.title || '', description: bot.description || '', threadId: threadId || bot.threadId, modelSelection: effectiveModelSel }
     : { id: botId, name: String(botId || 'bot'), title: '', description: '', threadId, modelSelection: null };
 
   const tid = threadId || bot?.threadId;
-  if (!tid) return { botInfo, firstGoal: '', recentTurns: [] };
+  if (!tid) return { botInfo, firstGoal: '', recentTurns: [], lastTurnFailed: false, contextTokens };
 
   try {
     const dbPath = path.join(OMB_DATA_DIR, 'messages.db');
-    if (!fs.existsSync(dbPath)) return { botInfo, firstGoal: '', recentTurns: [] };
+    if (!fs.existsSync(dbPath)) return { botInfo, firstGoal: '', recentTurns: [], lastTurnFailed: false, contextTokens };
     const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
     const first = db.prepare(`
       SELECT text FROM messages
@@ -231,20 +234,34 @@ export function getThreadContext(threadId, botId) {
       ORDER BY at ASC LIMIT 1
     `).get(tid);
     const recent = db.prepare(`
-      SELECT role, kind, text FROM messages
+      SELECT role, kind, text, json FROM messages
       WHERE thread_id = ? AND kind IN ('text', 'digest') AND text IS NOT NULL AND trim(text) != ''
       ORDER BY at DESC LIMIT 12
     `).all(tid);
     db.close();
 
+    let lastTurnFailed = false;
+    const lastBot = recent.find((r) => r.role === 'bot');
+    if (lastBot) {
+      try {
+        const meta = JSON.parse(lastBot.json || '{}');
+        if (meta.turnSucceeded === false) lastTurnFailed = true;
+      } catch {}
+      if (!lastTurnFailed && /\bno capacity available\b|\bquota reached\b|\brate.?limit\b|\bcontext.?length\b|\btoo many tokens\b/i.test(lastBot.text || '')) {
+        lastTurnFailed = true;
+      }
+    }
+
     const clip = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
     return {
       botInfo,
       firstGoal: first ? clip(first.text, 320) : '',
-      recentTurns: recent.reverse().map((r) => `[${r.role}/${r.kind}] ${clip(r.text, 240)}`)
+      recentTurns: recent.reverse().map((r) => `[${r.role}/${r.kind}] ${clip(r.text, 240)}`),
+      lastTurnFailed,
+      contextTokens
     };
   } catch {
-    return { botInfo, firstGoal: '', recentTurns: [] };
+    return { botInfo, firstGoal: '', recentTurns: [], lastTurnFailed: false, contextTokens };
   }
 }
 
@@ -351,7 +368,7 @@ export async function aiJudgeTask({ botInfo, firstGoal, recentTurns, prompt }) {
 // -----------------------------------------------------------------------------
 // Core Routing Engine
 // -----------------------------------------------------------------------------
-export async function routeTask({ text, botName, tier: forcedTier, allowances, catalog, policy } = {}) {
+export async function routeTask({ text, botName, tier: forcedTier, allowances, catalog, policy, contextTokens = 0 } = {}) {
   policy = policy || loadPolicy();
   catalog = catalog || (await loadCatalog());
   if (!allowances) {
@@ -376,6 +393,10 @@ export async function routeTask({ text, botName, tier: forcedTier, allowances, c
 
     for (const m of acct.availableModels || []) {
       if (policy.avoidModels.some((a) => `${m.id} ${m.label}`.toLowerCase().includes(a))) continue;
+      if (contextTokens > 85000) {
+        const catHit = catalog.models?.[slug(m.id)] || catalog.models?.[slug(m.label)];
+        if (catHit?.ctx && catHit.ctx < 200000) continue;
+      }
       const mt = modelTier(m, policy);
       // Light tasks -> any tier; Standard -> standard/heavy; Heavy -> standard (e.g. Sonnet) or heavy (only pure light/mini models excluded)
       if (need === TIER.standard && TIER[mt] < TIER.standard) continue;
@@ -481,12 +502,16 @@ export async function autoRouteMessage({ botId, threadId, text, allowances } = {
   // 2. Short confirmations: keep current model (0 extra tokens) unless current account is low
   const isQuickAck = prompt.length <= 40 && QUICK_ACK_RE.test(prompt);
 
-  if (isQuickAck) {
+  const policy = loadPolicy();
+  const curModelLow = String(ctx.botInfo.modelSelection?.model || '').toLowerCase();
+  const currentModelAvoided = Boolean(curModelLow && (policy.avoidModels || []).some((a) => curModelLow.includes(String(a).toLowerCase())));
+
+  if (isQuickAck && !ctx.lastTurnFailed && !currentModelAvoided) {
     // Only check if current account is healthy (using cached allowances if available)
     if (allowances && ctx.botInfo.modelSelection?.instanceId) {
       const curAcct = (allowances.accounts || []).find((a) => a.instanceId === ctx.botInfo.modelSelection.instanceId);
       const curMin = curAcct ? Math.min(...[curAcct.fiveHour?.remainingPercent, curAcct.weekly?.remainingPercent].filter(Number.isFinite)) : 100;
-      if (curMin >= loadPolicy().minHeadroomPercent) {
+      if (curMin >= policy.minHeadroomPercent) {
         return { skipped: true, reason: 'quick confirmation (kept current model)' };
       }
     } else {
@@ -516,7 +541,9 @@ export async function autoRouteMessage({ botId, threadId, text, allowances } = {
     text: prompt,
     botName,
     tier: decided?.tier,
-    allowances
+    allowances,
+    policy,
+    contextTokens: ctx.contextTokens
   });
 
   if (!routed.ok || !routed.recommendation) {
