@@ -39,10 +39,10 @@ export const DEFAULT_POLICY = {
     'full test', 'end-to-end', 'thesis', 'proof'
   ],
   lightKeywords: [
-    'check', 'status', 'summari[sz]e', 'list', 'remind', 'triage', 'nothing new',
-    'watch', 'lookup', 'look up', 'look into', 'look in', 'search', 'find', 'see if',
-    'scan', 'cited', 'citation', 'papers?', 'forward', 'reply yes', 'usage', 'quota',
-    'inbox', 'add', 'put', 'show', 'open', 'read'
+    'check', 'status', 'summari[sz]e', 'list\\b', 'remind', 'triage', 'nothing new',
+    'watch\\b', 'lookup', 'look up', 'look into', 'look in\\b', 'search\\b', 'find\\b', 'see if\\b',
+    'scan\\b', 'cited\\b', 'citation', 'papers?\\b', 'forward\\b', 'reply yes', 'usage', 'quota',
+    'inbox', 'add\\b', 'put\\b', 'show\\b', 'open\\b', 'read\\b'
   ]
 };
 
@@ -152,7 +152,8 @@ export function classifyTask(text, policy = loadPolicy()) {
   const reasons = [];
   let score = 1;
   if (t.length > 2500) { score += 1; reasons.push('long prompt'); }
-  else if (t.length < 280) { score -= 0.6; reasons.push('short prompt'); }
+  else if (t.length < 120) { score -= 0.6; reasons.push('very short prompt'); }
+  else if (t.length < 280) { score -= 0.5; reasons.push('short prompt'); }
   if (/```|function |class |def |import |\.py\b|\.mjs\b|\.js\b|\.ts\b/.test(t)) {
     score += 0.6;
     reasons.push('contains code');
