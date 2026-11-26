@@ -1166,7 +1166,104 @@
 
   setTimeout(() => { loadHubState(false); loadRouterState(); }, 1500);
   setInterval(() => { loadHubState(false); loadRouterState(); }, 60000);
-  setInterval(() => loadHubState(false), 60000);
+  // Tiny live model note while an agent is actively running
+  const runNote = document.createElement('div');
+  runNote.id = 'ash-running-model-note';
+  document.body.appendChild(runNote);
+
+  let botsCache = [];
+  let lastBotsFetchAt = 0;
+  let wasRunning = false;
+
+  async function refreshBotsCache(force = false) {
+    if (!force && Date.now() - lastBotsFetchAt < 8000) return botsCache;
+    lastBotsFetchAt = Date.now();
+    try {
+      const r = await fetch('/api/bots');
+      if (r.ok) {
+        const d = await r.json();
+        if (Array.isArray(d.bots)) botsCache = d.bots;
+      }
+    } catch {}
+    return botsCache;
+  }
+
+  function detectActiveBot() {
+    const qBot = new URLSearchParams(window.location.search).get('bot');
+    if (qBot) {
+      const hit = botsCache.find((b) => b.id === qBot);
+      if (hit) return hit;
+    }
+    const ta = findVisibleComposer()?.ta;
+    const ph = String(ta?.getAttribute('placeholder') || '');
+    const m = ph.match(/^Message\s+(.+)$/i);
+    if (m) {
+      const targetName = m[1].trim().toLowerCase();
+      const hit = botsCache.find((b) => String(b.name || '').trim().toLowerCase() === targetName);
+      if (hit) return hit;
+    }
+    const profileBtn = Array.from(document.querySelectorAll('button[aria-label^="Open "]')).find((b) =>
+      /'s profile$/i.test(b.getAttribute('aria-label') || '')
+    );
+    if (profileBtn) {
+      const pm = String(profileBtn.getAttribute('aria-label') || '').match(/^Open\s+(.+?)'s profile$/i);
+      if (pm) {
+        const targetName = pm[1].trim().toLowerCase();
+        const hit = botsCache.find((b) => String(b.name || '').trim().toLowerCase() === targetName);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+
+  function formatAccountLabel(instanceId) {
+    if (!instanceId) return '';
+    const accts = hubState?.allowances?.accounts || [];
+    const hit = accts.find((a) => a.instanceId === instanceId);
+    if (hit?.displayName) return hit.displayName;
+    if (instanceId === 'codex') return 'Codex';
+    if (instanceId === 'antigravity') return 'Antigravity';
+    if (instanceId.startsWith('claude-')) return 'Claude';
+    return instanceId;
+  }
+
+  async function updateRunningModelNote() {
+    const stopBtn = Array.from(document.querySelectorAll('[data-composer-stop]')).find(
+      (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0
+    );
+    if (!stopBtn) {
+      wasRunning = false;
+      runNote.style.display = 'none';
+      return;
+    }
+    const justStarted = !wasRunning;
+    wasRunning = true;
+    await refreshBotsCache(justStarted);
+    const bot = detectActiveBot();
+    const sel = bot?.modelSelection;
+    if (!sel || !sel.model) {
+      runNote.style.display = 'none';
+      return;
+    }
+    const acct = formatAccountLabel(sel.instanceId);
+    const modelText = acct ? `${acct} · ${sel.model}` : sel.model;
+    runNote.innerHTML = `<span class="ash-rm-dot"></span><span>Running on <b>${esc(modelText)}</b></span>`;
+
+    const comp = findVisibleComposer()?.ta?.closest('form, [data-composer], div') || stopBtn.closest('[data-composer-actions]')?.parentElement;
+    const rect = comp?.getBoundingClientRect();
+    if (rect && rect.top > 40) {
+      runNote.style.left = `${Math.max(12, Math.round(rect.left + 8))}px`;
+      runNote.style.top = `${Math.max(8, Math.round(rect.top - 28))}px`;
+      runNote.style.bottom = 'auto';
+    } else {
+      runNote.style.left = '14px';
+      runNote.style.bottom = '84px';
+      runNote.style.top = 'auto';
+    }
+    runNote.style.display = 'flex';
+  }
+
+  setInterval(() => { updateRunningModelNote(); }, 900);
   }
 
   if (document.body) {
