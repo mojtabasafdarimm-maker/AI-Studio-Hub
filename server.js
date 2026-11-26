@@ -27,6 +27,7 @@ import {
   routeTask,
   setRouterEnabled
 } from './hub-router.mjs';
+import { applyPromptModelOverride, resumePendingOverrides } from './hub-model-override.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1656,9 +1657,40 @@ const server = http.createServer(async (req, res) => {
     // AI Auto-Route hook on POST /api/bots/:id/messages
     let bufferedMsgBody = null;
     const msgMatch = req.method === 'POST' ? pathname.match(/^\/api\/bots\/([^/]+)\/messages$/) : null;
-    if (msgMatch && loadRouterState().enabled) {
+
+    // Per-prompt model override: "use Opus …", "run this on Gemini Flash …" runs ONLY this
+    // message on the named model (thread-only switch, restored after the turn).
+    let overrideApplied = false;
+    if (msgMatch) {
       try {
         bufferedMsgBody = await readBody(req);
+        const parsed = bufferedMsgBody.length ? JSON.parse(bufferedMsgBody.toString('utf8')) : {};
+        if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) {
+          const authHeaders = masterToken ? { Authorization: `Bearer ${masterToken}` } : {};
+          const ov = await Promise.race([
+            applyPromptModelOverride({
+              botId: decodeURIComponent(msgMatch[1]),
+              threadId: parsed.threadId,
+              text: parsed.text,
+              getAllowances: () => getUnifiedAccountAllowances({ ombBaseUrl: `http://127.0.0.1:${OMB_PORT}`, refresh: false, authHeaders })
+            }),
+            new Promise((r) => setTimeout(() => r({ applied: false, reason: 'override timeout' }), 12000))
+          ]);
+          if (ov && ov.applied) {
+            overrideApplied = true;
+            parsed.text = ov.text;
+            bufferedMsgBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+            console.log(`[Model Override] this prompt -> ${ov.label} on ${ov.account}${ov.unchanged ? ' (already on it)' : ''}`);
+          }
+        }
+      } catch (e) {
+        console.warn('[Model Override Warning]', e.message);
+      }
+    }
+
+    if (msgMatch && !overrideApplied && loadRouterState().enabled) {
+      try {
+        if (bufferedMsgBody === null) bufferedMsgBody = await readBody(req);
         const parsed = bufferedMsgBody.length ? JSON.parse(bufferedMsgBody.toString('utf8')) : {};
         if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) {
           const routed = await Promise.race([
@@ -1676,6 +1708,10 @@ const server = http.createServer(async (req, res) => {
 
     const proxyHeaders = { ...req.headers };
     delete proxyHeaders['accept-encoding']; // avoid gzip so we can cleanly inject <script> into HTML
+    if (bufferedMsgBody !== null) {
+      proxyHeaders['content-length'] = String(bufferedMsgBody.length);
+      delete proxyHeaders['transfer-encoding'];
+    }
     const xfHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
     if (GATEWAY_HOST && xfHost === GATEWAY_HOST) {
       proxyHeaders['host'] = GATEWAY_HOST;
@@ -1872,6 +1908,7 @@ process.on('SIGINT', async () => {
 });
 
 server.listen(HUB_PORT, '127.0.0.1', () => {
+  try { resumePendingOverrides(); } catch {}
   console.log(`\n⚡ AI Studio Hub v2 (OpenMausBot Base) running → http://127.0.0.1:${HUB_PORT}`);
   startOpenMausBot();
   startLocalSseTap();
