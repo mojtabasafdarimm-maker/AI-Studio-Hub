@@ -784,210 +784,282 @@ function normWindow(win, fallbackLabel) {
   };
 }
 
+const ALLOWANCES_CACHE_FILE = path.join(DATA_DIR, 'allowances-cache.json');
+const ALLOWANCES_TTL_MS = 45_000;
+const AGY_IDE_MAX_AGE_MS = 2 * 3600 * 1000;
+let allowancesMemCache = { at: 0, value: null };
+let inFlightAllowances = null;
+
+function readAllowancesDiskCache() {
+  try {
+    if (!fs.existsSync(ALLOWANCES_CACHE_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(ALLOWANCES_CACHE_FILE, 'utf8'));
+    return Array.isArray(data?.accounts) && data.accounts.length > 0 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAllowancesDiskCache(data) {
+  try {
+    if (!Array.isArray(data?.accounts) || data.accounts.length === 0) return;
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(ALLOWANCES_CACHE_FILE, JSON.stringify(data), 'utf8');
+  } catch {}
+}
+
 export async function getUnifiedAccountAllowances({ ombBaseUrl = 'http://127.0.0.1:8799', refresh = false, authHeaders = {} } = {}) {
-  const fetchJson = async (url, timeoutMs = 12000) => {
-    try {
-      const res = await fetch(url, { headers: authHeaders, signal: AbortSignal.timeout(timeoutMs) });
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
-  };
-
-  const [planUsage, instancesData, botsData, autoPilot] = await Promise.all([
-    fetchJson(`${ombBaseUrl}/api/plan-usage${refresh ? '?refresh=1' : ''}`, 15000),
-    fetchJson(`${ombBaseUrl}/api/instances`, 8000),
-    fetchJson(`${ombBaseUrl}/api/bots`, 8000),
-    getAutoPilotRecommendation().catch(() => null)
-  ]);
-
-  const instancesById = new Map();
-  for (const inst of instancesData?.instances || []) {
-    instancesById.set(inst.instanceId, inst);
+  if (!refresh && allowancesMemCache.value && (Date.now() - allowancesMemCache.at) < ALLOWANCES_TTL_MS) {
+    return allowancesMemCache.value;
+  }
+  if (!refresh && inFlightAllowances) {
+    return inFlightAllowances;
   }
 
-  const botsByInstance = new Map();
-  for (const b of botsData?.bots || []) {
-    const iid = b.modelSelection?.instanceId || 'codex';
-    if (!botsByInstance.has(iid)) botsByInstance.set(iid, []);
-    botsByInstance.get(iid).push({
-      id: b.id,
-      name: b.name,
-      model: b.modelSelection?.model || null
-    });
-  }
-
-  const agyIdeEmail = String(autoPilot?.agy?.user?.email || '').toLowerCase();
-  const agyIdePools = Array.isArray(autoPilot?.agy?.pools) ? autoPilot.agy.pools : [];
-
-  const providers = Array.isArray(planUsage?.providers) ? planUsage.providers : [];
-  const accounts = [];
-  const disconnected = [];
-
-  for (const p of providers) {
-    const inst = instancesById.get(p.id);
-    const email = inst?.snapshot?.account?.email || (p.id === 'antigravity' ? 'mina.khoshbazmf@gmail.com' : p.driver === 'codex' ? 'OpenAI / ChatGPT Plus' : null);
-    const displayName = inst?.displayName || p.name || p.id;
-    const authenticated = p.ok === true || inst?.snapshot?.authenticated === true;
-    const assignedBots = botsByInstance.get(p.id) || [];
-
-    const fiveHour = normWindow(p.fiveHour, '5-hour');
-    const weekly = normWindow(p.weekly, 'Weekly');
-
-    const availOpts = (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label }));
-    const availLabels = availOpts.map((o) => o.label);
-    const geminiBucketModels = availLabels.filter((l) => (/gemini/i.test(l) && !/argon/i.test(l)) || /orchestrator \(neon\)/i.test(l));
-    const argonBucketModels = availLabels.filter((l) => /argon|orchestrator \(argon\)/i.test(l));
-    const claudeBucketModels = availLabels.filter((l) => /claude|gpt-oss/i.test(l));
-    const hasGemini4 = availLabels.some((l) => /gemini 4|orchestrator/i.test(l));
-
-    if (fiveHour && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
-      fiveHour.modelsIncluded = geminiBucketModels;
-    }
-    if (weekly && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
-      weekly.modelsIncluded = geminiBucketModels;
-    }
-
-    const models = [];
-    for (const m of p.models || []) {
-      const wins = (m.windows || []).map((w) => normWindow(w, w.label || 'Window')).filter(Boolean);
-      if (wins.length > 0) {
-        const isClaudeGroup = /claude|gpt/i.test(m.name);
-        models.push({
-          name: m.name,
-          modelsIncluded: isClaudeGroup && claudeBucketModels.length > 0 ? claudeBucketModels : (/argon/i.test(m.name) ? (argonBucketModels.length > 0 ? argonBucketModels : ['Gemini 4 Argon']) : null),
-          windows: wins
-        });
+  const runPromise = (async () => {
+    const fetchJson = async (url, timeoutMs = 12000) => {
+      try {
+        const res = await fetch(url, { headers: authHeaders, signal: AbortSignal.timeout(timeoutMs) });
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
       }
+    };
+
+    const [planUsage, instancesData, botsData, autoPilot] = await Promise.all([
+      fetchJson(`${ombBaseUrl}/api/plan-usage${refresh ? '?refresh=1' : ''}`, refresh ? 24000 : 18000),
+      fetchJson(`${ombBaseUrl}/api/instances`, 8000),
+      fetchJson(`${ombBaseUrl}/api/bots`, 8000),
+      getAutoPilotRecommendation().catch(() => null)
+    ]);
+
+    const instancesById = new Map();
+    for (const inst of instancesData?.instances || []) {
+      instancesById.set(inst.instanceId, inst);
     }
 
-    // Attach live Antigravity IDE per-family pools (Gemini 3.8 Flash, Claude Opus/Sonnet 5.5, GPT-OSS) to matching email account
-    if (email && agyIdeEmail && email.toLowerCase() === agyIdeEmail && agyIdePools.length > 0) {
-      for (const pool of agyIdePools) {
-        const already = models.some((m) => m.name.toLowerCase() === String(pool.family || '').toLowerCase());
-        if (!already) {
+    const botsByInstance = new Map();
+    for (const b of botsData?.bots || []) {
+      const iid = b.modelSelection?.instanceId || 'codex';
+      if (!botsByInstance.has(iid)) botsByInstance.set(iid, []);
+      botsByInstance.get(iid).push({
+        id: b.id,
+        name: b.name,
+        model: b.modelSelection?.model || null
+      });
+    }
+
+    const agyIdeEmail = String(autoPilot?.agy?.user?.email || '').toLowerCase();
+    const agyIdePools = Array.isArray(autoPilot?.agy?.pools) ? autoPilot.agy.pools : [];
+    const agyUpdatedMs = autoPilot?.agy?.updatedAt ? Date.parse(autoPilot.agy.updatedAt) : NaN;
+    const agyIdeFresh = Number.isFinite(agyUpdatedMs) && (Date.now() - agyUpdatedMs) <= AGY_IDE_MAX_AGE_MS;
+
+    const providers = Array.isArray(planUsage?.providers) ? planUsage.providers : [];
+    const accounts = [];
+    const disconnected = [];
+
+    for (const p of providers) {
+      const inst = instancesById.get(p.id);
+      const email = inst?.snapshot?.account?.email || (p.id === 'antigravity' ? 'mina.khoshbazmf@gmail.com' : p.driver === 'codex' ? 'OpenAI / ChatGPT Plus' : null);
+      const displayName = inst?.displayName || p.name || p.id;
+      const authenticated = p.ok === true || inst?.snapshot?.authenticated === true;
+      const assignedBots = botsByInstance.get(p.id) || [];
+
+      const fiveHour = normWindow(p.fiveHour, '5-hour');
+      const weekly = normWindow(p.weekly, 'Weekly');
+
+      const availOpts = (inst?.models?.options || []).map((o) => ({ id: o.id, label: o.label }));
+      const availLabels = availOpts.map((o) => o.label);
+      const geminiBucketModels = availLabels.filter((l) => (/gemini/i.test(l) && !/argon/i.test(l)) || /orchestrator \(neon\)/i.test(l));
+      const argonBucketModels = availLabels.filter((l) => /argon|orchestrator \(argon\)/i.test(l));
+      const claudeBucketModels = availLabels.filter((l) => /claude|gpt-oss/i.test(l));
+      const hasGemini4 = availLabels.some((l) => /gemini 4|orchestrator/i.test(l));
+
+      if (fiveHour && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
+        fiveHour.modelsIncluded = geminiBucketModels;
+      }
+      if (weekly && p.driver === 'antigravity' && geminiBucketModels.length > 0) {
+        weekly.modelsIncluded = geminiBucketModels;
+      }
+
+      const models = [];
+      for (const m of p.models || []) {
+        const wins = (m.windows || []).map((w) => normWindow(w, w.label || 'Window')).filter(Boolean);
+        if (wins.length > 0) {
+          const isClaudeGroup = /claude|gpt/i.test(m.name);
           models.push({
-            name: `${pool.family} (IDE Pool)`,
-            windows: [normWindow({ label: '5-hour / Pool', remainingPct: pool.remainingPct, resetTime: pool.resetTime }, 'Pool')].filter(Boolean)
+            name: m.name,
+            modelsIncluded: isClaudeGroup && claudeBucketModels.length > 0 ? claudeBucketModels : (/argon/i.test(m.name) ? (argonBucketModels.length > 0 ? argonBucketModels : ['Gemini 4 Argon']) : null),
+            windows: wins
           });
         }
       }
+
+      // Attach live Antigravity IDE per-family pools only to matching Antigravity account when fresh
+      if (p.driver === 'antigravity' && agyIdeFresh && email && agyIdeEmail && email.toLowerCase() === agyIdeEmail && agyIdePools.length > 0) {
+        for (const pool of agyIdePools) {
+          const already = models.some((m) => m.name.toLowerCase() === String(pool.family || '').toLowerCase());
+          if (!already) {
+            models.push({
+              name: `${pool.family} (IDE Pool)`,
+              windows: [normWindow({ label: '5-hour / Pool', remainingPct: pool.remainingPct, resetTime: pool.resetTime }, 'Pool')].filter(Boolean)
+            });
+          }
+        }
+      }
+
+      // Compute smart routing priority score for this account
+      const hasKnownQuota = Boolean(fiveHour || weekly);
+      const effWeekly = hasKnownQuota ? (weekly?.remainingPercent ?? fiveHour.remainingPercent) : null;
+      const effFive = hasKnownQuota ? (fiveHour?.remainingPercent ?? weekly.remainingPercent) : null;
+      const effectiveMin = hasKnownQuota ? Math.min(effWeekly, effFive) : null;
+
+      // Bonus for expiring soon when plenty is left ("burn before reset" optimization)
+      const weeklyHours = weekly?.hoursUntilReset;
+      const soonResetBonus = (hasKnownQuota && effWeekly >= 45 && typeof weeklyHours === 'number' && weeklyHours > 0 && weeklyHours <= 96)
+        ? Math.round((96 - weeklyHours) / 4)
+        : 0;
+      const proBonus = (p.driver === 'antigravity' && hasGemini4) ? 5 : 0;
+      const routingScore = !authenticated
+        ? -1
+        : (!hasKnownQuota ? 50 : Math.round(effWeekly * 0.65 + effFive * 0.35 + soonResetBonus + proBonus));
+
+      let statusTag = 'ready';
+      let statusLabel = 'Plenty Left';
+      if (!authenticated) {
+        statusTag = 'disconnected';
+        statusLabel = p.error || 'Not Signed In';
+      } else if (!hasKnownQuota) {
+        statusTag = 'unknown';
+        statusLabel = 'Quota Unknown';
+      } else if (effectiveMin <= 15) {
+        statusTag = 'critical';
+        statusLabel = 'Nearly Exhausted';
+      } else if (effWeekly <= 30) {
+        statusTag = 'conserve';
+        statusLabel = 'Low Weekly — Conserve';
+      } else if (soonResetBonus >= 8) {
+        statusTag = 'use-soon';
+        statusLabel = 'Use Before Reset';
+      }
+
+      const entry = {
+        instanceId: p.id,
+        displayName,
+        driver: p.driver,
+        email,
+        plan: p.plan || (p.driver === 'antigravity' ? (hasGemini4 ? 'Google AI Pro' : 'Free Tier') : null),
+        authenticated,
+        error: p.error || null,
+        hasGemini4: p.driver === 'antigravity' ? hasGemini4 : false,
+        geminiSharedModels: p.driver === 'antigravity' ? geminiBucketModels : [],
+        fiveHour,
+        weekly,
+        models,
+        availableModels: availOpts,
+        assignedBots,
+        routingScore,
+        statusTag,
+        statusLabel
+      };
+
+      if (authenticated) accounts.push(entry);
+      else disconnected.push(entry);
     }
 
-    // Compute smart routing priority score for this account
-    const effWeekly = weekly?.remainingPercent ?? 100;
-    const effFive = fiveHour?.remainingPercent ?? 100;
-    const effectiveMin = Math.min(effWeekly, effFive);
-
-    // Bonus for expiring soon when plenty is left ("burn before reset" optimization)
-    const weeklyHours = weekly?.hoursUntilReset;
-    const soonResetBonus = (effWeekly >= 45 && typeof weeklyHours === 'number' && weeklyHours > 0 && weeklyHours <= 96)
-      ? Math.round((96 - weeklyHours) / 4)
-      : 0;
-    const proBonus = (p.driver === 'antigravity' && hasGemini4) ? 5 : 0;
-    const routingScore = authenticated ? Math.round(effWeekly * 0.65 + effFive * 0.35 + soonResetBonus + proBonus) : -1;
-
-    let statusTag = 'ready';
-    let statusLabel = 'Plenty Left';
-    if (!authenticated) {
-      statusTag = 'disconnected';
-      statusLabel = p.error || 'Not Signed In';
-    } else if (effectiveMin <= 15) {
-      statusTag = 'critical';
-      statusLabel = 'Nearly Exhausted';
-    } else if (effWeekly <= 30) {
-      statusTag = 'conserve';
-      statusLabel = 'Low Weekly — Conserve';
-    } else if (soonResetBonus >= 8) {
-      statusTag = 'use-soon';
-      statusLabel = 'Use Before Reset';
+    if (providers.length === 0) {
+      const cached = allowancesMemCache.value || readAllowancesDiskCache();
+      if (cached && Array.isArray(cached.accounts) && cached.accounts.length > 0) {
+        return {
+          ...cached,
+          stale: true,
+          staleReason: 'Live plan-usage unavailable or timed out; serving last known allowances.'
+        };
+      }
     }
 
-    const entry = {
-      instanceId: p.id,
-      displayName,
-      driver: p.driver,
-      email,
-      plan: p.plan || (p.driver === 'antigravity' ? (hasGemini4 ? 'Google AI Pro' : 'Free Tier') : null),
-      authenticated,
-      error: p.error || null,
-      hasGemini4: p.driver === 'antigravity' ? hasGemini4 : false,
-      geminiSharedModels: p.driver === 'antigravity' ? geminiBucketModels : [],
-      fiveHour,
-      weekly,
-      models,
-      availableModels: availOpts,
-      assignedBots,
-      routingScore,
-      statusTag,
-      statusLabel
+    // Sort active accounts by routingScore descending (best choice first)
+    accounts.sort((a, b) => b.routingScore - a.routingScore);
+
+    const bestOverall = accounts[0] || null;
+    const bestGemini = accounts.find((a) => a.driver === 'antigravity') || null;
+    const bestCodex = accounts.find((a) => a.driver === 'codex') || null;
+
+    // Find best account for Claude/GPT shared pool on Antigravity
+    let bestClaudePool = null;
+    for (const a of accounts.filter((x) => x.driver === 'antigravity')) {
+      const claudeModel = a.models.find((m) => /claude/i.test(m.name));
+      const rem = claudeModel?.windows?.[0]?.remainingPercent ?? null;
+      if (rem !== null && (!bestClaudePool || rem > bestClaudePool.remainingPercent)) {
+        bestClaudePool = {
+          instanceId: a.instanceId,
+          displayName: a.displayName,
+          email: a.email,
+          modelPool: claudeModel.name,
+          remainingPercent: rem,
+          resetsAtEastern: claudeModel.windows[0].resetsAtEastern,
+          resetsInHuman: claudeModel.windows[0].resetsInHuman
+        };
+      }
+    }
+
+    const conserveWarnings = accounts
+      .filter((a) => a.statusTag === 'conserve' || a.statusTag === 'critical')
+      .map((a) => {
+        const parts = [];
+        if (a.weekly && a.weekly.remainingPercent <= 30) {
+          parts.push(`Weekly ${a.weekly.remainingPercent}% left (resets ${a.weekly.resetsInHuman ? `in ${a.weekly.resetsInHuman} · ` : ''}${a.weekly.resetsAtEastern || 'unknown'})`);
+        }
+        if (a.fiveHour && a.fiveHour.remainingPercent <= 20) {
+          parts.push(`5-hour ${a.fiveHour.remainingPercent}% left (resets ${a.fiveHour.resetsInHuman ? `in ${a.fiveHour.resetsInHuman} · ` : ''}${a.fiveHour.resetsAtEastern || 'unknown'})`);
+        }
+        return `${a.displayName}${a.email ? ` (${a.email})` : ''}: ${parts.join(', ')}`;
+      });
+
+    const bestKnown = accounts.find((a) => a.statusTag !== 'unknown') || bestOverall;
+    const summaryParts = [];
+    if (bestKnown) {
+      const bestPct = bestKnown.weekly?.remainingPercent ?? bestKnown.fiveHour?.remainingPercent ?? null;
+      const pctText = bestPct !== null ? `${bestPct}% left` : 'quota unknown';
+      summaryParts.push(
+        `Best right now: ${bestKnown.displayName}${bestKnown.email ? ` (${bestKnown.email})` : ''} (${pctText}${bestKnown.weekly?.resetsInHuman ? `, resets in ${bestKnown.weekly.resetsInHuman}` : ''}).`
+      );
+    }
+    if (conserveWarnings.length > 0) {
+      summaryParts.push(`Conserve: ${conserveWarnings.join(' | ')}.`);
+    }
+
+    const result = {
+      ok: true,
+      fetchedAt: planUsage?.fetchedAt || new Date().toISOString(),
+      accounts,
+      disconnected,
+      routingAdvice: {
+        summary: summaryParts.join(' '),
+        bestOverall: bestOverall ? { instanceId: bestOverall.instanceId, displayName: bestOverall.displayName, email: bestOverall.email, statusLabel: bestOverall.statusLabel } : null,
+        bestGemini: bestGemini ? { instanceId: bestGemini.instanceId, displayName: bestGemini.displayName, email: bestGemini.email, weeklyRemaining: bestGemini.weekly?.remainingPercent ?? null, resetsInHuman: bestGemini.weekly?.resetsInHuman ?? null } : null,
+        bestClaudePool,
+        bestCodex: bestCodex ? { instanceId: bestCodex.instanceId, displayName: bestCodex.displayName, fiveHourRemaining: bestCodex.fiveHour?.remainingPercent ?? null, weeklyRemaining: bestCodex.weekly?.remainingPercent ?? null, weeklyResetsIn: bestCodex.weekly?.resetsInHuman ?? null } : null,
+        conserveWarnings
+      }
     };
 
-    if (authenticated) accounts.push(entry);
-    else disconnected.push(entry);
+    if (result.accounts.length > 0) {
+      allowancesMemCache = { at: Date.now(), value: result };
+      writeAllowancesDiskCache(result);
+    }
+    return result;
+  })();
+
+  if (!refresh) {
+    inFlightAllowances = runPromise;
   }
-
-  // Sort active accounts by routingScore descending (best choice first)
-  accounts.sort((a, b) => b.routingScore - a.routingScore);
-
-  const bestOverall = accounts[0] || null;
-  const bestGemini = accounts.find((a) => a.driver === 'antigravity') || null;
-  const bestCodex = accounts.find((a) => a.driver === 'codex') || null;
-
-  // Find best account for Claude/GPT shared pool on Antigravity
-  let bestClaudePool = null;
-  for (const a of accounts.filter((x) => x.driver === 'antigravity')) {
-    const claudeModel = a.models.find((m) => /claude/i.test(m.name));
-    const rem = claudeModel?.windows?.[0]?.remainingPercent ?? null;
-    if (rem !== null && (!bestClaudePool || rem > bestClaudePool.remainingPercent)) {
-      bestClaudePool = {
-        instanceId: a.instanceId,
-        displayName: a.displayName,
-        email: a.email,
-        modelPool: claudeModel.name,
-        remainingPercent: rem,
-        resetsAtEastern: claudeModel.windows[0].resetsAtEastern,
-        resetsInHuman: claudeModel.windows[0].resetsInHuman
-      };
+  try {
+    return await runPromise;
+  } finally {
+    if (inFlightAllowances === runPromise) {
+      inFlightAllowances = null;
     }
   }
-
-  const conserveWarnings = accounts
-    .filter((a) => a.statusTag === 'conserve' || a.statusTag === 'critical')
-    .map((a) => {
-      const parts = [];
-      if (a.weekly && a.weekly.remainingPercent <= 30) {
-        parts.push(`Weekly ${a.weekly.remainingPercent}% left (resets ${a.weekly.resetsInHuman ? `in ${a.weekly.resetsInHuman} · ` : ''}${a.weekly.resetsAtEastern || 'unknown'})`);
-      }
-      if (a.fiveHour && a.fiveHour.remainingPercent <= 20) {
-        parts.push(`5-hour ${a.fiveHour.remainingPercent}% left (resets ${a.fiveHour.resetsInHuman ? `in ${a.fiveHour.resetsInHuman} · ` : ''}${a.fiveHour.resetsAtEastern || 'unknown'})`);
-      }
-      return `${a.displayName}${a.email ? ` (${a.email})` : ''}: ${parts.join(', ')}`;
-    });
-
-  const summaryParts = [];
-  if (bestOverall) {
-    summaryParts.push(
-      `Best right now: ${bestOverall.displayName}${bestOverall.email ? ` (${bestOverall.email})` : ''} (${bestOverall.weekly?.remainingPercent ?? bestOverall.fiveHour?.remainingPercent ?? '?'}% left${bestOverall.weekly?.resetsInHuman ? `, resets in ${bestOverall.weekly.resetsInHuman}` : ''}).`
-    );
-  }
-  if (conserveWarnings.length > 0) {
-    summaryParts.push(`Conserve: ${conserveWarnings.join(' | ')}.`);
-  }
-
-  return {
-    ok: true,
-    fetchedAt: planUsage?.fetchedAt || new Date().toISOString(),
-    accounts,
-    disconnected,
-    routingAdvice: {
-      summary: summaryParts.join(' '),
-      bestOverall: bestOverall ? { instanceId: bestOverall.instanceId, displayName: bestOverall.displayName, email: bestOverall.email, statusLabel: bestOverall.statusLabel } : null,
-      bestGemini: bestGemini ? { instanceId: bestGemini.instanceId, displayName: bestGemini.displayName, email: bestGemini.email, weeklyRemaining: bestGemini.weekly?.remainingPercent ?? null, resetsInHuman: bestGemini.weekly?.resetsInHuman ?? null } : null,
-      bestClaudePool,
-      bestCodex: bestCodex ? { instanceId: bestCodex.instanceId, displayName: bestCodex.displayName, fiveHourRemaining: bestCodex.fiveHour?.remainingPercent ?? null, weeklyRemaining: bestCodex.weekly?.remainingPercent ?? null, weeklyResetsIn: bestCodex.weekly?.resetsInHuman ?? null } : null,
-      conserveWarnings
-    }
-  };
 }

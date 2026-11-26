@@ -6,8 +6,10 @@
 // • hub_calendar_and_reminders: Check upcoming calendar events & reminders, or add a reminder
 import readline from 'node:readline';
 import fs from 'node:fs';
+import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import {
+  OMB_DATA_DIR,
   buildStalledRadar,
   findAgyBin,
   getAutoPilotRecommendation,
@@ -247,14 +249,24 @@ async function handleToolCall(name, args = {}) {
     const refresh = args.refresh !== false;
     try {
       const res = await fetch(`http://127.0.0.1:4747/api/hub/allowances?refresh=${refresh ? '1' : '0'}`, {
-        signal: AbortSignal.timeout(18000)
+        signal: AbortSignal.timeout(26000)
       });
       if (res.ok) {
-        const data = await res.json();
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        const data = await res.json().catch(() => null);
+        if (data && ((Array.isArray(data.accounts) && data.accounts.length > 0) || (data.disconnected || []).length > 0)) {
+          return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        }
       }
     } catch {}
-    const fallback = await getUnifiedAccountAllowances({ refresh });
+    let authHeaders = {};
+    try {
+      const tokenPath = path.join(OMB_DATA_DIR, 'master-token.txt');
+      if (fs.existsSync(tokenPath)) {
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        if (token) authHeaders = { Authorization: `Bearer ${token}` };
+      }
+    } catch {}
+    const fallback = await getUnifiedAccountAllowances({ refresh, authHeaders });
     return { content: [{ type: 'text', text: JSON.stringify(fallback, null, 2) }] };
   }
   if (name === 'hub_switch_bot_account') {
