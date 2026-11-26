@@ -56,7 +56,14 @@
           for (const ev of events) {
             if (this._closed) return;
             const dStr = String(ev.data || '');
-            if (dStr.includes('"bot"') || dStr.includes('"runtime"') || dStr.includes('"modelSelection"')) {
+            if (
+              dStr.includes('"bot"') ||
+              dStr.includes('"runtime"') ||
+              dStr.includes('"modelSelection"') ||
+              dStr.includes('"message"') ||
+              dStr.includes('"activity"') ||
+              dStr.includes('"busy"')
+            ) {
               hasBotEv = true;
             }
             if (typeof this.onmessage === 'function') {
@@ -567,6 +574,96 @@
     @keyframes ash-pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.45; transform: scale(0.8); }
+    }
+    #ash-chief-status {
+      width: calc(100% - 28px);
+      max-width: 320px;
+      margin: 4px auto 0;
+      padding: 6px 11px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+      box-sizing: border-box;
+      text-align: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #ash-chief-status:hover {
+      background: rgba(255, 255, 255, 0.07);
+    }
+    #ash-chief-status.working {
+      background: rgba(34, 197, 94, 0.09);
+      border-color: rgba(34, 197, 94, 0.28);
+    }
+    #ash-chief-status.waiting {
+      background: rgba(245, 158, 11, 0.09);
+      border-color: rgba(245, 158, 11, 0.28);
+    }
+    #ash-chief-status .ash-cs-top {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      max-width: 100%;
+      font-size: 11.5px;
+      line-height: 1.3;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    #ash-chief-status.working .ash-cs-top {
+      color: #86efac;
+    }
+    #ash-chief-status.waiting .ash-cs-top {
+      color: #fde68a;
+    }
+    #ash-chief-status .ash-cs-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+    }
+    #ash-chief-status.working .ash-cs-dot {
+      background: #22c55e;
+      box-shadow: 0 0 7px rgba(34, 197, 94, 0.8);
+      animation: ash-pulse 1.4s ease-in-out infinite;
+    }
+    #ash-chief-status.waiting .ash-cs-dot {
+      background: #f59e0b;
+      box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+    }
+    #ash-chief-status.unread .ash-cs-dot {
+      background: #38bdf8;
+      box-shadow: 0 0 6px rgba(56, 189, 248, 0.75);
+    }
+    #ash-chief-status .ash-cs-state {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    #ash-chief-status .ash-cs-time {
+      color: #94a3b8;
+      font-weight: 500;
+      font-size: 10.5px;
+      flex-shrink: 0;
+    }
+    #ash-chief-status .ash-cs-preview {
+      width: 100%;
+      font-size: 11.5px;
+      line-height: 1.35;
+      color: #94a3b8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #ash-chief-status .ash-cs-preview.warn {
+      color: #fbbf24;
     }
   `;
   document.head.appendChild(style);
@@ -1264,22 +1361,31 @@
 
   let botsCache = [];
   let lastBotsFetchAt = 0;
+  let botsFetchInFlight = null;
   let wasRunning = false;
   let lastRunNoteHtml = '';
   let liveBotTimer = null;
 
   async function refreshBotsCache(force = false, maxAgeMs = 8000) {
     if (!force && botsCache.length > 0 && Date.now() - lastBotsFetchAt < maxAgeMs) return botsCache;
+    if (botsFetchInFlight) return botsFetchInFlight;
     lastBotsFetchAt = Date.now();
+    botsFetchInFlight = (async () => {
+      try {
+        const r = await fetch('/api/bots');
+        if (r.ok) {
+          const d = await r.json();
+          const list = Array.isArray(d) ? d : (Array.isArray(d?.bots) ? d.bots : null);
+          if (list) botsCache = list;
+        }
+      } catch {}
+      return botsCache;
+    })();
     try {
-      const r = await fetch('/api/bots');
-      if (r.ok) {
-        const d = await r.json();
-        const list = Array.isArray(d) ? d : (Array.isArray(d?.bots) ? d.bots : null);
-        if (list) botsCache = list;
-      }
-    } catch {}
-    return botsCache;
+      return await botsFetchInFlight;
+    } finally {
+      botsFetchInFlight = null;
+    }
   }
 
   function findBotByNameInText(text) {
@@ -1524,16 +1630,171 @@
     runNote.style.display = 'flex';
   }
 
+  function formatShortTime(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    try {
+      const dt = new Date(n);
+      const now = new Date();
+      if (
+        dt.getFullYear() === now.getFullYear() &&
+        dt.getMonth() === now.getMonth() &&
+        dt.getDate() === now.getDate()
+      ) {
+        return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      }
+      return dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    } catch {
+      return '';
+    }
+  }
+
+  function cleanPreviewText(raw) {
+    const s = String(raw || '')
+      .replace(/```[\s\S]*?```/g, ' [code] ')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}[#>]+\s*/gm, ' ')
+      .replace(/(\*\*|__|~~|[`*])/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s.length > 140 ? s.slice(0, 139) + '…' : s;
+  }
+
+  function summarizeChiefBot(bot) {
+    const msgs = Array.isArray(bot?.messages) ? bot.messages : [];
+    const tasks = Array.isArray(bot?.tasks) ? bot.tasks : [];
+    const activeTasks = tasks.filter((t) => t && (t.busy || t.activity === 'working'));
+    const working = !!(bot?.busy || bot?.activity === 'working' || activeTasks.length > 0);
+    const waiting = !working && !!bot?.waitingForTeammates;
+    const unread = !working && !waiting && !!bot?.unread;
+
+    let lastReply = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.role !== 'bot') continue;
+      if (m.kind === 'text' && typeof m.text === 'string' && m.text.trim()) {
+        lastReply = m;
+        break;
+      }
+    }
+
+    let activeStep = '';
+    let activeAt = 0;
+    if (working) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m) continue;
+        if (m.role === 'user') break;
+        if (m.kind === 'activity' && m.tool) {
+          const spoken = String(m.tool.spoken || '').trim();
+          const label = spoken
+            ? spoken.charAt(0).toUpperCase() + spoken.slice(1)
+            : (m.tool.name ? `Running ${m.tool.name}` : 'Working…');
+          activeStep = label;
+          activeAt = m.at || 0;
+          if (m.tool.ok === undefined) break;
+        }
+      }
+      if (!activeStep && activeTasks.length > 0) {
+        const tTitle = String(activeTasks[0].title || '').trim();
+        activeStep = tTitle ? `Working · ${tTitle}` : 'Working…';
+        activeAt = activeTasks[0].updatedAt || 0;
+      }
+      if (!activeStep) activeStep = 'Working…';
+    }
+
+    const lastMsgAt = (msgs.length > 0 ? msgs[msgs.length - 1]?.at : 0) || 0;
+    const ts = activeAt || lastReply?.at || lastMsgAt || 0;
+    const preview = lastReply ? cleanPreviewText(lastReply.text) : '';
+    const isWarn = /^⚠|quota reached|error:/i.test(preview);
+    const statusText = working
+      ? activeStep
+      : waiting
+        ? 'Waiting on teammate'
+        : unread
+          ? 'New reply'
+          : 'Idle';
+
+    return {
+      working,
+      waiting,
+      unread,
+      statusText,
+      timeLabel: formatShortTime(ts),
+      preview,
+      isWarn
+    };
+  }
+
+  async function updateChiefStatusCard(forceRefresh = false) {
+    const heroBtn = document.querySelector('button[data-sidebar-hero]');
+    if (!heroBtn || heroBtn.offsetParent === null || !heroBtn.parentElement) return;
+    const heroRect = heroBtn.getBoundingClientRect();
+    if (heroRect.width <= 0 || heroRect.height <= 0) return;
+
+    const heroId = heroBtn.getAttribute('data-sidebar-hero') || '';
+    const cachedChief = botsCache.find((b) => b && (b.id === heroId || b.chiefOfStaff));
+    const maxAgeMs = cachedChief?.busy ? 2500 : 8000;
+    await refreshBotsCache(forceRefresh || botsCache.length === 0, maxAgeMs);
+
+    const bot = botsCache.find((b) => b && (b.id === heroId || b.chiefOfStaff));
+    if (!bot) return;
+
+    const info = summarizeChiefBot(bot);
+    let card = heroBtn.parentElement.querySelector('#ash-chief-status');
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'ash-chief-status';
+      card.setAttribute('role', 'button');
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('aria-label', `${bot.name || 'Chief of Staff'} status`);
+      card.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const btn = document.querySelector(`button[data-sidebar-hero="${heroId}"]`) || heroBtn;
+        btn?.click?.();
+      });
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          const btn = document.querySelector(`button[data-sidebar-hero="${heroId}"]`) || heroBtn;
+          btn?.click?.();
+        }
+      });
+      heroBtn.parentElement.appendChild(card);
+    }
+
+    const modeCls = info.working ? 'working' : info.waiting ? 'waiting' : info.unread ? 'unread' : '';
+    const html = `
+      <div class="ash-cs-top">
+        <span class="ash-cs-dot"></span>
+        <span class="ash-cs-state">${esc(info.statusText)}</span>
+        ${info.timeLabel ? `<span class="ash-cs-time">· ${esc(info.timeLabel)}</span>` : ''}
+      </div>
+      ${info.preview ? `<div class="ash-cs-preview${info.isWarn ? ' warn' : ''}">${esc(info.preview)}</div>` : ''}
+    `;
+
+    const key = `${modeCls}|${html}`;
+    if (card.dataset.ashKey !== key) {
+      card.dataset.ashKey = key;
+      card.className = modeCls;
+      card.innerHTML = html;
+      card.title = info.preview ? `${info.statusText} — ${info.preview}` : info.statusText;
+    }
+  }
+
   onLiveBotEvent = (force) => {
     if (liveBotTimer) clearTimeout(liveBotTimer);
     liveBotTimer = setTimeout(() => {
       liveBotTimer = null;
       updateRunningModelNote(!!force);
+      updateChiefStatusCard(!!force);
     }, 250);
   };
 
-  setTimeout(() => { updateRunningModelNote(true); }, 250);
-  setInterval(() => { updateRunningModelNote(false); }, 900);
+  setTimeout(() => { updateRunningModelNote(true); updateChiefStatusCard(true); }, 250);
+  setInterval(() => { updateRunningModelNote(false); updateChiefStatusCard(false); }, 900);
   }
 
   if (document.body) {
