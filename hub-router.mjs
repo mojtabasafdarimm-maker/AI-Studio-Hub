@@ -30,6 +30,7 @@ export const DEFAULT_POLICY = {
     { match: 'flash|hydrogen|mini|lite|haiku', tier: 'light' }
   ],
   avoidModels: ['argon'], // Do not assign Argon unless explicitly requested
+  avoidInstances: ['claudeApi'], // Never spend pay-per-token API credits automatically; use subscriptions only
   reserveAccounts: { codex: ['GlenNeely'] },
   fallbackPricePerM: { light: 0.4, standard: 4, heavy: 12 },
   heavyKeywords: [
@@ -363,6 +364,7 @@ export async function routeTask({ text, botName, tier: forcedTier, allowances, c
 
   for (const acct of allowances.accounts || []) {
     if (acct.authenticated === false) continue;
+    if ((policy.avoidInstances || []).includes(acct.instanceId) || acct.access === 'api') continue;
     const key = `${acct.displayName} ${acct.instanceId} ${acct.email || ''}`.toLowerCase();
     let reserved = false;
     for (const [who, bots] of Object.entries(policy.reserveAccounts || {})) {
