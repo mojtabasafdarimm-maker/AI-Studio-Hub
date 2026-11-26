@@ -40,7 +40,9 @@ export const DEFAULT_POLICY = {
   ],
   lightKeywords: [
     'check', 'status', 'summari[sz]e', 'list', 'remind', 'triage', 'nothing new',
-    'watch', 'lookup', 'look up', 'forward', 'reply yes', 'usage', 'quota', 'inbox'
+    'watch', 'lookup', 'look up', 'look into', 'look in', 'search', 'find', 'see if',
+    'scan', 'cited', 'citation', 'papers?', 'forward', 'reply yes', 'usage', 'quota',
+    'inbox', 'add', 'put', 'show', 'open', 'read'
   ]
 };
 
@@ -150,7 +152,7 @@ export function classifyTask(text, policy = loadPolicy()) {
   const reasons = [];
   let score = 1;
   if (t.length > 2500) { score += 1; reasons.push('long prompt'); }
-  else if (t.length < 280) { score -= 0.5; reasons.push('short prompt'); }
+  else if (t.length < 280) { score -= 0.6; reasons.push('short prompt'); }
   if (/```|function |class |def |import |\.py\b|\.mjs\b|\.js\b|\.ts\b/.test(t)) {
     score += 0.6;
     reasons.push('contains code');
@@ -313,8 +315,8 @@ export async function aiJudgeTask({ botInfo, firstGoal, recentTurns, prompt }) {
 
   const sysPrompt = [
     'You are a fast model-tier router for an AI agent hub. Choose the lowest tier that will succeed cleanly:',
-    '- "light": quick inbox/calendar checks, simple lookups, status updates, short replies, reminders, summarizing short text.',
-    '- "standard": normal writing, multi-step web/form tasks, moderate analysis, drafting emails/reports, standard scripts.',
+    '- "light": searching/scanning local files, papers, citations, or spreadsheets; finding names/references; adding items to a list/table; quick inbox/calendar checks; simple lookups; status updates; short replies; reminders; summarizing text.',
+    '- "standard": normal writing/drafting emails or reports, multi-step web/form automation, moderate data analysis, standard scripts or small code edits.',
     '- "heavy": complex coding/debugging/refactoring, multi-file engineering, test regressions, mathematical proofs, deep thesis/research synthesis.',
     'Use the thread history (especially the original goal and recent turns) so short follow-ups like "do the next part" inherit the true task difficulty.',
     'Reply ONLY with JSON: {"tier":"light|standard|heavy","reason":"<=10 words"}.'
