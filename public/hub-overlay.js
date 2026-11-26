@@ -1741,13 +1741,8 @@
     const maxAgeMs = running ? 5000 : 15000;
     await refreshBotsCache(forceRefresh || justStarted || botsCache.length === 0, maxAgeMs);
 
-    // Only show the model while a response is being generated, beside the "Running for" status.
+    // Always show the model: beside the "Running for" status while generating, otherwise just above the composer.
     const anchor = running ? findRunningStatusAnchor() : null;
-    if (!anchor) {
-      lastRunNoteHtml = '';
-      runNote.style.display = 'none';
-      return;
-    }
 
     const bot = detectActiveBot(found);
     const sel = resolveBotModel(bot);
@@ -1765,22 +1760,25 @@
     const label = acct ? `${acct} · ${modelLabel}` : modelLabel;
     const nextHtml = `<span class="ash-rm-dot"></span><span>${esc(label)}</span>`;
 
-    runNote.classList.add('running');
+    runNote.classList.toggle('running', running);
     if (nextHtml !== lastRunNoteHtml) {
       lastRunNoteHtml = nextHtml;
       runNote.innerHTML = nextHtml;
     }
 
-    // Place the badge just to the right of the "Running for …" status text, not at the page top.
-    const ar = anchor.getBoundingClientRect();
-    if (!ar.width || !ar.height) {
-      runNote.style.display = 'none';
-      return;
-    }
     const noteH = runNote.offsetHeight || 20;
-    const left = Math.min(ar.right + 10, window.innerWidth - 220);
-    runNote.style.top = `${Math.round(ar.top + (ar.height - noteH) / 2)}px`;
-    runNote.style.left = `${Math.round(Math.max(8, left))}px`;
+    if (anchor) {
+      // Just to the right of the "Running for …" status text.
+      const ar = anchor.getBoundingClientRect();
+      const left = Math.min(ar.right + 10, window.innerWidth - 220);
+      runNote.style.top = `${Math.round(ar.top + (ar.height - noteH) / 2)}px`;
+      runNote.style.left = `${Math.round(Math.max(8, left))}px`;
+    } else {
+      // Idle: just above the message box.
+      const cr = (found.ta.closest('form') || found.ta.parentElement).getBoundingClientRect();
+      runNote.style.top = `${Math.round(Math.max(8, cr.top - noteH - 6))}px`;
+      runNote.style.left = `${Math.round(Math.max(8, cr.left + 8))}px`;
+    }
     runNote.style.bottom = 'auto';
     runNote.style.display = 'flex';
   }
