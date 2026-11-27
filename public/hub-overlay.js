@@ -1717,13 +1717,15 @@
       (qThread && tasks.find((t) => t.threadId === qThread)) ||
       tasks.find((t) => t.threadId === bot.threadId) ||
       null;
-    if (activeTask?.modelSelection?.model) return activeTask.modelSelection;
-    if (bot.modelSelection?.model) return bot.modelSelection;
+    // What is actually answering: the running model while a turn is live, then the model that answered the last turn.
+    if (activeTask?.runningModel?.model) return activeTask.runningModel;
     const ctx = String(activeTask?.lastContextModel || '');
     if (ctx.includes(':')) {
       const idx = ctx.indexOf(':');
       return { instanceId: ctx.slice(0, idx), model: ctx.slice(idx + 1) };
     }
+    if (activeTask?.modelSelection?.model) return activeTask.modelSelection;
+    if (bot.modelSelection?.model) return bot.modelSelection;
     return null;
   }
 
