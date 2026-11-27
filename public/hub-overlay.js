@@ -1798,6 +1798,50 @@
     return null;
   }
 
+  // Swipe left or right on a bot answer to quote it into the message box as a reply.
+  function quoteBotAnswerIntoComposer(msgEl) {
+    const found = findVisibleComposer();
+    if (!found || !found.ta) return;
+    const raw = String(msgEl.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+    if (!raw) return;
+    const excerpt = raw.length > 500 ? raw.slice(0, 500).trimEnd() + ' …' : raw;
+    const quoted = excerpt.split('\n').map((l) => `> ${l}`).join('\n') + '\n\n';
+    const ta = found.ta;
+    const next = quoted + (ta.value || '');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    if (setter) setter.call(ta, next); else ta.value = next;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
+    try { ta.setSelectionRange(next.length, next.length); } catch {}
+  }
+
+  function installSwipeReply() {
+    let start = null;
+    document.addEventListener('touchstart', (e) => {
+      const msg = e.target?.closest?.('[data-look="message-bot"]');
+      if (!msg || e.touches.length !== 1) { start = null; return; }
+      const t = e.touches[0];
+      start = { msg, x: t.clientX, y: t.clientY, time: Date.now() };
+    }, { passive: true });
+    document.addEventListener('touchmove', (e) => {
+      if (!start) return;
+      const t = e.touches[0];
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (Math.abs(dy) > 30 && Math.abs(dy) > Math.abs(dx)) start = null; // vertical scroll, not a swipe
+    }, { passive: true });
+    document.addEventListener('touchend', (e) => {
+      if (!start) return;
+      const s = start;
+      start = null;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - s.x;
+      const dy = t.clientY - s.y;
+      if (Math.abs(dx) < 70 || Math.abs(dy) > 40 || Date.now() - s.time > 700) return;
+      quoteBotAnswerIntoComposer(s.msg);
+    }, { passive: true });
+  }
+
   function formatShortTime(ts) {
     const n = Number(ts);
     if (!Number.isFinite(n) || n <= 0) return '';
@@ -1961,6 +2005,7 @@
     }, 250);
   };
 
+  installSwipeReply();
   setTimeout(() => { updateRunningModelNote(true); updateChiefStatusCard(true); }, 250);
   setInterval(() => { updateRunningModelNote(false); updateChiefStatusCard(false); }, 900);
   }
