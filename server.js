@@ -28,6 +28,8 @@ import {
   setRouterEnabled
 } from './hub-router.mjs';
 import { applyPromptModelOverride, resumePendingOverrides } from './hub-model-override.mjs';
+import { isAllowed, isPublicPath, isRemoteRequest, issuePairCode, pairAttemptAllowed, redeemPairCode, renderPairPage } from './hub-auth.mjs';
+import { startWatchdog, getWatchdogStatus, getAttention, acknowledgeAttention, getDashboard, retryBotThread, runWatchdogOnce } from './hub-watchdog.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -967,13 +969,37 @@ const server = http.createServer(async (req, res) => {
     const masterToken = getMasterToken();
     const cookieName = 'omb_session_' + OMB_PORT + '_33ce60cb46e1';
 
-    // 0. Frictionless Auto-Pairing: If visiting /pair, redirect directly to / with valid session cookie
+    // 0. Pairing + remote access gate.
+    //    Local requests (this PC) are trusted as before. Requests through the public tunnel must carry
+    //    the existing session cookie / bearer token, or redeem a one-time code issued on this PC.
     if (pathname === '/pair' || pathname.startsWith('/pair/')) {
+      const code = decodeURIComponent(pathname.slice('/pair/'.length) || urlObj.searchParams.get('code') || '');
+      const remote = isRemoteRequest(req);
+      let ok = !remote; // pairing from this PC itself needs no code
+      if (remote && code) {
+        if (!pairAttemptAllowed(req)) {
+          res.writeHead(429, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+          return res.end(renderPairPage('Too many attempts. Wait 15 minutes and try again.'));
+        }
+        ok = redeemPairCode(code);
+      }
+      if (!ok || !masterToken) {
+        res.writeHead(remote && code ? 401 : 200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(renderPairPage(code ? 'That code is wrong, used or expired. Get a new one from the Hub on your PC.' : ''));
+      }
       res.writeHead(302, {
         Location: '/',
-        'Set-Cookie': masterToken ? `${cookieName}=${masterToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=315360000; Secure` : ''
+        'Cache-Control': 'no-store',
+        'Set-Cookie': `${cookieName}=${masterToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=315360000; Secure`
       });
       return res.end();
+    }
+
+    if (!isAllowed(req, masterToken, cookieName) && !isPublicPath(pathname)) {
+      console.warn(`[Auth] Blocked unauthenticated remote ${req.method} ${pathname} from ${req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || 'tunnel'}`);
+      if (pathname.startsWith('/api/') || req.method !== 'GET') return sendJson(res, 401, { ok: false, error: 'Not signed in. Pair this device from the Hub on your PC.' });
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(renderPairPage());
     }
 
     // 1. Hub Overlay Script
@@ -1451,6 +1477,49 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, ombReady, tunnelStatus, tunnelUrl, gatewayUrl: GATEWAY_URL });
     }
 
+    // 2a. Watchdog, attention feed, phone dashboard
+    if (pathname === '/dashboard' && req.method === 'GET') {
+      const p = path.join(PUBLIC_DIR, 'dashboard.html');
+      if (!fs.existsSync(p)) { res.writeHead(404); return res.end('Not found'); }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return fs.createReadStream(p).pipe(res);
+    }
+    if (pathname === '/api/hub/watchdog' && req.method === 'GET') {
+      return sendJson(res, 200, getWatchdogStatus());
+    }
+    if (pathname === '/api/hub/watchdog/run' && req.method === 'POST') {
+      return sendJson(res, 200, { ok: true, lastRun: await runWatchdogOnce() });
+    }
+    if (pathname === '/api/hub/attention' && req.method === 'GET') {
+      return sendJson(res, 200, getAttention({
+        unnotified: urlObj.searchParams.get('unnotified') === '1',
+        markNotified: urlObj.searchParams.get('mark') === '1',
+        includeAcked: urlObj.searchParams.get('all') === '1'
+      }));
+    }
+    if (pathname === '/api/hub/attention/ack' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const body = raw ? JSON.parse(raw) : {};
+      return sendJson(res, 200, acknowledgeAttention(body.all ? 'all' : Array.isArray(body.keys) ? body.keys : [body.key].filter(Boolean)));
+    }
+    if (pathname === '/api/hub/dashboard-data' && req.method === 'GET') {
+      try {
+        return sendJson(res, 200, await getDashboard());
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message });
+      }
+    }
+    if (pathname === '/api/hub/retry' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const body = raw ? JSON.parse(raw) : {};
+      if (!body.botId || !body.threadId) return sendJson(res, 400, { ok: false, error: 'botId and threadId are required' });
+      try {
+        return sendJson(res, 200, await retryBotThread(String(body.botId), String(body.threadId), body.text ? String(body.text).slice(0, 2000) : undefined));
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message });
+      }
+    }
+
     // 2b. Multi-Account Model Allowances (Live per-account, per-model % left & reset times + smart routing)
     if (pathname === '/api/hub/allowances' && req.method === 'GET') {
       const refresh = urlObj.searchParams.get('refresh') === '1';
@@ -1472,8 +1541,8 @@ const server = http.createServer(async (req, res) => {
         ...(masterToken ? { Authorization: `Bearer ${masterToken}` } : {})
       };
       const [botsRes, instRes] = await Promise.all([
-        fetch(`http://127.0.0.1:${OMB_PORT}/api/bots`, { headers: authHeaders }),
-        fetch(`http://127.0.0.1:${OMB_PORT}/api/instances`, { headers: authHeaders })
+        fetch(`http://127.0.0.1:${OMB_PORT}/api/bots`, { headers: authHeaders, signal: AbortSignal.timeout(20000) }),
+        fetch(`http://127.0.0.1:${OMB_PORT}/api/instances`, { headers: authHeaders, signal: AbortSignal.timeout(30000) })
       ]);
       const bots = (await botsRes.json().catch(() => ({})))?.bots || [];
       const instances = (await instRes.json().catch(() => ({})))?.instances || [];
@@ -1577,37 +1646,9 @@ const server = http.createServer(async (req, res) => {
     // 6. Generate 1-Tap OpenMausBot Phone Pairing Link
     if (pathname === '/api/hub/pair-link' && req.method === 'POST') {
       try {
-        const out = await new Promise((resolve, reject) => {
-          execFile(
-            process.execPath,
-            [
-              path.join(OMB_DIR, 'cli.js'),
-              'pair',
-              '--label', 'Phone / Remote Browser',
-              '--ttl', '24h',
-              '--public-url', GATEWAY_URL
-            ],
-            {
-              cwd: OMB_DIR,
-              env: { ...process.env, OMB_PORT: String(OMB_PORT), OMB_DATA_DIR: OMB_DATA_DIR },
-              encoding: 'utf8',
-              timeout: 15000,
-              windowsHide: true
-            },
-            (err, stdout, stderr) => {
-              if (err) return reject(new Error(stderr || err.message));
-              resolve(stdout);
-            }
-          );
-        });
-        const linkMatch = out.match(/https?:\/\/[^\s]+/i);
-        const codeMatch = out.match(/Pairing code\s+([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})/i);
-        return sendJson(res, 200, {
-          ok: true,
-          link: linkMatch ? linkMatch[0] : null,
-          code: codeMatch ? codeMatch[1] : null,
-          raw: out.trim()
-        });
+        const { code, expiresAt } = issuePairCode('Phone / Remote Browser');
+        const link = `${GATEWAY_URL}/pair/${code}`;
+        return sendJson(res, 200, { ok: true, link, code, expiresAt, raw: `Pairing code ${code} (one-time, 24h)\n${link}` });
       } catch (e) {
         return sendJson(res, 500, { ok: false, error: e.message });
       }
@@ -1864,6 +1905,11 @@ const server = http.createServer(async (req, res) => {
 server.on('upgrade', (req, socket, head) => {
   const masterToken = getMasterToken();
   const cookieName = 'omb_session_' + OMB_PORT + '_33ce60cb46e1';
+  if (!isAllowed(req, masterToken, cookieName)) {
+    console.warn(`[Auth] Blocked unauthenticated remote WebSocket ${req.url}`);
+    socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    return;
+  }
 
   const upstream = net.connect(OMB_PORT, '127.0.0.1', () => {
     const headers = { ...req.headers };
@@ -1914,6 +1960,7 @@ server.listen(HUB_PORT, '127.0.0.1', () => {
   startLocalSseTap();
   startCloudflareTunnel().catch(() => {});
   setTimeout(() => syncDataToCloudDrive(), 5000);
+  try { startWatchdog({ hubPort: HUB_PORT, ombPort: OMB_PORT, getToken: getMasterToken }); } catch (e) { console.warn('[Watchdog] failed to start:', e.message); }
   setInterval(() => {
     checkTunnelWatchdog().catch(() => {});
   }, 15000);

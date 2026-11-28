@@ -77,6 +77,18 @@ const TOOLS = [
     }
   },
   {
+    name: 'hub_attention',
+    description: 'AI Studio Hub attention feed from the free background watchdog: things that need Moji (bots waiting for his answer, stuck or failed hand-offs, failed runs, failed or missed routines, automatic quota account moves, empty accounts) plus a compact allowance summary. Use mode "new" in alert routines (returns only items not yet reported and marks them reported, so each item is told once). Use mode "summary" for a morning health line. Use mode "ack" with keys to dismiss items Moji has handled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['new', 'summary', 'all', 'ack'], description: 'new = unreported items only (marks them reported); summary = open items + accounts; all = everything incl. dismissed; ack = dismiss keys' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'Item keys to dismiss (mode "ack")' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: 'hub_account_allowances',
     description: 'Inspect live remaining allowance percentages, 5-hour and weekly reset timestamps, per-model pools, assigned bots, and smart account-selection advice across ALL connected Codex and Google/Antigravity accounts. Use this to decide which account/model to use based on remaining allowance and reset timing.',
     inputSchema: {
@@ -245,6 +257,31 @@ async function handleToolCall(name, args = {}) {
       }
     }
   }
+  if (name === 'hub_attention') {
+    const mode = String(args.mode || 'summary');
+    try {
+      let res;
+      if (mode === 'ack') {
+        res = await fetch('http://127.0.0.1:4747/api/hub/attention/ack', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keys: Array.isArray(args.keys) ? args.keys : [] }), signal: AbortSignal.timeout(15000)
+        });
+      } else {
+        const q = mode === 'new' ? '?unnotified=1&mark=1' : mode === 'all' ? '?all=1' : '';
+        res = await fetch(`http://127.0.0.1:4747/api/hub/attention${q}`, { signal: AbortSignal.timeout(15000) });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (mode === 'summary' && data.accounts) {
+        data.healthLine = data.accounts
+          .filter((a) => a.bots?.length || (a.headroom ?? 100) < 50)
+          .map((a) => `${a.displayName} ${a.headroom === null ? '?' : Math.round(a.headroom) + '%'}`)
+          .join(' · ');
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: !res.ok };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Hub watchdog unavailable: ${e.message}` }], isError: true };
+    }
+  }
   if (name === 'hub_quota_status' || name === 'hub_account_allowances') {
     const refresh = args.refresh !== false;
     try {
@@ -281,7 +318,7 @@ async function handleToolCall(name, args = {}) {
           effort: args.effort,
           variant: args.variant
         }),
-        signal: AbortSignal.timeout(12000)
+        signal: AbortSignal.timeout(60000)
       });
       const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: !res.ok };

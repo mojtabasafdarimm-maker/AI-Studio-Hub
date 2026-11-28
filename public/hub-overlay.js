@@ -403,6 +403,17 @@
       font-weight: 600;
       cursor: pointer;
     }
+    .ash-tab-link {
+      flex: 1;
+      padding: 6px 8px;
+      border-radius: 8px;
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      text-decoration: none;
+    }
+    .ash-tab-link:hover { color: #e2e8f0; }
     .ash-tab.active {
       background: rgba(139, 92, 246, 0.22);
       color: #e2e8f0;
@@ -870,6 +881,7 @@
         <button class="ash-tab" data-tab="radar">📡 Radar</button>
         <button class="ash-tab" data-tab="chats">🔍 Chats</button>
         <button class="ash-tab" data-tab="remote">📱 Remote</button>
+        <a class="ash-tab-link" href="/dashboard" target="_blank" rel="noopener" title="Phone dashboard: what needs you, every bot, every account">🩺 Dashboard</a>
       </div>
       <div id="ash-body" class="ash-body"></div>
     </div>

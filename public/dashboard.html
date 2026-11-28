@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<title>Hub Dashboard</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f4f5;--card:#fff;--line:#e4e4e7;--ink:#18181b;--ink2:#52525b;--ink3:#71717a;--accent:#4f46e5;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--track:#e4e4e7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#09090b;--card:#18181b;--line:#27272a;--ink:#f4f4f5;--ink2:#a1a1aa;--ink3:#a1a1aa;--accent:#818cf8;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--track:#27272a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;padding:0 0 env(safe-area-inset-bottom)}
+header{position:sticky;top:0;z-index:2;background:var(--bg);padding:12px 16px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:-.01em;flex:1}
+header a,header button{font:inherit;font-size:13px;color:var(--accent);background:none;border:1px solid var(--line);border-radius:10px;min-height:36px;padding:0 12px;text-decoration:none;display:inline-flex;align-items:center;cursor:pointer}
+main{max-width:860px;margin:0 auto;padding:12px 16px 32px;display:grid;gap:16px}
+h2{font-size:13px;font-weight:650;text-transform:uppercase;letter-spacing:.04em;color:var(--ink3);margin:8px 0 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+.muted{color:var(--ink3);font-size:12px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+.pill{font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;border:1px solid currentColor;white-space:nowrap}
+.urgent{color:var(--bad)}.normal{color:var(--warn)}.info{color:var(--ink3)}
+.s-running{color:var(--accent)}.s-idle{color:var(--ink3)}.s-failed{color:var(--bad)}.s-needs-you{color:var(--warn)}
+.att{display:grid;gap:8px}
+.att .card{display:grid;gap:6px}
+.att .t{font-weight:600}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns button,.btns a{font:inherit;font-size:13px;min-height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;cursor:pointer}
+.btns .primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.accts{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;border-radius:3px}
+.num{font-variant-numeric:tabular-nums;font-weight:650}
+.bots{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.bot{display:grid;gap:6px}
+.bot .name{font-weight:650;font-size:15px}
+.reply{color:var(--ink2);font-size:13px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.empty{color:var(--ink3);text-align:center;padding:16px}
+#toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+#toast.on{opacity:1}
+.loading{opacity:.55;transition:opacity .2s}
+</style>
+</head>
+<body>
+<header>
+  <h1>Hub</h1>
+  <button id="refresh" type="button" aria-label="Refresh">↻ Refresh</button>
+  <a href="/">Open app</a>
+</header>
+<main id="main" aria-live="polite">
+  <div class="empty" id="status">Loading…</div>
+</main>
+<div id="toast" role="status"></div>
+<script>
+(() => {
+  const $ = (s, el = document) => el.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const rel = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  const ago = (ms) => {
+    if (!ms) return '';
+    const s = (ms - Date.now()) / 1000, a = Math.abs(s);
+    if (a < 60) return 'just now';
+    if (a < 3600) return rel.format(Math.round(s / 60), 'minute');
+    if (a < 86400) return rel.format(Math.round(s / 3600), 'hour');
+    return rel.format(Math.round(s / 86400), 'day');
+  };
+  const pct = (n) => (n === null || n === undefined ? '—' : Math.round(n) + '%');
+  const barColor = (n) => (n === null || n === undefined ? 'var(--ink3)' : n <= 10 ? 'var(--bad)' : n <= 30 ? 'var(--warn)' : 'var(--ok)');
+  const threadLink = (threadId, botId) => threadId ? `/${encodeURIComponent(threadId)}${botId ? `?bot=${encodeURIComponent(botId)}` : ''}` : '/';
+  const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 2600); };
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) throw new Error(j.error || `HTTP ${res.status}`);
+    return j;
+  }
+
+  function render(d) {
+    const botName = new Map(d.bots.map((b) => [b.id, b.name]));
+    const items = d.attention.items || [];
+    const att = items.length
+      ? items.map((i) => `
+        <div class="card" data-key="${esc(i.key)}">
+          <div class="row"><span class="pill ${esc(i.severity)}">${i.severity === 'urgent' ? 'Urgent' : i.severity === 'normal' ? 'Needs a look' : 'FYI'}</span><span class="muted">${esc(ago(i.lastSeen))}</span></div>
+          <div class="t">${esc(i.title)}</div>
+          ${i.detail ? `<div class="muted">${esc(i.detail)}</div>` : ''}
+          <div class="btns">
+            ${i.threadId ? `<a href="${threadLink(i.threadId, i.botId)}">Open</a>` : ''}
+            ${i.botId && i.threadId && /stuck|failed|run-failed/.test(i.kind) ? `<button type="button" data-retry="${esc(i.botId)}" data-thread="${esc(i.threadId)}">Retry</button>` : ''}
+            <button type="button" data-ack="${esc(i.key)}">Dismiss</button>
+          </div>
+        </div>`).join('')
+      : '<div class="card empty">Nothing needs you right now. ✓</div>';
+
+    const accts = (d.accounts || []).map((a) => `
+      <div class="card" aria-label="${esc(a.displayName)}: ${pct(a.headroom)} left">
+        <div class="row"><span class="grow">${esc(a.displayName)}</span><span class="num">${pct(a.headroom)}</span></div>
+        <div class="bar"><i style="width:${Math.max(0, Math.min(100, a.headroom ?? 0))}%;background:${barColor(a.headroom)}"></i></div>
+        <div class="muted">${a.bots?.length ? esc(a.bots.join(', ')) : 'No bots'}${a.weeklyResets ? ` · week resets ${esc(a.weeklyResets.replace(/^\w+ /, ''))}` : ''}</div>
+      </div>`).join('');
+
+    const order = { 'needs-you': 0, failed: 1, running: 2, idle: 3 };
+    const bots = [...d.bots].sort((a, b) => (order[a.status] - order[b.status]) || ((b.lastActivityAt || 0) - (a.lastActivityAt || 0))).map((b) => `
+      <div class="card bot">
+        <div class="row"><span class="name grow">${esc(b.name)}</span><span class="pill s-${esc(b.status)}">${b.status === 'needs-you' ? 'Needs you' : b.status[0].toUpperCase() + b.status.slice(1)}</span></div>
+        <div class="row muted"><span class="grow">${esc(b.account || '')} · ${esc(b.model || '')}${b.movedByWatchdog ? ' · auto-moved' : ''}</span><span class="num" style="color:${barColor(b.headroom)}">${pct(b.headroom)}</span></div>
+        ${b.lastTask ? `<div class="muted">Task: ${esc(b.lastTask)}</div>` : ''}
+        <div class="reply">${esc(b.lastReply || 'No reply yet.')}</div>
+        <div class="row"><span class="muted grow">${esc(ago(b.lastActivityAt))}</span>
+          <div class="btns">
+            <a href="${threadLink(b.threadId, b.id)}">Open</a>
+            ${b.status === 'running' ? '' : `<button type="button" data-retry="${esc(b.id)}" data-thread="${esc(b.threadId)}">Retry</button>`}
+          </div>
+        </div>
+      </div>`).join('');
+
+    const urgent = d.attention.counts?.urgent || 0;
+    document.title = urgent ? `(${urgent}) Hub Dashboard` : 'Hub Dashboard';
+    $('#main').innerHTML = `
+      <section aria-labelledby="h-att"><h2 id="h-att">Needs you (${items.length})</h2><div class="att">${att}</div></section>
+      <section aria-labelledby="h-acc"><h2 id="h-acc">Accounts</h2><div class="accts">${accts}</div></section>
+      <section aria-labelledby="h-bots"><h2 id="h-bots">Bots</h2><div class="bots">${bots}</div></section>
+      <p class="muted">Updated ${esc(new Date(d.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}${d.attention.lastRun?.at ? ` · watchdog checked ${esc(ago(Date.parse(d.attention.lastRun.at)))}` : ''}. Quota moves happen automatically and reverse when the account recovers.</p>`;
+  }
+
+  async function load() {
+    $('#main').classList.add('loading');
+    try {
+      render(await api('/api/hub/dashboard-data'));
+    } catch (e) {
+      $('#main').innerHTML = `<div class="card empty">Couldn't load the dashboard: ${esc(e.message)}</div>`;
+    } finally {
+      $('#main').classList.remove('loading');
+    }
+  }
+
+  document.addEventListener('click', async (ev) => {
+    const ack = ev.target.closest('[data-ack]');
+    const retry = ev.target.closest('[data-retry]');
+    if (ack) {
+      ack.disabled = true;
+      try { await api('/api/hub/attention/ack', { method: 'POST', body: JSON.stringify({ keys: [ack.dataset.ack] }) }); ack.closest('.card').remove(); toast('Dismissed'); }
+      catch (e) { ack.disabled = false; toast('Could not dismiss: ' + e.message); }
+    } else if (retry) {
+      if (!confirm('Ask this bot to pick up where it left off?')) return;
+      retry.disabled = true;
+      try { await api('/api/hub/retry', { method: 'POST', body: JSON.stringify({ botId: retry.dataset.retry, threadId: retry.dataset.thread }) }); toast('Sent. The bot is retrying.'); setTimeout(load, 3000); }
+      catch (e) { retry.disabled = false; toast('Retry failed: ' + e.message); }
+    }
+  });
+  $('#refresh').addEventListener('click', load);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  setInterval(() => { if (!document.hidden) load(); }, 60000);
+  load();
+})();
+</script>
+</body>
+</html>
